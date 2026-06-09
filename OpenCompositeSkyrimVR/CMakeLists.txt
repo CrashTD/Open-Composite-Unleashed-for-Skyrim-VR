@@ -401,6 +401,7 @@ add_library(OCCore STATIC
 	OpenVRHeaders/custom_interfaces/IVRClientCore_002.h
 	OpenVRHeaders/custom_interfaces/IVRClientCore_003.h
 	OpenVRHeaders/custom_interfaces/IVRCompositor_017.h
+	OpenVRHeaders/custom_interfaces/IVRSystem_023.h
 	OpenVRHeaders/custom_interfaces/IVRMailbox_001.h
 	OpenVRHeaders/custom_interfaces/IVRInputInternal_002.h
 	OpenVRHeaders/custom_interfaces/IVRControlPanel_006.h
