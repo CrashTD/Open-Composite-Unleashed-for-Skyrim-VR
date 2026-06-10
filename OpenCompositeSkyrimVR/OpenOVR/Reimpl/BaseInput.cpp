@@ -2406,6 +2406,7 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 	};
 
 	bool disableTriggerTouch = oovr_global_configuration.DisableTriggerTouch();
+	bool disableThumbrestTouch = oovr_global_configuration.DisableThumbrestTouch();
 	bool inputSmoothingEnabled = oovr_global_configuration.EnableInputSmoothing();
 
 	// Read the buttons
@@ -2421,8 +2422,8 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 	// this will make thumb curl when knuckles trackpad sensor detects a touch
 	bindButton(XR_NULL_HANDLE, ctrl.trackPadTouch, vr::k_EButton_SteamVR_Touchpad, hand, inputSmoothingEnabled);
 
-	// Thumbrest touch → mapped as DPad_Up button press so it's bindable in controlmapvr.txt (0x04)
-	bindButton(ctrl.thumbrestTouch, XR_NULL_HANDLE, vr::k_EButton_DPad_Up, hand, inputSmoothingEnabled);
+	// Thumbrest touch maps to DPad_Up so users can bind it when explicitly enabled.
+	bindButton(disableThumbrestTouch ? XR_NULL_HANDLE : ctrl.thumbrestTouch, XR_NULL_HANDLE, vr::k_EButton_DPad_Up, hand, inputSmoothingEnabled);
 
 	bool enableVRIKKnucklesTrackPadSupport = oovr_global_configuration.EnableVRIKKnucklesTrackPadSupport();
 	if (enableVRIKKnucklesTrackPadSupport) {

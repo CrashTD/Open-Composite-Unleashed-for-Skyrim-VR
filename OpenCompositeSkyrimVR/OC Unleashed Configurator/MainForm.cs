@@ -19,12 +19,12 @@ namespace OpenCompositeConfigurator
         private bool _isLoading = false; // suppresses audio during ini load
         private string _gameDir = "";
         private string _mo2ModDir = ""; // Auto-detected if running from mod folder
+        private bool _installWarningShown = false;
         private readonly string _gameType; // Set via constructor: "skyrim" or "fallout4"
         private readonly string _gameName; // Display name
 
         // Top bar
-        private TextBox _txtPath = null!;
-        private Button _btnBrowse = null!;
+        private Label _lblInstallNotice = null!;
 
         // Tab system (borderless panels with toggle buttons)
         private Button _btnTabSettings = null!;
@@ -149,6 +149,7 @@ namespace OpenCompositeConfigurator
         private Label _lblRotCutoff = null!;
         private Label _lblRotBeta = null!;
         private CheckBox _chkDisableTriggerTouch = null!;
+        private CheckBox _chkDisableThumbrestTouch = null!;
         private CheckBox _chkDisableTrackpad = null!;
         private CheckBox _chkVRIKKnuckles = null!;
         private CheckBox _chkGpuTiming = null!;
@@ -243,15 +244,13 @@ namespace OpenCompositeConfigurator
         private Button _btnVRDefaults = null!;
         private Button _btnVRIKDefaults = null!;  // legacy, retained for binary compat — UI replaced by _cmbBindingPreset
         private Button _btnResetDefaults = null!;
+        private Button _btnValidateBindings = null!;
         private ComboBox _cmbBindingPreset = null!;
         private Button _btnApplyBindingPreset = null!;
-        private Button _btnImportBindingPreset = null!;
         private Button _btnSaveAsBindingPreset = null!;
         private Button _btnDeleteBindingPreset = null!;
-        private Button _btnSaveControllerCombos = null!;
 
-        // User-imported presets persist between launches in app-data so users
-        // don't have to re-import every session. Live entries get loaded into
+        // User-saved presets persist between launches in app-data. Live entries get loaded into
         // _cmbBindingPreset on startup and into _userBindingPresets so Apply
         // knows where the file lives.
         private readonly Dictionary<string, string> _userBindingPresets = new(StringComparer.OrdinalIgnoreCase);
@@ -483,33 +482,23 @@ namespace OpenCompositeConfigurator
             // TOP BAR (outside tabs)
             // ══════════════════════════════════════════════════════════════════
 
-            var lblGame = MakeLabel($"Game: {_gameName}", leftMargin, y + 3, 200);
+            var lblGame = MakeLabel($"OCU: {_gameName}", leftMargin, y + 3, 200);
             lblGame.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
             lblGame.ForeColor = Color.FromArgb(100, 200, 250);
             Controls.Add(lblGame);
 
-            _txtPath = new TextBox
+            _lblInstallNotice = new Label
             {
                 Location = new Point(leftMargin + 225, y),
-                Width = 610,
-                BackColor = Color.FromArgb(50, 50, 55),
+                Width = 860,
+                Height = 24,
+                BackColor = Color.Transparent,
                 ForeColor = Color.FromArgb(180, 180, 180),
-                BorderStyle = BorderStyle.FixedSingle,
-                ReadOnly = true,
-                Text = "(No folder selected \u2014 click Browse)"
+                Font = new Font("Segoe UI", 9f, FontStyle.Italic),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Text = "Keep this EXE in the OCU mod folder. Create a desktop shortcut; do not move the EXE."
             };
-            Controls.Add(_txtPath);
-
-            _btnBrowse = MakeButton("Browse...", leftMargin + 845, y - 1, 110, 27);
-            _btnBrowse.Click += BtnBrowse_Click;
-            Controls.Add(_btnBrowse);
-
-            var btnMasterReset = MakeButton("Master Reset", leftMargin + 965, y - 1, 120, 27);
-            btnMasterReset.BackColor = Color.FromArgb(120, 60, 40);
-            btnMasterReset.ForeColor = Color.White;
-            btnMasterReset.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-            btnMasterReset.Click += BtnMasterReset_Click;
-            Controls.Add(btnMasterReset);
+            Controls.Add(_lblInstallNotice);
 
             y += 40;
 
@@ -693,7 +682,7 @@ namespace OpenCompositeConfigurator
             {
                 Location = new Point(leftMargin, y),
                 Size = new Size(rightEdge - leftMargin, 24),
-                Text = "MO2 Users: Place this EXE in your mod folder and create a desktop shortcut. Auto-saves to both locations.",
+                Text = "This configurator edits the OCU files in this mod folder. Keep the EXE here and launch it from a shortcut.",
                 ForeColor = Color.FromArgb(150, 200, 250),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
                 BackColor = Color.FromArgb(40, 45, 60),
@@ -708,6 +697,13 @@ namespace OpenCompositeConfigurator
             y += 8;
 
             // ── SAVE/RELOAD BUTTONS (top right corner) ──
+            var btnSettingsMasterReset = MakeButton("Master Reset", rightEdge - 450, y, 130, 30);
+            btnSettingsMasterReset.BackColor = Color.FromArgb(120, 60, 40);
+            btnSettingsMasterReset.ForeColor = Color.White;
+            btnSettingsMasterReset.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            btnSettingsMasterReset.Click += BtnSettingsMasterReset_Click;
+            container.Controls.Add(btnSettingsMasterReset);
+
             _btnSave = MakeButton("Save opencomposite.ini", rightEdge - 310, y, 200, 30);
             _btnSave.BackColor = Color.FromArgb(40, 120, 40);
             _btnSave.ForeColor = Color.White;
@@ -1079,13 +1075,28 @@ namespace OpenCompositeConfigurator
 
             _chkDisableTriggerTouch = MakeCheckBox("Disable trigger touch", sc3, sy2);
             _pnlSkyrimOnly.Controls.Add(_chkDisableTriggerTouch);
-            _chkDisableTrackpad = MakeCheckBox("Disable trackpad", sc4, sy2);
-            _pnlSkyrimOnly.Controls.Add(_chkDisableTrackpad);
+            _chkDisableThumbrestTouch = MakeCheckBox("Disable thumbrest touch", sc4, sy2);
+            _chkDisableThumbrestTouch.CheckedChanged += (s, e) =>
+            {
+                if (!ThumbrestBindingEnabled() && IsThumbrestButton(_selectedCtrlButton))
+                {
+                    _selectedCtrlButton = null;
+                    _lblCtrlButton.Text = "None";
+                    SelectActionInCombo(_cmbCtrlAction, null);
+                    _cmbCtrlAction.Enabled = false;
+                }
+                _picBindingsController?.Invalidate();
+            };
+            _pnlSkyrimOnly.Controls.Add(_chkDisableThumbrestTouch);
             sy2 += 26;
 
-            _chkVRIKKnuckles = MakeCheckBox("VRIK Knuckles support", sc3, sy2);
+            _chkDisableTrackpad = MakeCheckBox("Disable trackpad", sc3, sy2);
+            _pnlSkyrimOnly.Controls.Add(_chkDisableTrackpad);
+            _chkVRIKKnuckles = MakeCheckBox("VRIK Knuckles support", sc4, sy2);
             _pnlSkyrimOnly.Controls.Add(_chkVRIKKnuckles);
-            _chkGpuTiming = MakeCheckBox("GPU frame timing", sc4, sy2);
+            sy2 += 26;
+
+            _chkGpuTiming = MakeCheckBox("GPU frame timing", sc3, sy2);
             _chkGpuTiming.Checked = true;
             _pnlSkyrimOnly.Controls.Add(_chkGpuTiming);
             sy2 += 26;
@@ -1353,11 +1364,24 @@ namespace OpenCompositeConfigurator
 
         private void ParseControlmapTemplate()
         {
+            LoadControlmapTemplateModel(resetContextNames: true);
+        }
+
+        private void LoadControlmapTemplateModel(bool resetContextNames)
+        {
             var asm = Assembly.GetExecutingAssembly();
             using var stream = asm.GetManifestResourceStream("OpenCompositeConfigurator.controlmapvr_template.txt");
             if (stream == null) return;
             using var reader = new StreamReader(stream);
-            string[] lines = reader.ReadToEnd().Split('\n');
+            LoadControlmapModelFromText(reader.ReadToEnd(), resetContextNames);
+        }
+
+        private void LoadControlmapModelFromText(string controlmapText, bool resetContextNames)
+        {
+            string[] lines = controlmapText.Split('\n');
+            _contextBindings.Clear();
+            if (resetContextNames)
+                _contextNames.Clear();
 
             string currentContext = "";
             foreach (string rawLine in lines)
@@ -1387,7 +1411,8 @@ namespace OpenCompositeConfigurator
                         if (!_contextBindings.ContainsKey(currentContext))
                         {
                             _contextBindings[currentContext] = new List<string[]>();
-                            _contextNames.Add(currentContext);
+                            if (resetContextNames || !_contextNames.Contains(currentContext))
+                                _contextNames.Add(currentContext);
                         }
                     }
                     continue;
@@ -1402,6 +1427,30 @@ namespace OpenCompositeConfigurator
                 if (fields.Length >= 2)
                 {
                     _contextBindings[currentContext].Add(fields);
+                }
+            }
+        }
+
+        private void RefreshKeyboardBindingsFromControlmapModel()
+        {
+            if (!_contextBindings.TryGetValue("Main Gameplay", out var actions))
+                return;
+
+            foreach (var fields in actions)
+            {
+                if (fields.Length < 2) continue;
+
+                string actionName = fields[0];
+                string scStr = fields[1].ToLowerInvariant();
+                if (scStr.Contains(','))
+                    scStr = scStr.Split(',')[0].Trim();
+
+                if (scStr.StartsWith("0x") &&
+                    int.TryParse(scStr[2..], System.Globalization.NumberStyles.HexNumber, null, out int scancode))
+                {
+                    var action = GameActions.FirstOrDefault(a => a.id == actionName);
+                    if (action.id != null)
+                        _keyBindings[actionName] = scancode;
                 }
             }
         }
@@ -1441,12 +1490,14 @@ namespace OpenCompositeConfigurator
             { "y_button",   ("Y Button",      new PointF(0.353f, 0.189f), false) },
             { "l_trigger",  ("L Trigger",     new PointF(0.455f, 0.106f), false) },
             { "l_grip",     ("L Grip",        new PointF(0.383f, 0.512f), false) },
+            { "l_thumbrest", ("L Thumbrest",   new PointF(0.398f, 0.244f), false) },
             // Right controller
             { "right_stick", ("R Stick Click", new PointF(0.713f, 0.147f), false) },
             { "a_button",   ("A Button",      new PointF(0.670f, 0.254f), false) },
             { "b_button",   ("B Button",      new PointF(0.627f, 0.189f), false) },
             { "r_trigger",  ("R Trigger",     new PointF(0.537f, 0.106f), false) },
             { "r_grip",     ("R Grip",        new PointF(0.605f, 0.515f), false) },
+            { "r_thumbrest", ("R Thumbrest",   new PointF(0.585f, 0.244f), false) },
             // Left stick directions (offset 0.060 vertical, 0.045 horizontal)
             { "left_stick_up",    ("L Stick Up",    new PointF(0.272f, 0.153f - 0.060f), true) },
             { "left_stick_down",  ("L Stick Down",  new PointF(0.272f, 0.153f + 0.060f), true) },
@@ -1460,7 +1511,7 @@ namespace OpenCompositeConfigurator
         };
 
         // Map controller button IDs to their hex codes in controlmapvr (Oculus Right = field 6, Left = field 7)
-        // OpenVR button IDs: 0x01=B/Y(AppMenu), 0x02=Grip, 0x07=A/X, 0x20=StickPress, 0x21=Trigger
+        // OpenVR button IDs: 0x01=B/Y(AppMenu), 0x02=Grip, 0x04=DPad Up, 0x07=A/X, 0x20=StickPress, 0x21=Trigger
         // NOTE: 0x0b/0x0c = stick AXIS (movement/look), 0x20 = stick PRESS (click in)
         private static readonly Dictionary<string, (string hexRight, string hexLeft)> ControllerButtonHex = new()
         {
@@ -1469,22 +1520,13 @@ namespace OpenCompositeConfigurator
             { "y_button",    ("",     "0x01") },   // Y = AppMenu button on left hand
             { "l_trigger",   ("",     "0x21") },   // Left trigger
             { "l_grip",      ("",     "0x02") },   // Left grip (Cancel, Ready Weapon)
+            { "l_thumbrest", ("",     "0x04") },   // Left thumbrest touch
             { "right_stick", ("0x20", "") },        // Right stick press
             { "a_button",    ("0x07", "") },        // A = A/X button on right hand
             { "b_button",    ("0x01", "") },        // B = AppMenu button on right hand
             { "r_trigger",   ("0x21", "") },        // Right trigger
             { "r_grip",      ("0x02", "") },        // Right grip (Shout, Cancel)
-        };
-
-        // These root gameplay actions are referenced from menu contexts by symbolic
-        // aliases. Certain preset variants remap them in ways that make Skyrim VR
-        // fail controlmap context initialization, which later crashes SKSE/SkyUI
-        // when getMappedKey("Cancel", gamepad, MenuMode) runs.
-        private static readonly Dictionary<string, string[]> SafeMainGameplayControllerFields = new(StringComparer.OrdinalIgnoreCase)
-        {
-            { "Activate",  new[] { "0xff", "0xff", "0x02", "0xff", "0x02", "0xff" } },
-            { "Shout",     new[] { "0x02", "0xff", "0x07", "0xff", "0x20", "0xff" } },
-            { "Favorites", new[] { "0xff", "0xff", "0x01", "0xff", "0xff", "0x20" } },
+            { "r_thumbrest", ("0x04", "") },        // Right thumbrest touch
         };
 
         private string? _hoveredCtrlButton = null;
@@ -1544,13 +1586,7 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(_chkDisableMouse);
 
-            // Two save buttons at the top, side-by-side.
-            //   Save All Bindings → writes everything the user has edited (keyboard +
-            //     mouse + gamepad + controller fields per context) plus combos.
-            //   Save Controller + Combos → writes controller fields + combos but
-            //     preserves keyboard / mouse / gamepad from disk (companion for users
-            //     who want to ship controller refactors without bundling keyboard edits).
-            _btnSaveBindings = MakeButton("Save All Bindings to Disk", rightEdge - 200, y, 210, 26);
+            _btnSaveBindings = MakeButton("Save All Bindings", rightEdge - 200, y, 210, 26);
             _btnSaveBindings.BackColor = Color.FromArgb(40, 120, 40);
             _btnSaveBindings.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
             _btnSaveBindings.Click += BtnSaveBindings_Click;
@@ -1558,25 +1594,9 @@ namespace OpenCompositeConfigurator
             tipSave.SetToolTip(_btnSaveBindings,
                 "Writes the entire controlmapvr.txt\n" +
                 "(keyboard, mouse, gamepad, AND all\n" +
-                "controller bindings) plus combos to disk.\n\n" +
+                "controller bindings) plus combos.\n\n" +
                 "Restart the game to apply.");
             container.Controls.Add(_btnSaveBindings);
-
-            _btnSaveControllerCombos = MakeButton(
-                "Save Controller + Combos", rightEdge - 430, y, 220, 26);
-            _btnSaveControllerCombos.BackColor = Color.FromArgb(50, 100, 60);
-            _btnSaveControllerCombos.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-            _btnSaveControllerCombos.Click += BtnSaveControllerCombos_Click;
-            var tipBottomSave = new ToolTip { AutoPopDelay = 12000, InitialDelay = 400 };
-            tipBottomSave.SetToolTip(_btnSaveControllerCombos,
-                "Saves controller bindings and combos to disk.\n\n" +
-                "Keyboard / mouse / gamepad fields are PRESERVED\n" +
-                "from your current controlmapvr.txt — only controller\n" +
-                "fields and the [combos] section of opencomposite.ini\n" +
-                "are updated.\n\n" +
-                "Use 'Save All Bindings to Disk' if you want\n" +
-                "keyboard edits committed too.");
-            container.Controls.Add(_btnSaveControllerCombos);
 
             y += 26;
 
@@ -1613,9 +1633,9 @@ namespace OpenCompositeConfigurator
             _cmbAction.Enabled = false;
             container.Controls.Add(_cmbAction);
 
-            _btnVRDefaults = MakeButton("VR Safe Defaults", leftMargin + 370, y, 120, 24);
+            _btnVRDefaults = MakeButton("Master Reset", leftMargin + 370, y, 120, 24);
             _btnVRDefaults.BackColor = Color.FromArgb(40, 100, 160);
-            _btnVRDefaults.Font = new Font("Segoe UI", 8f);
+            _btnVRDefaults.Font = new Font("Segoe UI", 8f, FontStyle.Bold);
             _btnVRDefaults.Click += BtnVRDefaults_Click;
             container.Controls.Add(_btnVRDefaults);
 
@@ -1623,6 +1643,18 @@ namespace OpenCompositeConfigurator
             _btnResetDefaults.Font = new Font("Segoe UI", 8f);
             _btnResetDefaults.Click += (s, e) => ResetControlmapToDefaults();
             container.Controls.Add(_btnResetDefaults);
+
+            _btnValidateBindings = MakeButton("Validate Bindings", leftMargin + 650, y, 135, 24);
+            _btnValidateBindings.BackColor = Color.FromArgb(120, 80, 40);
+            _btnValidateBindings.Font = new Font("Segoe UI", 8f);
+            _btnValidateBindings.Click += BtnValidateBindings_Click;
+            var tipValidate = new ToolTip { AutoPopDelay = 12000, InitialDelay = 400 };
+            tipValidate.SetToolTip(_btnValidateBindings,
+                "Scans the live controlmapvr.txt for known\n" +
+                "startup-crash binding patterns.\n\n" +
+                "Known deterministic issues are repaired.\n" +
+                "Ambiguous issues are reported for review.");
+            container.Controls.Add(_btnValidateBindings);
 
             y += 28;
 
@@ -1706,12 +1738,14 @@ namespace OpenCompositeConfigurator
                 "Vanilla",
                 "VR Safe",
                 "VRIK V2.1.0",
-                "VRIK Alternate",
+                "Snippy",
                 "Kvite",
+                "Cangar",
+                "Cangar Spellsiphon",
                 "Vanilla + Oculus Touch Hotkeys",
             });
             _cmbBindingPreset.SelectedIndex = 2;
-            _cmbBindingPreset.SelectedIndexChanged += (s, e) => UpdateDeletePresetEnabled();
+            _cmbBindingPreset.SelectedIndexChanged += CmbBindingPreset_SelectedIndexChanged;
             container.Controls.Add(_cmbBindingPreset);
 
             _btnApplyBindingPreset = MakeButton("Apply Preset", rightEdge - 365, y, 105, 24);
@@ -1729,19 +1763,10 @@ namespace OpenCompositeConfigurator
             _btnSaveAsBindingPreset.Click += BtnSaveAsBindingPreset_Click;
             container.Controls.Add(_btnSaveAsBindingPreset);
 
-            // Import — file picker for any external controlmapvr.txt; same destination
-            // dir, same wiring as Save As, so imports and saves both appear together
-            // in the dropdown.
-            _btnImportBindingPreset = MakeButton("Import…", rightEdge - 170, y, 75, 24);
-            _btnImportBindingPreset.BackColor = Color.FromArgb(70, 90, 110);
-            _btnImportBindingPreset.Font = new Font("Segoe UI", 8f);
-            _btnImportBindingPreset.Click += BtnImportBindingPreset_Click;
-            container.Controls.Add(_btnImportBindingPreset);
-
-            // Delete — removes a user-imported / Save-As preset from disk + dropdown.
+            // Delete removes a Save-As preset from disk and the dropdown.
             // Disabled when a built-in preset is selected (those are embedded in the
             // EXE and can't be deleted from outside).
-            _btnDeleteBindingPreset = MakeButton("Delete", rightEdge - 90, y, 90, 24);
+            _btnDeleteBindingPreset = MakeButton("Remove", rightEdge - 170, y, 80, 24);
             _btnDeleteBindingPreset.BackColor = Color.FromArgb(140, 50, 50);
             _btnDeleteBindingPreset.ForeColor = Color.White;
             _btnDeleteBindingPreset.Font = new Font("Segoe UI", 8f);
@@ -1757,7 +1782,7 @@ namespace OpenCompositeConfigurator
             var tipPreset = new ToolTip { AutoPopDelay = 12000, InitialDelay = 400 };
             tipPreset.SetToolTip(_cmbBindingPreset,
                 "Built-in presets ship with the EXE.\n" +
-                "User presets (Save As / Import) live under\n" +
+                "User presets created with Save As live under\n" +
                 "%AppData%\\OpenCompositeConfigurator\\Presets\\\n" +
                 "and can be deleted.");
             tipPreset.SetToolTip(_btnApplyBindingPreset,
@@ -1773,17 +1798,12 @@ namespace OpenCompositeConfigurator
                 "  %AppData%\\OpenCompositeConfigurator\\Presets\\\n\n" +
                 "Captures EVERYTHING in the file —\n" +
                 "keyboard, mouse, gamepad, AND controllers.\n\n" +
-                "Click 'Save All Bindings to Disk' first if you\n" +
+                "Click 'Save All Bindings' first if you\n" +
                 "have unsaved edits in the UI.");
-            tipPreset.SetToolTip(_btnImportBindingPreset,
-                "Pick any controlmapvr.txt from disk\n" +
-                "(yours, from Nexus, from SVR's binding tool, etc.)\n" +
-                "and add it to the dropdown as a named user preset.\n\n" +
-                "Doesn't apply it — you still need to click Apply.");
             tipPreset.SetToolTip(_btnDeleteBindingPreset,
                 "Removes the selected user preset\n" +
                 "from disk and the dropdown.\n\n" +
-                "Only works on user-saved / user-imported presets.\n" +
+                "Only works on user-saved presets.\n" +
                 "Built-ins are embedded in the EXE\n" +
                 "and can't be deleted.");
 
@@ -1920,7 +1940,14 @@ namespace OpenCompositeConfigurator
         /// </summary>
         private string? FindActionForHexInContext(string contextName, int fieldIndex, string hexValue)
         {
-            if (!_contextBindings.TryGetValue(contextName, out var actions)) return null;
+            return FindActionsForHexInContext(contextName, fieldIndex, hexValue).FirstOrDefault();
+        }
+
+        private List<string> FindActionsForHexInContext(string contextName, int fieldIndex, string hexValue)
+        {
+            var matches = new List<string>();
+            if (!_contextBindings.TryGetValue(contextName, out var actions)) return matches;
+            string wanted = NormalizeControllerHex(hexValue);
             foreach (var fields in actions)
             {
                 if (fields.Length <= fieldIndex) continue;
@@ -1929,11 +1956,22 @@ namespace OpenCompositeConfigurator
                 var parts = val.Split(',');
                 foreach (var part in parts)
                 {
-                    if (part.Trim() == hexValue.ToLowerInvariant())
-                        return fields[0]; // action name
+                    if (NormalizeControllerHex(part) == wanted)
+                    {
+                        matches.Add(fields[0]);
+                        break;
+                    }
                 }
             }
-            return null;
+            return matches;
+        }
+
+        private static string NormalizeControllerHex(string value)
+        {
+            string v = value.Trim().ToLowerInvariant();
+            if (v.StartsWith("0x") && int.TryParse(v[2..], System.Globalization.NumberStyles.HexNumber, null, out int parsed))
+                return $"0x{parsed:x}";
+            return v;
         }
 
         /// <summary>
@@ -1945,6 +1983,7 @@ namespace OpenCompositeConfigurator
             _suppressCtrlActionChange = true;
             try
             {
+                RemoveSyntheticControllerActionItems(cmb);
                 if (actionName == null) { cmb.SelectedIndex = 0; return; }
                 for (int i = 0; i < cmb.Items.Count; i++)
                 {
@@ -1957,6 +1996,48 @@ namespace OpenCompositeConfigurator
                 cmb.SelectedIndex = 0;
             }
             finally { _suppressCtrlActionChange = false; }
+        }
+
+        private void SelectActionsInCombo(ComboBox cmb, IReadOnlyList<string> actionNames)
+        {
+            _suppressCtrlActionChange = true;
+            try
+            {
+                RemoveSyntheticControllerActionItems(cmb);
+                if (actionNames.Count == 0)
+                {
+                    cmb.SelectedIndex = 0;
+                    return;
+                }
+                if (actionNames.Count == 1)
+                {
+                    string actionName = actionNames[0];
+                    for (int i = 0; i < cmb.Items.Count; i++)
+                    {
+                        if (cmb.Items[i]?.ToString() == actionName)
+                        {
+                            cmb.SelectedIndex = i;
+                            return;
+                        }
+                    }
+                    cmb.SelectedIndex = 0;
+                    return;
+                }
+
+                string synthetic = "Multiple: " + string.Join(" + ", actionNames);
+                cmb.Items.Insert(1, synthetic);
+                cmb.SelectedIndex = 1;
+            }
+            finally { _suppressCtrlActionChange = false; }
+        }
+
+        private static void RemoveSyntheticControllerActionItems(ComboBox cmb)
+        {
+            for (int i = cmb.Items.Count - 1; i >= 0; i--)
+            {
+                if (cmb.Items[i]?.ToString()?.StartsWith("Multiple: ", StringComparison.Ordinal) == true)
+                    cmb.Items.RemoveAt(i);
+            }
         }
 
         /// <summary>
@@ -1997,6 +2078,9 @@ namespace OpenCompositeConfigurator
             float closestDist = float.MaxValue;
             foreach (var kvp in ControllerButtons)
             {
+                if (!IsControllerButtonVisible(kvp.Key))
+                    continue;
+
                 float hitRadius = kvp.Value.isStickDir ? 0.025f : 0.04f;
                 float dx = fx - kvp.Value.pos.X;
                 float dy = fy - kvp.Value.pos.Y;
@@ -2008,6 +2092,21 @@ namespace OpenCompositeConfigurator
                 }
             }
             return closest;
+        }
+
+        private bool ThumbrestBindingEnabled()
+        {
+            return _chkDisableThumbrestTouch != null && !_chkDisableThumbrestTouch.Checked;
+        }
+
+        private static bool IsThumbrestButton(string? buttonId)
+        {
+            return buttonId == "l_thumbrest" || buttonId == "r_thumbrest";
+        }
+
+        private bool IsControllerButtonVisible(string buttonId)
+        {
+            return !IsThumbrestButton(buttonId) || ThumbrestBindingEnabled();
         }
 
         private void PicBindingsController_MouseMove(object? sender, MouseEventArgs e)
@@ -2034,6 +2133,9 @@ namespace OpenCompositeConfigurator
             if (hit != null && ControllerButtons.TryGetValue(hit, out var info))
             {
                 _selectedCtrlButton = hit;
+                RefreshSelectedControllerBinding(updateStatus: true);
+                if (_selectedCtrlButton != null)
+                    return;
                 _lblCtrlButton.Text = info.display;
                 _picBindingsController.Invalidate();
 
@@ -2084,25 +2186,76 @@ namespace OpenCompositeConfigurator
         private void CmbCtrlType_SelectedIndexChanged(object? sender, EventArgs e)
         {
             // Re-lookup the binding when context type changes with a button selected
-            if (_selectedCtrlButton == null) return;
-            if (!ControllerButtonHex.TryGetValue(_selectedCtrlButton, out var hex)) return;
+            RefreshSelectedControllerBinding(updateStatus: true);
+        }
 
+        private string? FindSelectedControllerAction()
+        {
+            return FindSelectedControllerActions().FirstOrDefault();
+        }
+
+        private List<string> FindSelectedControllerActions()
+        {
+            var actions = new List<string>();
+            if (_selectedCtrlButton == null) return actions;
+            if (!ControllerButtonHex.TryGetValue(_selectedCtrlButton, out var hex)) return actions;
             string? ctx = GetSelectedContextName(_cmbCtrlType);
-            string? action = null;
-            if (ctx != null)
-            {
-                if (!string.IsNullOrEmpty(hex.hexRight))
-                    action = FindActionForHexInContext(ctx, 6, hex.hexRight);
-                if (action == null && !string.IsNullOrEmpty(hex.hexLeft))
-                    action = FindActionForHexInContext(ctx, 7, hex.hexLeft);
-            }
-            SelectActionInCombo(_cmbCtrlAction, action);
+            if (ctx == null) return actions;
 
-            var info = ControllerButtons[_selectedCtrlButton];
-            _lblKbStatus.Text = action != null
-                ? $"{info.display}: {action}"
-                : $"{info.display}: Not Used";
-            _lblKbStatus.ForeColor = Color.FromArgb(255, 200, 100);
+            if (!string.IsNullOrEmpty(hex.hexRight))
+                actions.AddRange(FindActionsForHexInContext(ctx, 6, hex.hexRight));
+            if (!string.IsNullOrEmpty(hex.hexLeft))
+                actions.AddRange(FindActionsForHexInContext(ctx, 7, hex.hexLeft));
+            return actions.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private void RefreshSelectedControllerBinding(bool updateStatus)
+        {
+            if (_selectedCtrlButton == null) return;
+            if (!ControllerButtons.TryGetValue(_selectedCtrlButton, out var info)) return;
+
+            _lblCtrlButton.Text = info.display;
+
+            if (info.isStickDir)
+            {
+                _cmbCtrlAction.Enabled = false;
+                SelectActionInCombo(_cmbCtrlAction, null);
+
+                if (updateStatus)
+                {
+                    string dirAction = _selectedCtrlButton switch
+                    {
+                        "left_stick_up" => "Forward",
+                        "left_stick_down" => "Back",
+                        "left_stick_left" => "Strafe Left",
+                        "left_stick_right" => "Strafe Right",
+                        "right_stick_up" => "Jump",
+                        "right_stick_down" => "Toggle Sneak",
+                        "right_stick_left" => "Look Left",
+                        "right_stick_right" => "Look Right",
+                        _ => "Unknown"
+                    };
+                    _lblKbStatus.Text = $"{info.display}: {dirAction} (VR axis - not remappable here)";
+                    _lblKbStatus.ForeColor = Color.FromArgb(255, 200, 100);
+                }
+
+                _picBindingsController.Invalidate();
+                return;
+            }
+
+            _cmbCtrlAction.Enabled = true;
+            var boundActions = FindSelectedControllerActions();
+            SelectActionsInCombo(_cmbCtrlAction, boundActions);
+
+            if (updateStatus)
+            {
+                _lblKbStatus.Text = boundActions.Count > 0
+                    ? $"{info.display}: {string.Join(" + ", boundActions)}"
+                    : $"{info.display}: Not Used";
+                _lblKbStatus.ForeColor = Color.FromArgb(255, 200, 100);
+            }
+
+            _picBindingsController.Invalidate();
         }
 
         private bool _suppressCtrlActionChange = false;
@@ -2117,6 +2270,8 @@ namespace OpenCompositeConfigurator
             if (ctx == null || !_contextBindings.TryGetValue(ctx, out var actions)) return;
 
             string newAction = _cmbCtrlAction.SelectedItem?.ToString() ?? "(none)";
+            if (newAction.StartsWith("Multiple: ", StringComparison.Ordinal))
+                return;
             bool isNone = newAction == "(none)";
 
             // Determine which fields this button affects
@@ -2128,15 +2283,15 @@ namespace OpenCompositeConfigurator
             {
                 if (fields.Length <= 7) continue;
                 string actionName = fields[0];
-                if (hasRight && fields[6].Trim().ToLowerInvariant() == hex.hexRight.ToLowerInvariant())
+                if (hasRight && TryRemoveControllerHex(fields[6], hex.hexRight, out var rightValue))
                 {
-                    fields[6] = "0xff";
-                    RecordControllerChange(ctx, actionName, 6, "0xff");
+                    fields[6] = rightValue;
+                    RecordControllerChange(ctx, actionName, 6, rightValue);
                 }
-                if (hasLeft && fields[7].Trim().ToLowerInvariant() == hex.hexLeft.ToLowerInvariant())
+                if (hasLeft && TryRemoveControllerHex(fields[7], hex.hexLeft, out var leftValue))
                 {
-                    fields[7] = "0xff";
-                    RecordControllerChange(ctx, actionName, 7, "0xff");
+                    fields[7] = leftValue;
+                    RecordControllerChange(ctx, actionName, 7, leftValue);
                 }
             }
 
@@ -2168,6 +2323,18 @@ namespace OpenCompositeConfigurator
             _lblKbStatus.ForeColor = Color.FromArgb(200, 180, 80);
         }
 
+        private static bool TryRemoveControllerHex(string currentValue, string hexValue, out string newValue)
+        {
+            var remaining = currentValue
+                .Split(',')
+                .Select(part => part.Trim())
+                .Where(part => part.Length > 0 && NormalizeControllerHex(part) != NormalizeControllerHex(hexValue))
+                .ToList();
+
+            newValue = remaining.Count == 0 ? "0xff" : string.Join(",", remaining);
+            return newValue != currentValue.Trim();
+        }
+
         private void RecordControllerChange(string context, string action, int fieldIndex, string hexValue)
         {
             if (!_controllerChanges.ContainsKey(context))
@@ -2197,6 +2364,9 @@ namespace OpenCompositeConfigurator
 
             foreach (var kvp in ControllerButtons)
             {
+                if (!IsControllerButtonVisible(kvp.Key))
+                    continue;
+
                 float cx = offX + kvp.Value.pos.X * drawW;
                 float cy = offY + kvp.Value.pos.Y * drawH;
 
@@ -2555,25 +2725,22 @@ namespace OpenCompositeConfigurator
 
         private void TryLoadControlmapVR()
         {
-            if (string.IsNullOrEmpty(_gameDir)) return;
+            LoadControlmapTemplateModel(resetContextNames: false);
+            _controllerChanges.Clear();
 
-            // Check MO2 mod folder first (top level, not root\), then game Data folder
-            string filePath = "";
-            if (!string.IsNullOrEmpty(_mo2ModDir))
-            {
-                string modRoot = Directory.GetParent(_mo2ModDir)!.FullName;
-                string mo2Path = Path.Combine(modRoot, "interface", "controls", "pc", "controlmapvr.txt");
-                if (File.Exists(mo2Path)) filePath = mo2Path;
-            }
+            string filePath = GetExistingControlmapPath();
             if (string.IsNullOrEmpty(filePath))
             {
-                string gamePath = Path.Combine(_gameDir, "Data", "Interface", "Controls", "PC", "controlmapvr.txt");
-                if (File.Exists(gamePath)) filePath = gamePath;
+                UpdateAllKeyColors();
+                RefreshSelectedControllerBinding(updateStatus: false);
+                return;
             }
-            if (string.IsNullOrEmpty(filePath)) return;
 
             try
             {
+                LoadControlmapModelFromText(File.ReadAllText(filePath), resetContextNames: false);
+                RefreshKeyboardBindingsFromControlmapModel();
+
                 // Build reverse lookup: scancode -> key name
                 var scancodeToKey = KeyScancodes.ToDictionary(kvp => kvp.Value, kvp => kvp.Key);
 
@@ -2642,12 +2809,14 @@ namespace OpenCompositeConfigurator
                 }
 
                 UpdateAllKeyColors();
+                RefreshSelectedControllerBinding(updateStatus: false);
                 _lblKbStatus.Text = "Loaded existing controlmapvr.txt bindings";
                 _lblKbStatus.ForeColor = Color.FromArgb(100, 180, 255);
             }
             catch
             {
                 // Silently ignore load errors - just use defaults
+                RefreshSelectedControllerBinding(updateStatus: false);
             }
         }
 
@@ -2660,9 +2829,12 @@ namespace OpenCompositeConfigurator
 
         private void BtnVRDefaults_Click(object? sender, EventArgs e)
         {
+            if (!EnsureValidInstallForSave())
+                return;
+
             var result = MessageBox.Show(
-                "This will restore all bindings to the VR Safe Defaults (keyboard conflicts removed, mouse unbound).\n\nAre you sure?",
-                "Restore VR Safe Defaults",
+                "This will reset the Bindings page to the VR Safe Defaults.\n\nKeyboard conflicts are removed and mouse bindings are unbound.\n\nProceed?",
+                "Bindings Master Reset",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question);
 
@@ -2688,7 +2860,7 @@ namespace OpenCompositeConfigurator
             TryLoadControlmapVR();
             _chkDisableMouse.Checked = true;
 
-            _lblKbStatus.Text = "VR Safe Defaults restored! Restart the game to apply.";
+            _lblKbStatus.Text = "Bindings reset to VR Safe Defaults. Restart the game to apply.";
             _lblKbStatus.ForeColor = Color.FromArgb(100, 200, 100);
         }
 
@@ -2731,16 +2903,215 @@ namespace OpenCompositeConfigurator
             { "Vanilla", "OpenCompositeConfigurator.controlmapvr_template.txt" },
             { "VR Safe", "OpenCompositeConfigurator.controlmapvr_vrsafe.txt" },
             { "VRIK V2.1.0", "OpenCompositeConfigurator.controlmapvr_vrik.txt" },
-            { "VRIK Alternate", "OpenCompositeConfigurator.controlmapvr_vrik_alternate.txt" },
+            { "Snippy", "OpenCompositeConfigurator.controlmapvr_snippy.txt" },
             { "Kvite", "OpenCompositeConfigurator.controlmapvr_kvite.txt" },
+            { "Cangar", "OpenCompositeConfigurator.controlmapvr_cangar.txt" },
+            { "Cangar Spellsiphon", "OpenCompositeConfigurator.controlmapvr_cangar_spellsiphon.txt" },
             { "Vanilla + Oculus Touch Hotkeys", "OpenCompositeConfigurator.controlmapvr_oculus_optimized.txt" },
         };
+
+        private void CmbBindingPreset_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            UpdateDeletePresetEnabled();
+            PreviewSelectedBindingPreset();
+        }
+
+        private void PreviewSelectedBindingPreset()
+        {
+            string presetName = _cmbBindingPreset.SelectedItem?.ToString() ?? "";
+            if (string.IsNullOrEmpty(presetName)) return;
+            if (!TryResolveBindingPresetSource(presetName, out var resourceName, out var externalPath, out _)) return;
+            if (!TryBuildControllerPresetMergedText(resourceName, externalPath, out var presetText, out _)) return;
+
+            LoadControlmapModelFromText(presetText, resetContextNames: false);
+            RefreshSelectedControllerBinding(updateStatus: true);
+            _picBindingsController?.Invalidate();
+
+            if (_selectedCtrlButton != null)
+            {
+                _lblKbStatus.Text += $" ({presetName} preview; click Apply Preset to write)";
+                _lblKbStatus.ForeColor = Color.FromArgb(255, 200, 100);
+            }
+        }
+
+        private bool TryReadBindingPresetText(string presetName, out string presetText, out string error)
+        {
+            presetText = "";
+            error = "";
+
+            if (BindingPresetResources.TryGetValue(presetName, out var resourceName))
+            {
+                var asm = Assembly.GetExecutingAssembly();
+                using var stream = asm.GetManifestResourceStream(resourceName);
+                if (stream == null)
+                {
+                    error = $"Embedded preset '{resourceName}' not found";
+                    return false;
+                }
+                presetText = new StreamReader(stream).ReadToEnd();
+                return true;
+            }
+
+            if (_userBindingPresets.TryGetValue(presetName, out var path))
+            {
+                if (!File.Exists(path))
+                {
+                    error = $"User preset file not found: {path}";
+                    return false;
+                }
+                presetText = File.ReadAllText(path);
+                return true;
+            }
+
+            error = $"Unknown preset '{presetName}'";
+            return false;
+        }
+
+        private bool TryResolveBindingPresetSource(string presetName, out string? resourceName, out string? externalPath, out string error)
+        {
+            resourceName = null;
+            externalPath = null;
+            error = "";
+
+            if (BindingPresetResources.TryGetValue(presetName, out resourceName))
+                return true;
+
+            if (_userBindingPresets.TryGetValue(presetName, out externalPath))
+                return true;
+
+            error = $"Unknown preset '{presetName}'";
+            return false;
+        }
+
+        private bool TryBuildControllerPresetMergedText(string? presetResourceName, string? externalPresetPath, out string outputText, out string error)
+        {
+            outputText = "";
+            error = "";
+
+            static string BindingKey(string context, string eventName) => $"{context}\u001f{eventName}";
+
+            string savePath = GetControlmapSavePath();
+            var userBindings = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            if (File.Exists(savePath))
+            {
+                string currentContext = "";
+                foreach (string rawLine in File.ReadAllLines(savePath))
+                {
+                    string line = rawLine.TrimEnd('\r').TrimEnd();
+                    if (string.IsNullOrWhiteSpace(line)) { currentContext = ""; continue; }
+                    if (TryReadControlmapContextHeader(line, out var parsedContext))
+                    {
+                        currentContext = parsedContext;
+                        continue;
+                    }
+                    if (line.TrimStart().StartsWith("//")) continue;
+
+                    var fields = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+                    for (int i = 0; i < fields.Length; i++) fields[i] = fields[i].Trim();
+                    if (fields.Length < 4) continue;
+
+                    userBindings[BindingKey(currentContext, fields[0])] = fields;
+                }
+            }
+
+            string presetText;
+            if (!string.IsNullOrEmpty(externalPresetPath))
+            {
+                if (!File.Exists(externalPresetPath))
+                {
+                    error = $"User preset file not found: {externalPresetPath}";
+                    return false;
+                }
+                presetText = File.ReadAllText(externalPresetPath);
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(presetResourceName))
+                {
+                    error = "No preset source provided";
+                    return false;
+                }
+                var asm = Assembly.GetExecutingAssembly();
+                using var presetStream = asm.GetManifestResourceStream(presetResourceName);
+                if (presetStream == null)
+                {
+                    error = $"Embedded preset '{presetResourceName}' not found";
+                    return false;
+                }
+                presetText = new StreamReader(presetStream).ReadToEnd();
+            }
+
+            var output = new StringBuilder();
+            string presetContext = "";
+            foreach (string rawLine in presetText.Split('\n'))
+            {
+                string line = rawLine.TrimEnd('\r');
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    presetContext = "";
+                    output.Append(line);
+                    output.Append('\n');
+                    continue;
+                }
+
+                if (TryReadControlmapContextHeader(line, out var parsedContext))
+                {
+                    presetContext = parsedContext;
+                    output.Append(line);
+                    output.Append('\n');
+                    continue;
+                }
+
+                if (line.TrimStart().StartsWith("//"))
+                {
+                    output.Append(line);
+                    output.Append('\n');
+                    continue;
+                }
+
+                var presetFields = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < presetFields.Length; i++) presetFields[i] = presetFields[i].Trim();
+                if (presetFields.Length < 4)
+                {
+                    output.Append(line);
+                    output.Append('\n');
+                    continue;
+                }
+
+                string eventName = presetFields[0];
+                if (presetContext == "Favor" && eventName == "Activate")
+                    continue;
+
+                if (userBindings.TryGetValue(BindingKey(presetContext, eventName), out var userFields))
+                {
+                    if (userFields.Length > 1) presetFields[1] = userFields[1];
+                    if (userFields.Length > 2) presetFields[2] = userFields[2];
+                    if (userFields.Length > 3) presetFields[3] = userFields[3];
+                    if (presetFields.Length > 10 && userFields.Length > 10) presetFields[10] = userFields[10];
+                    if (presetFields.Length > 11 && userFields.Length > 11) presetFields[11] = userFields[11];
+                    if (presetFields.Length > 12 && userFields.Length > 12) presetFields[12] = userFields[12];
+                }
+
+                if (presetFields.Length > 2 && presetFields[2].Contains('!'))
+                    presetFields[2] = "0xff";
+
+                output.Append(string.Join('\t', presetFields));
+                output.Append('\n');
+            }
+
+            outputText = output.ToString()
+                .Replace("\r\n", "\n")
+                .Replace('\r', '\n')
+                .TrimEnd('\n')
+                .Replace("\n", "\r\n") + "\r\n";
+            return true;
+        }
 
         private void BtnApplyBindingPreset_Click(object? sender, EventArgs e)
         {
             string presetName = _cmbBindingPreset.SelectedItem?.ToString() ?? "VRIK V2.1.0";
 
-            // Resolve preset source: built-in embedded resource, or a user-imported
+            // Resolve preset source: built-in embedded resource, or a user-saved
             // file under %AppData%\OpenCompositeConfigurator\Presets\.
             string? resourceName = null;
             string? externalPath = null;
@@ -2779,13 +3150,21 @@ namespace OpenCompositeConfigurator
             _ini.Set("Configurator", "activeBindingPreset", presetName);
             _ini.Save();
 
+            var (bindingRepairs, _, _) = ValidateAndRepairControlmap();
+
             // Refresh in-memory state from the just-written controlmapvr.txt
             _keyBindings.Clear();
             LoadDefaultKeyBindings();
             TryLoadControlmapVR();
 
-            _lblKbStatus.Text = $"{presetName} controller bindings applied (keyboard preserved). Restart the game to apply.";
+            string repairMsg = bindingRepairs > 0 ? $" + {bindingRepairs} validation repair(s)" : "";
+            _lblKbStatus.Text = $"{presetName} controller bindings applied{repairMsg} (keyboard preserved). Restart the game to apply.";
             _lblKbStatus.ForeColor = Color.FromArgb(100, 200, 100);
+            if (_selectedCtrlButton != null)
+            {
+                RefreshSelectedControllerBinding(updateStatus: true);
+                _lblKbStatus.Text += $" ({presetName} applied)";
+            }
         }
 
         // Merge the chosen preset's controller fields with the user's existing
@@ -2872,7 +3251,7 @@ namespace OpenCompositeConfigurator
             }
 
             // Step 2: read the preset — embedded resource for built-ins, or external file
-            // for user-imported presets stored under %AppData%\OpenCompositeConfigurator\Presets\.
+            // for user-saved presets stored under %AppData%\OpenCompositeConfigurator\Presets\.
             string presetText;
             if (!string.IsNullOrEmpty(externalPresetPath))
             {
@@ -2966,16 +3345,6 @@ namespace OpenCompositeConfigurator
                 if (presetFields.Length > 2 && presetFields[2].Contains('!'))
                     presetFields[2] = "0xff";
 
-                if (TryGetSafeMainGameplayControllerFields(presetContext, eventName, out var safeControllerFields))
-                {
-                    for (int fieldOffset = 0; fieldOffset < safeControllerFields.Length; fieldOffset++)
-                    {
-                        int fieldIndex = 4 + fieldOffset;
-                        if (presetFields.Length > fieldIndex)
-                            presetFields[fieldIndex] = safeControllerFields[fieldOffset];
-                    }
-                }
-
                 output.Append(string.Join('\t', presetFields));
                 output.Append('\n');
             }
@@ -2998,7 +3367,7 @@ namespace OpenCompositeConfigurator
             return true;
         }
 
-        // Walks %AppData%\OpenCompositeConfigurator\Presets\ for user-imported
+        // Walks %AppData%\OpenCompositeConfigurator\Presets\ for user-saved
         // controlmapvr.txt files and adds them to the dropdown. File stem is the
         // preset name (e.g. "MyCustom.txt" appears as "MyCustom"). Built-ins
         // always sort first; user presets follow.
@@ -3015,88 +3384,6 @@ namespace OpenCompositeConfigurator
                 if (!_cmbBindingPreset.Items.Contains(name))
                     _cmbBindingPreset.Items.Add(name);
             }
-        }
-
-        private void BtnImportBindingPreset_Click(object? sender, EventArgs e)
-        {
-            using var dlg = new OpenFileDialog
-            {
-                Title = "Import controlmapvr.txt as a custom preset",
-                Filter = "controlmapvr.txt|controlmapvr*.txt|All files (*.*)|*.*",
-                CheckFileExists = true,
-                Multiselect = false
-            };
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
-            string sourcePath = dlg.FileName;
-
-            // Validate: at least a few non-comment lines with 4+ tab-separated fields.
-            // Cheap sanity check, not a full controlmap parser.
-            int validLines = 0;
-            foreach (string rawLine in File.ReadAllLines(sourcePath))
-            {
-                string line = rawLine.TrimEnd('\r').TrimEnd();
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                if (line.TrimStart().StartsWith("//")) continue;
-                var fields = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
-                if (fields.Length >= 4) validLines++;
-                if (validLines >= 5) break;
-            }
-            if (validLines < 5)
-            {
-                MessageBox.Show(
-                    "That file doesn't look like a controlmapvr.txt — needs at least 5 non-comment lines with 4+ tab-separated fields.",
-                    "Invalid file", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            // Ask for a preset name. Default to source filename minus extension.
-            string defaultName = Path.GetFileNameWithoutExtension(sourcePath);
-            if (string.IsNullOrWhiteSpace(defaultName) || defaultName.Equals("controlmapvr", StringComparison.OrdinalIgnoreCase))
-                defaultName = "Custom Preset";
-
-            string presetName = PromptForString(
-                "Name this preset (will appear in the dropdown):",
-                "Import Preset",
-                defaultName);
-            if (string.IsNullOrWhiteSpace(presetName)) return;
-
-            // Strip filesystem-unsafe chars; we use the name as a filename stem.
-            foreach (char c in Path.GetInvalidFileNameChars())
-                presetName = presetName.Replace(c, '_');
-
-            if (BindingPresetResources.ContainsKey(presetName))
-            {
-                MessageBox.Show($"'{presetName}' is a built-in preset name. Pick a different one.",
-                    "Name conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            string destPath = Path.Combine(GetUserPresetsDir(), presetName + ".txt");
-            if (File.Exists(destPath))
-            {
-                var ow = MessageBox.Show($"A user preset named '{presetName}' already exists. Overwrite?",
-                    "Confirm overwrite", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-                if (ow != DialogResult.Yes) return;
-            }
-
-            try
-            {
-                File.Copy(sourcePath, destPath, overwrite: true);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Could not save preset: {ex.Message}", "Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-
-            _userBindingPresets[presetName] = destPath;
-            if (!_cmbBindingPreset.Items.Contains(presetName))
-                _cmbBindingPreset.Items.Add(presetName);
-            _cmbBindingPreset.SelectedItem = presetName;
-
-            _lblKbStatus.Text = $"Imported preset '{presetName}'. Click Apply to use it.";
-            _lblKbStatus.ForeColor = Color.FromArgb(100, 200, 100);
         }
 
         private void BtnSaveAsBindingPreset_Click(object? sender, EventArgs e)
@@ -3252,33 +3539,23 @@ namespace OpenCompositeConfigurator
 
         private void BtnSaveBindings_Click(object? sender, EventArgs e)
         {
-            if (string.IsNullOrEmpty(_gameDir))
-            {
-                MessageBox.Show("Please select a game folder first (on Settings tab).", "No Folder Selected",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (!EnsureValidInstallForSave())
                 return;
-            }
 
             try
             {
                 SaveControlmapVR();
+                var (bindingRepairs, _, _) = ValidateAndRepairControlmap();
 
                 // Also save combos to opencomposite.ini (combos live there, not in controlmapvr.txt)
                 if (_combos.Count > 0 || _ini.GetAllInSection("combos").Count > 0)
                 {
-                    WriteCombosToIni();
-                    string iniPath = Path.Combine(_gameDir, "opencomposite.ini");
-                    _ini.Save(iniPath);
-
-                    if (!string.IsNullOrEmpty(_mo2ModDir))
-                    {
-                        try { _ini.Save(Path.Combine(_mo2ModDir, "opencomposite.ini")); }
-                        catch { }
-                    }
+                    SaveCombosToIniFiles();
                 }
 
                 string comboMsg = _combos.Count > 0 ? $" + {_combos.Count} combo(s)" : "";
-                _lblKbStatus.Text = $"Saved controlmapvr.txt{comboMsg}! Restart the game to apply binding changes.";
+                string repairMsg = bindingRepairs > 0 ? $" + {bindingRepairs} validation repair(s)" : "";
+                _lblKbStatus.Text = $"Saved controlmapvr.txt{comboMsg}{repairMsg}! Restart the game to apply binding changes.";
                 _lblKbStatus.ForeColor = Color.FromArgb(100, 200, 100);
                 _lblComboStatus.Text = _combos.Count > 0 ? "Combos saved" : "";
                 _lblComboStatus.ForeColor = Color.FromArgb(100, 200, 100);
@@ -3290,116 +3567,342 @@ namespace OpenCompositeConfigurator
             }
         }
 
-        // Controller-only save companion to BtnSaveBindings_Click. Writes the full
-        // controlmapvr.txt and combos like the All-Bindings save, but then immediately
-        // overlays the keyboard / mouse / gamepad fields from a snapshot we took
-        // BEFORE the save — so any in-memory keyboard edits the user made aren't
-        // committed. Use this when the user wants their controller refactor to
-        // ship without touching the keyboard layout already on disk.
-        private void BtnSaveControllerCombos_Click(object? sender, EventArgs e)
+        private void SaveCombosToIniFiles()
         {
-            if (string.IsNullOrEmpty(_gameDir))
-            {
-                MessageBox.Show("Please select a game folder first (on Settings tab).", "No Folder Selected",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
+            WriteCombosToIni();
 
+            foreach (string path in GetOpenCompositeIniSavePaths(createDirectories: true))
+                _ini.Save(path);
+        }
+
+        private void AutoSaveCombos(string statusText)
+        {
             try
             {
-                string filePath = GetControlmapSavePath();
-
-                // Step 1: snapshot disk's keyboard / mouse / gamepad per action name.
-                var diskKbSnap = new Dictionary<string, (string kb, string mouse, string gamepad)>(
-                    StringComparer.OrdinalIgnoreCase);
-                if (File.Exists(filePath))
-                {
-                    foreach (string rawLine in File.ReadAllLines(filePath))
-                    {
-                        string line = rawLine.TrimEnd('\r').TrimEnd();
-                        if (string.IsNullOrWhiteSpace(line)) continue;
-                        if (line.TrimStart().StartsWith("//")) continue;
-                        var fields = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
-                        if (fields.Length < 4) continue;
-                        diskKbSnap[fields[0].Trim()] = (fields[1].Trim(), fields[2].Trim(), fields[3].Trim());
-                    }
-                }
-
-                // Step 2: full in-memory save (this would write keyboard edits too).
-                SaveControlmapVR();
-
-                // Step 3: overlay keyboard fields from the snapshot back onto the saved file.
-                if (diskKbSnap.Count > 0 && File.Exists(filePath))
-                {
-                    var savedLines = File.ReadAllLines(filePath);
-                    var output = new StringBuilder();
-                    foreach (string rawLine in savedLines)
-                    {
-                        string line = rawLine.TrimEnd('\r');
-                        if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith("//"))
-                        {
-                            output.Append(line);
-                            output.Append('\n');
-                            continue;
-                        }
-                        var fields = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
-                        for (int i = 0; i < fields.Length; i++) fields[i] = fields[i].Trim();
-                        if (fields.Length < 4)
-                        {
-                            output.Append(line);
-                            output.Append('\n');
-                            continue;
-                        }
-                        if (diskKbSnap.TryGetValue(fields[0], out var snap))
-                        {
-                            fields[1] = snap.kb;
-                            fields[2] = snap.mouse;
-                            fields[3] = snap.gamepad;
-                        }
-                        output.Append(string.Join('\t', fields));
-                        output.Append('\n');
-                    }
-                    File.WriteAllText(filePath, output.ToString());
-                }
-
-                // Step 4: combos go to opencomposite.ini just like the full save.
-                if (_combos.Count > 0 || _ini.GetAllInSection("combos").Count > 0)
-                {
-                    WriteCombosToIni();
-                    string iniPath = Path.Combine(_gameDir, "opencomposite.ini");
-                    _ini.Save(iniPath);
-                    if (!string.IsNullOrEmpty(_mo2ModDir))
-                    {
-                        try { _ini.Save(Path.Combine(_mo2ModDir, "opencomposite.ini")); }
-                        catch { }
-                    }
-                }
-
-                string comboMsg = _combos.Count > 0 ? $" + {_combos.Count} combo(s)" : "";
-                _lblKbStatus.Text = $"Saved controller bindings{comboMsg} (keyboard preserved). Restart the game to apply.";
-                _lblKbStatus.ForeColor = Color.FromArgb(100, 200, 100);
-                _lblComboStatus.Text = _combos.Count > 0 ? "Combos saved" : "";
+                SaveCombosToIniFiles();
+                _lblComboStatus.Text = statusText;
                 _lblComboStatus.ForeColor = Color.FromArgb(100, 200, 100);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Failed to save: {ex.Message}", "Error",
+                _lblComboStatus.Text = "Combo save failed";
+                _lblComboStatus.ForeColor = Color.FromArgb(255, 120, 120);
+                MessageBox.Show($"Failed to auto-save combos: {ex.Message}", "Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private string GetConfiguratorDir()
+        {
+            return Path.GetDirectoryName(Application.ExecutablePath) ?? "";
+        }
+
+        private bool IsInstalledModFolderValid()
+        {
+            string exeDir = GetConfiguratorDir();
+            return Directory.Exists(Path.Combine(exeDir, "root")) &&
+                   Directory.Exists(Path.Combine(exeDir, "interface"));
+        }
+
+        private string GetInvalidInstallMessage()
+        {
+            return "OCU Configurator is not running from the OCU mod folder.\n\n" +
+                   "Move it back beside the 'root' and 'interface' folders, then create a desktop shortcut to the EXE. " +
+                   "Do not copy the EXE to your desktop or another folder.";
+        }
+
+        private bool EnsureValidInstallForSave()
+        {
+            if (IsInstalledModFolderValid())
+                return true;
+
+            string message = GetInvalidInstallMessage();
+            _lblStatus.Text = "Save blocked - Configurator is outside the OCU mod folder.";
+            _lblStatus.ForeColor = Color.FromArgb(255, 100, 100);
+            _lblVideoStatus.Text = _lblStatus.Text;
+            _lblVideoStatus.ForeColor = _lblStatus.ForeColor;
+            MessageBox.Show(message, "Invalid Configurator Location",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        private string GetInstalledModContentDir()
+        {
+            return GetConfiguratorDir();
+        }
+
+        private IEnumerable<string> GetControlmapCandidatePaths(bool createPrimary)
+        {
+            if (!IsInstalledModFolderValid())
+                yield break;
+
+            string modControlsPath = Path.Combine(GetInstalledModContentDir(), "interface", "controls", "pc");
+            if (createPrimary)
+                Directory.CreateDirectory(modControlsPath);
+            yield return Path.Combine(modControlsPath, "controlmapvr.txt");
+        }
+
+        private string GetExistingControlmapPath()
+        {
+            foreach (string path in GetControlmapCandidatePaths(createPrimary: false))
+            {
+                if (File.Exists(path))
+                    return path;
+            }
+
+            return "";
         }
 
         private string GetControlmapSavePath()
         {
-            string controlsPath;
-            if (!string.IsNullOrEmpty(_mo2ModDir))
-            {
-                string modRoot = Directory.GetParent(_mo2ModDir)!.FullName;
-                controlsPath = Path.Combine(modRoot, "interface", "controls", "pc");
-            }
-            else
-                controlsPath = Path.Combine(_gameDir, "Data", "Interface", "Controls", "PC");
+            if (!IsInstalledModFolderValid())
+                throw new InvalidOperationException(GetInvalidInstallMessage());
+
+            string controlsPath = Path.Combine(GetInstalledModContentDir(), "interface", "controls", "pc");
             Directory.CreateDirectory(controlsPath);
             return Path.Combine(controlsPath, "controlmapvr.txt");
+        }
+
+        private string GetInstalledRootDir()
+        {
+            string localRoot = Path.Combine(GetConfiguratorDir(), "root");
+            if (IsInstalledModFolderValid())
+                return localRoot;
+
+            return "";
+        }
+
+        private IEnumerable<string> GetOpenCompositeIniSavePaths(bool createDirectories)
+        {
+            if (!IsInstalledModFolderValid())
+                throw new InvalidOperationException(GetInvalidInstallMessage());
+
+            string installedRoot = GetInstalledRootDir();
+            if (createDirectories)
+                Directory.CreateDirectory(installedRoot);
+
+            return new[] { Path.Combine(installedRoot, "opencomposite.ini") };
+        }
+
+        private string GetOpenCompositeIniLoadPath()
+        {
+            string installedRoot = GetInstalledRootDir();
+            if (!string.IsNullOrEmpty(installedRoot))
+            {
+                string installedPath = Path.Combine(installedRoot, "opencomposite.ini");
+                if (File.Exists(installedPath) || string.IsNullOrEmpty(_gameDir))
+                    return installedPath;
+            }
+
+            return "";
+        }
+
+        private string DescribeIniSaveLocations(IReadOnlyCollection<string> savePaths)
+        {
+            return "installed OCU mod folder";
+        }
+
+        private void BtnValidateBindings_Click(object? sender, EventArgs e)
+        {
+            try
+            {
+                var (repairs, warnings, message) = ValidateAndRepairControlmap();
+                if (repairs > 0)
+                {
+                    _keyBindings.Clear();
+                    LoadDefaultKeyBindings();
+                    TryLoadControlmapVR();
+                }
+
+                _lblKbStatus.Text = repairs > 0
+                    ? $"Validated bindings: {repairs} repair(s). Restart the game to apply."
+                    : warnings > 0
+                        ? $"Validated bindings: {warnings} warning(s)."
+                        : "Validated bindings: no known crash patterns found.";
+                _lblKbStatus.ForeColor = repairs > 0
+                    ? Color.FromArgb(100, 200, 100)
+                    : warnings > 0
+                        ? Color.FromArgb(255, 200, 100)
+                        : Color.FromArgb(100, 180, 255);
+
+                MessageBox.Show(message, "Binding Validation",
+                    MessageBoxButtons.OK,
+                    warnings > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Binding validation failed: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private (int repairs, int warnings, string message) ValidateAndRepairControlmap()
+        {
+            string filePath = GetControlmapSavePath();
+            if (!File.Exists(filePath))
+                return (0, 1, $"No live controlmapvr.txt was found at:\n{filePath}");
+
+            string[] sourceLines = File.ReadAllLines(filePath);
+            var outputLines = new List<string>(sourceLines.Length);
+            var repairNotes = new List<string>();
+            var warningNotes = new List<string>();
+            var seenRows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            int repairs = 0;
+            int mouseAliasRepairs = 0;
+            int favorActivateRepairs = 0;
+            string currentContext = "";
+
+            foreach (string rawLine in sourceLines)
+            {
+                string line = rawLine.TrimEnd('\r');
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    currentContext = "";
+                    outputLines.Add(line);
+                    continue;
+                }
+
+                if (TryReadControlmapContextHeader(line, out var parsedContext))
+                {
+                    currentContext = parsedContext;
+                    outputLines.Add(line);
+                    continue;
+                }
+
+                if (line.TrimStart().StartsWith("//"))
+                {
+                    outputLines.Add(line);
+                    continue;
+                }
+
+                var fields = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < fields.Length; i++) fields[i] = fields[i].Trim();
+
+                if (fields.Length < 4)
+                {
+                    warningNotes.Add($"Malformed row in '{currentContext}': {TrimForReport(line)}");
+                    outputLines.Add(line);
+                    continue;
+                }
+
+                string actionName = fields[0];
+                seenRows.Add($"{currentContext}\u001f{actionName}");
+
+                if (currentContext == "Favor" && actionName == "Activate")
+                {
+                    favorActivateRepairs++;
+                    repairs++;
+                    continue;
+                }
+
+                if (fields.Length < 8)
+                    warningNotes.Add($"Short row in '{currentContext}' for '{actionName}' has only {fields.Length} fields.");
+
+                if (fields.Length > 2 && fields[2].Contains('!'))
+                {
+                    var (mouseStart, mouseEnd) = FindFieldBounds(line, 2);
+                    if (mouseStart < line.Length)
+                    {
+                        line = line[..mouseStart] + "0xff" + line[mouseEnd..];
+                        mouseAliasRepairs++;
+                        repairs++;
+                    }
+                }
+
+                outputLines.Add(line);
+            }
+
+            foreach (var (context, action) in CriticalControlmapRows)
+            {
+                if (!seenRows.Contains($"{context}\u001f{action}"))
+                    warningNotes.Add($"Missing critical row: {context} / {action}");
+            }
+
+            if (repairs > 0)
+            {
+                string backupPath = filePath + ".validate-" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".bak";
+                File.Copy(filePath, backupPath, overwrite: false);
+                File.WriteAllLines(filePath, outputLines);
+
+                if (favorActivateRepairs > 0)
+                    repairNotes.Add($"Removed {favorActivateRepairs} invalid Favor/Activate row(s).");
+                if (mouseAliasRepairs > 0)
+                    repairNotes.Add($"Replaced {mouseAliasRepairs} symbolic mouse alias field(s) with 0xff.");
+                repairNotes.Add($"Backup written to: {backupPath}");
+            }
+
+            var report = new StringBuilder();
+            report.AppendLine($"Validated: {filePath}");
+            report.AppendLine();
+
+            if (repairNotes.Count > 0)
+            {
+                report.AppendLine("Repairs:");
+                foreach (string note in repairNotes.Take(12))
+                    report.AppendLine(" - " + note);
+                if (repairNotes.Count > 12)
+                    report.AppendLine($" - ...and {repairNotes.Count - 12} more.");
+                report.AppendLine();
+            }
+
+            if (warningNotes.Count > 0)
+            {
+                report.AppendLine("Warnings:");
+                foreach (string note in warningNotes.Take(12))
+                    report.AppendLine(" - " + note);
+                if (warningNotes.Count > 12)
+                    report.AppendLine($" - ...and {warningNotes.Count - 12} more.");
+                report.AppendLine();
+            }
+
+            if (repairNotes.Count == 0 && warningNotes.Count == 0)
+                report.AppendLine("No known startup-crash binding patterns found.");
+
+            return (repairs, warningNotes.Count, report.ToString());
+        }
+
+        private static readonly (string context, string action)[] CriticalControlmapRows =
+        {
+            ("Main Gameplay", "Activate"),
+            ("Main Gameplay", "Ready Weapon"),
+            ("Main Gameplay", "Tween Menu"),
+            ("Main Gameplay", "Shout"),
+            ("Main Gameplay", "Favorites"),
+            ("Menu Mode", "Cancel"),
+        };
+
+        private static bool TryReadControlmapContextHeader(string line, out string context)
+        {
+            context = "";
+            if (!line.TrimStart().StartsWith("//"))
+                return false;
+
+            string comment = line.TrimStart().TrimStart('/').Trim();
+            int tabIdx = comment.IndexOf('\t');
+            if (tabIdx >= 0) comment = comment[..tabIdx].Trim();
+
+            bool isContext = comment.Length > 0 && !comment.StartsWith("1st") && !comment.StartsWith("2nd") &&
+                             !comment.StartsWith("3rd") && !comment.StartsWith("4th") && !comment.StartsWith("5th") &&
+                             !comment.StartsWith("6th") && !comment.StartsWith("7th") && !comment.StartsWith("8th") &&
+                             !comment.StartsWith("9th") && !comment.StartsWith("10th") && !comment.StartsWith("11th") &&
+                             !comment.StartsWith("12th") && !comment.StartsWith("13th") && !comment.StartsWith("14th") &&
+                             !comment.StartsWith("15th") && !comment.StartsWith("16th") && !comment.StartsWith("17th") &&
+                             !comment.StartsWith("18th") && !comment.StartsWith("19th") && !comment.StartsWith("20th") &&
+                             !comment.StartsWith("Blank") && !comment.StartsWith("See") &&
+                             !comment.StartsWith("(Vive") && !comment.StartsWith("(Oculus") && !comment.StartsWith("(Windows") &&
+                             !comment.StartsWith("\"") && !comment.StartsWith("If ");
+            if (!isContext)
+                return false;
+
+            context = comment;
+            return true;
+        }
+
+        private static string TrimForReport(string value)
+        {
+            value = value.Trim();
+            return value.Length <= 96 ? value : value[..96] + "...";
         }
 
         /// <summary>
@@ -3424,19 +3927,6 @@ namespace OpenCompositeConfigurator
             int end = pos;
             while (end < line.Length && line[end] != '\t') end++;
             return (start, end);
-        }
-
-        private static bool TryGetSafeMainGameplayControllerFields(string context, string actionName, out string[] fields)
-        {
-            if (context == "Main Gameplay" &&
-                SafeMainGameplayControllerFields.TryGetValue(actionName, out var safeFields))
-            {
-                fields = safeFields;
-                return true;
-            }
-
-            fields = Array.Empty<string>();
-            return false;
         }
 
         private void SaveControlmapVR()
@@ -3568,17 +4058,6 @@ namespace OpenCompositeConfigurator
                     }
                 }
 
-                if (TryGetSafeMainGameplayControllerFields(currentContext, actionName, out var safeControllerFields))
-                {
-                    for (int fieldOffset = safeControllerFields.Length - 1; fieldOffset >= 0; fieldOffset--)
-                    {
-                        int fieldIdx = 4 + fieldOffset;
-                        var (fStart, fEnd) = FindFieldBounds(line, fieldIdx);
-                        if (fStart < line.Length)
-                            line = line[..fStart] + safeControllerFields[fieldOffset] + line[fEnd..];
-                    }
-                }
-
                 sourceLines[i] = line;
             }
 
@@ -3592,6 +4071,9 @@ namespace OpenCompositeConfigurator
 
         private void ResetControlmapToDefaults()
         {
+            if (!EnsureValidInstallForSave())
+                return;
+
             var result = MessageBox.Show(
                 "This will restore ALL bindings (keyboard, mouse, and VR controllers) to original game defaults.\n\nAre you sure?",
                 "Reset to Game Defaults",
@@ -3776,13 +4258,12 @@ namespace OpenCompositeConfigurator
                 return;
             }
 
-            using var dlg = new ComboEditForm(KeyScancodes, BuildActionsByContext());
+            using var dlg = new ComboEditForm(KeyScancodes);
             if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
             {
                 _combos.Add(dlg.Result);
                 RebuildComboList();
-                _lblComboStatus.Text = "Combo added \u2014 click Save to apply!";
-                _lblComboStatus.ForeColor = Color.FromArgb(255, 200, 40);
+                AutoSaveCombos("Combo added");
             }
         }
 
@@ -3817,13 +4298,12 @@ namespace OpenCompositeConfigurator
         {
             if (index < 0 || index >= _combos.Count) return;
 
-            using var dlg = new ComboEditForm(KeyScancodes, BuildActionsByContext(), _combos[index]);
+            using var dlg = new ComboEditForm(KeyScancodes, _combos[index]);
             if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
             {
                 _combos[index] = dlg.Result;
                 RebuildComboList();
-                _lblComboStatus.Text = "Combo updated \u2014 click Save to apply!";
-                _lblComboStatus.ForeColor = Color.FromArgb(255, 200, 40);
+                AutoSaveCombos("Combo updated");
             }
         }
 
@@ -3833,8 +4313,7 @@ namespace OpenCompositeConfigurator
 
             _combos.RemoveAt(index);
             RebuildComboList();
-            _lblComboStatus.Text = "Combo removed \u2014 click Save to apply!";
-            _lblComboStatus.ForeColor = Color.FromArgb(255, 200, 40);
+            AutoSaveCombos("Combo removed");
         }
 
         private void RebuildComboList()
@@ -5227,25 +5706,11 @@ namespace OpenCompositeConfigurator
             return backupPath;
         }
 
-        private void BtnBrowse_Click(object? sender, EventArgs e)
-        {
-            using var dlg = new FolderBrowserDialog
-            {
-                Description = "Select your game installation folder (e.g., C:\\Games\\SteamLibrary\\steamapps\\common\\SkyrimVR)",
-                ShowNewFolderButton = false
-            };
-
-            if (dlg.ShowDialog() == DialogResult.OK)
-            {
-                _gameDir = dlg.SelectedPath;
-                _txtPath.Text = _gameDir;
-                SaveConfiguratorSettings();
-                LoadFromDir();
-            }
-        }
-
         private void BtnMasterReset_Click(object? sender, EventArgs e)
         {
+            if (!EnsureValidInstallForSave())
+                return;
+
             var result = MessageBox.Show(
                 "This will reset all settings and key bindings back to defaults.\n\nAre you sure?",
                 "Master Reset",
@@ -5262,15 +5727,8 @@ namespace OpenCompositeConfigurator
 
             // Write defaults to both ini locations
             WriteToIni();
-            if (!string.IsNullOrEmpty(_gameDir))
-            {
-                string path = Path.Combine(_gameDir, "opencomposite.ini");
+            foreach (string path in GetOpenCompositeIniSavePaths(createDirectories: true))
                 _ini.Save(path);
-            }
-            if (!string.IsNullOrEmpty(_mo2ModDir))
-            {
-                try { _ini.Save(Path.Combine(_mo2ModDir, "opencomposite.ini")); } catch { }
-            }
 
             // Reset controlmapvr.txt to embedded default template
             if (_gameType == "skyrim")
@@ -5295,16 +5753,117 @@ namespace OpenCompositeConfigurator
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
-        private void BtnSave_Click(object? sender, EventArgs e)
+        private void BtnSettingsMasterReset_Click(object? sender, EventArgs e)
         {
-            if (string.IsNullOrEmpty(_gameDir))
+            if (!EnsureValidInstallForSave())
+                return;
+
+            var result = MessageBox.Show(
+                "This will reset only the Settings page and save opencomposite.ini.\n\nBindings are not touched.\n\nProceed?",
+                "Settings Master Reset",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+
+            if (result != DialogResult.Yes) return;
+
+            try
             {
-                _lblStatus.Text = "No game folder selected \u2014 click Browse first";
-                _lblStatus.ForeColor = Color.FromArgb(255, 100, 100);
+                ResetSettingsPageToDefaults();
+                WriteToIni();
+                var savePaths = GetOpenCompositeIniSavePaths(createDirectories: true).ToList();
+                foreach (string path in savePaths)
+                    _ini.Save(path);
+
+                string time = DateTime.Now.ToString("h:mm:ss tt");
+                string locationMsg = $"Settings reset and saved to {DescribeIniSaveLocations(savePaths)} at {time}";
+                _lblStatus.Text = $"{locationMsg} - restart game for changes";
+                _lblStatus.ForeColor = Color.FromArgb(255, 185, 35);
                 _lblVideoStatus.Text = _lblStatus.Text;
                 _lblVideoStatus.ForeColor = _lblStatus.ForeColor;
-                return;
             }
+            catch (Exception ex)
+            {
+                _lblStatus.Text = $"Settings reset failed: {ex.Message}";
+                _lblStatus.ForeColor = Color.FromArgb(255, 100, 100);
+            }
+        }
+
+        private void ResetSettingsPageToDefaults()
+        {
+            _isLoading = true;
+            try
+            {
+                _chkShortcutEnabled.Checked = true;
+                foreach (var kvp in _btnCheckboxMap)
+                    kvp.Value().Checked = false;
+                _chkLeftStick.Checked = true;
+                _rdoX1.Checked = false;
+                _rdoX2.Checked = true;
+                _rdoX3.Checked = false;
+                _rdoX4.Checked = false;
+                _nudTiming.Value = 500m;
+                _nudDisplayTilt.Value = 22.5m;
+                _nudDisplayOpacity.Value = 30m;
+                _nudDisplayScale.Value = 100m;
+                _chkSoundsEnabled.Checked = true;
+                _nudSoundVolume.Value = 50m;
+                _nudPressVolume.Value = 50m;
+                _nudKbHapticStrength.Value = 50m;
+
+                _nudSuperSample.Value = 1.0m;
+                _chkRenderHands.Checked = true;
+                _chkHaptics.Checked = true;
+                _nudHapticStrength.Value = 0.10m;
+                _chkHiddenMesh.Checked = true;
+                _chkInvertShaders.Checked = false;
+                _chkDx10.Checked = false;
+                _chkAudioSwitch.Checked = false;
+                _txtAudioDevice.Text = "quest";
+
+                _chkInputSmoothing.Checked = false;
+                _nudInputWindow.Value = 5m;
+                _chkControllerSmoothing.Checked = true;
+                _nudPosSmoothMinCutoff.Value = 1.25m;
+                _nudPosSmoothBeta.Value = 20.0m;
+                _nudRotSmoothMinCutoff.Value = 1.50m;
+                _nudRotSmoothBeta.Value = 0.2m;
+                SetControllerSmoothingControlsEnabled(true);
+
+                _chkDisableTriggerTouch.Checked = true;
+                _chkDisableThumbrestTouch.Checked = true;
+                _chkDisableTrackpad.Checked = false;
+                _chkVRIKKnuckles.Checked = false;
+                _chkGpuTiming.Checked = true;
+                _nudLeftDeadZone.Value = 0m;
+                _nudRightDeadZone.Value = 0m;
+
+                ResetAxisControls(updateStatus: false);
+                UpdateTimingLabel();
+                _picControllers?.Invalidate();
+                _picBindingsController?.Invalidate();
+            }
+            finally
+            {
+                _isLoading = false;
+            }
+        }
+
+        private void SetControllerSmoothingControlsEnabled(bool enabled)
+        {
+            _nudPosSmoothMinCutoff.Enabled = enabled;
+            _nudPosSmoothBeta.Enabled = enabled;
+            _nudRotSmoothMinCutoff.Enabled = enabled;
+            _nudRotSmoothBeta.Enabled = enabled;
+            _lblPosCutoff.Enabled = enabled;
+            _lblPosBeta.Enabled = enabled;
+            _lblRotCutoff.Enabled = enabled;
+            _lblRotBeta.Enabled = enabled;
+        }
+
+        private void BtnSave_Click(object? sender, EventArgs e)
+        {
+            if (!EnsureValidInstallForSave())
+                return;
 
             var selected = GetSelectedButtons();
             if (selected.Count == 0 && _chkShortcutEnabled.Checked)
@@ -5319,25 +5878,12 @@ namespace OpenCompositeConfigurator
             try
             {
                 WriteToIni();
-                string path = Path.Combine(_gameDir, "opencomposite.ini");
-                _ini.Save(path);
-
-                bool savedToMO2 = false;
-                if (!string.IsNullOrEmpty(_mo2ModDir))
-                {
-                    try
-                    {
-                        string mo2Path = Path.Combine(_mo2ModDir, "opencomposite.ini");
-                        _ini.Save(mo2Path);
-                        savedToMO2 = true;
-                    }
-                    catch { }
-                }
+                var savePaths = GetOpenCompositeIniSavePaths(createDirectories: true).ToList();
+                foreach (string path in savePaths)
+                    _ini.Save(path);
 
                 string time = DateTime.Now.ToString("h:mm:ss tt");
-                string locationMsg = savedToMO2
-                    ? $"Saved to game folder and MO2 mod folder at {time}"
-                    : $"Saved to game folder at {time}";
+                string locationMsg = $"Saved to {DescribeIniSaveLocations(savePaths)} at {time}";
                 _lblStatus.Text = $"{locationMsg} \u2014 restart game for changes";
                 _lblStatus.ForeColor = Color.FromArgb(100, 200, 100);
                 _lblVideoStatus.Text = $"{locationMsg} \u2014 restart game for changes";
@@ -5354,24 +5900,26 @@ namespace OpenCompositeConfigurator
 
         private void BtnReload_Click(object? sender, EventArgs e)
         {
-            if (string.IsNullOrEmpty(_gameDir))
-            {
-                MessageBox.Show("Please select a game folder first.", "No Folder Selected",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
             LoadFromDir();
         }
 
         private void LoadFromDir()
         {
-            // Prefer MO2 mod folder (root\) since that's where the DLL reads from
-            string path = Path.Combine(_gameDir, "opencomposite.ini");
-            string? mo2Path = !string.IsNullOrEmpty(_mo2ModDir)
-                ? Path.Combine(_mo2ModDir, "opencomposite.ini")
-                : null;
+            string loadPath = GetOpenCompositeIniLoadPath();
+            if (string.IsNullOrEmpty(loadPath))
+            {
+                _ini.Load("__invalid_install__");
+                _isLoading = true;
+                _lblStatus.Text = "Invalid install - Configurator EXE must stay in the OCU mod folder.";
+                _lblStatus.ForeColor = Color.FromArgb(255, 100, 100);
+                _lblVideoStatus.Text = _lblStatus.Text;
+                _lblVideoStatus.ForeColor = _lblStatus.ForeColor;
+                ReadFromIni();
+                TryLoadControlmapVR();
+                _isLoading = false;
+                return;
+            }
 
-            string loadPath = (mo2Path != null && File.Exists(mo2Path)) ? mo2Path : path;
             _ini.Load(loadPath);
             _isLoading = true;
 
@@ -5390,6 +5938,7 @@ namespace OpenCompositeConfigurator
 
             // Also load key bindings from controlmapvr.txt if it exists
             TryLoadControlmapVR();
+            _isLoading = false;
 
         }
 
@@ -5452,7 +6001,7 @@ namespace OpenCompositeConfigurator
             _chkInputSmoothing.Checked = ParseBool(_ini.Get("", "enableInputSmoothing", "false"));
             if (int.TryParse(_ini.Get("", "inputWindowSize", "5"), out int iw))
                 _nudInputWindow.Value = Math.Clamp(iw, 1, 20);
-            _chkControllerSmoothing.Checked = ParseBool(_ini.Get("", "enableControllerSmoothing", "false"));
+            _chkControllerSmoothing.Checked = ParseBool(_ini.Get("", "enableControllerSmoothing", "true"));
             if (float.TryParse(_ini.Get("", "posSmoothMinCutoff", "1.25"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float pmc))
                 _nudPosSmoothMinCutoff.Value = (decimal)Math.Clamp(pmc, 0.01f, 20f);
             if (float.TryParse(_ini.Get("", "posSmoothBeta", "20"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float pb))
@@ -5474,10 +6023,11 @@ namespace OpenCompositeConfigurator
                 _lblRotBeta.Enabled = en;
             }
             _chkDisableTriggerTouch.Checked = ParseBool(_ini.Get("", "disableTriggerTouch", "true"));
+            _chkDisableThumbrestTouch.Checked = ParseBool(_ini.Get("", "disableThumbrestTouch", "true"));
             _chkDisableTrackpad.Checked = ParseBool(_ini.Get("", "disableTrackPad", "false"));
             _chkVRIKKnuckles.Checked = ParseBool(_ini.Get("", "enableVRIKKnucklesTrackPadSupport", "false"));
 
-            // Load any user-imported presets from %AppData% before we try to restore
+            // Load any user-saved presets from %AppData% before we try to restore
             // the saved selection — otherwise a saved user-preset name wouldn't be
             // findable in the dropdown items.
             LoadUserBindingPresets();
@@ -5779,6 +6329,7 @@ namespace OpenCompositeConfigurator
                 _ini.Set("", "rotSmoothMinCutoff", _nudRotSmoothMinCutoff.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
                 _ini.Set("", "rotSmoothBeta", _nudRotSmoothBeta.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
                 _ini.Set("", "disableTriggerTouch", _chkDisableTriggerTouch.Checked ? "true" : "false");
+                _ini.Set("", "disableThumbrestTouch", _chkDisableThumbrestTouch.Checked ? "true" : "false");
                 _ini.Set("", "disableTrackPad", _chkDisableTrackpad.Checked ? "true" : "false");
                 _ini.Set("", "enableVRIKKnucklesTrackPadSupport", _chkVRIKKnuckles.Checked ? "true" : "false");
                 _ini.Set("", "enableGpuTiming", _chkGpuTiming.Checked ? "true" : "false");
@@ -5901,26 +6452,11 @@ namespace OpenCompositeConfigurator
             string exeDir = Path.GetDirectoryName(exePath) ?? "";
 
             string rootSubDir = Path.Combine(exeDir, "root");
-            if (exeDir.Contains("\\mods\\", StringComparison.OrdinalIgnoreCase) &&
-                Directory.Exists(rootSubDir))
+            string interfaceSubDir = Path.Combine(exeDir, "interface");
+            if (Directory.Exists(rootSubDir) && Directory.Exists(interfaceSubDir))
             {
                 _mo2ModDir = rootSubDir;
             }
-
-            string settingsPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "OpenCompositeConfigurator", "settings.ini");
-
-            if (!File.Exists(settingsPath)) return;
-
-            try
-            {
-                var settings = new IniFile();
-                settings.Load(settingsPath);
-                string key = _gameType == "skyrim" ? "skyrimGameDir" : "fallout4GameDir";
-                _gameDir = settings.Get("paths", key, "");
-            }
-            catch { }
         }
 
         private void SaveConfiguratorSettings()
@@ -5944,12 +6480,24 @@ namespace OpenCompositeConfigurator
 
         private void ApplyCurrentGamePaths()
         {
-            _txtPath.Text = string.IsNullOrEmpty(_gameDir)
-                ? "(No folder selected \u2014 click Browse)"
-                : _gameDir;
+            _lblInstallNotice.Text = "Keep this EXE in the OCU mod folder. Create a desktop shortcut; do not move the EXE.";
+            _lblInstallNotice.ForeColor = Color.FromArgb(180, 180, 180);
+            _lblInstallNotice.BackColor = Color.Transparent;
 
-            if (!string.IsNullOrEmpty(_gameDir))
-                LoadFromDir();
+            if (!IsInstalledModFolderValid())
+            {
+                if (!_installWarningShown)
+                {
+                    _installWarningShown = true;
+                    BeginInvoke(new Action(() =>
+                    {
+                        MessageBox.Show(GetInvalidInstallMessage(), "Invalid Configurator Location",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }));
+                }
+            }
+
+            LoadFromDir();
         }
 
         private void SetDefaults()
@@ -6022,6 +6570,11 @@ namespace OpenCompositeConfigurator
 
         private void BtnResetAxis_Click(object? sender, EventArgs e)
         {
+            ResetAxisControls(updateStatus: true);
+        }
+
+        private void ResetAxisControls(bool updateStatus)
+        {
             _chkAdjustTilt.Checked = false;
             _nudTiltDeg.Value = 0m;
             _chkLeftRotation.Checked = false;
@@ -6036,8 +6589,11 @@ namespace OpenCompositeConfigurator
             _nudLeftLaserRotX.Value = 0m; _nudLeftLaserRotY.Value = 0m; _nudLeftLaserRotZ.Value = 0m;
             _chkRightLaserRotation.Checked = false;
             _nudRightLaserRotX.Value = 0m; _nudRightLaserRotY.Value = 0m; _nudRightLaserRotZ.Value = 0m;
-            _lblStatus.Text = "Controller axis and laser settings reset to defaults";
-            _lblStatus.ForeColor = Color.FromArgb(255, 200, 40);
+            if (updateStatus)
+            {
+                _lblStatus.Text = "Controller axis and laser settings reset to defaults";
+                _lblStatus.ForeColor = Color.FromArgb(255, 200, 40);
+            }
         }
     }
 }
