@@ -213,6 +213,16 @@ Touch controllers (Quest, Rift) have capacitive sensors that detect when your fi
 
 **Default:** Disabled
 
+#### Disable Thumbrest Touch Events
+
+**What it does:** Ignores the Quest/Oculus thumbrest capacitive sensor.
+
+OCU can expose thumbrest touch as a bindable DPad Up input, but it is easy to trigger accidentally while holding the controller.
+
+**When to disable:** Recommended unless you intentionally bind thumbrest touch in `controlmapvr.txt`.
+
+**Default:** Enabled
+
 #### Disable Trackpad Emulation
 
 **What it does:** Stops Open Composite from emulating a trackpad using the thumbstick.

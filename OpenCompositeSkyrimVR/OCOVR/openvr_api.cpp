@@ -19,6 +19,10 @@
 #include "Drivers/Backend.h"
 #include "Drivers/DriverManager.h"
 #include "DrvOpenXR.h"
+#ifdef _WIN32
+#include <intrin.h>
+#include <windows.h>
+#endif
 
 using namespace vr;
 
@@ -43,6 +47,25 @@ class _InheritCVRLayout {
 class CVRCorrectLayout : public _InheritCVRLayout, public CVRCommon {
 };
 
+static const char* GetCallerModulePath(void* callerAddress)
+{
+#ifdef _WIN32
+	static thread_local char modulePath[MAX_PATH];
+	modulePath[0] = '\0';
+
+	HMODULE module = nullptr;
+	if (callerAddress
+		&& GetModuleHandleExA(
+			GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			reinterpret_cast<LPCSTR>(callerAddress),
+			&module)
+		&& GetModuleFileNameA(module, modulePath, static_cast<DWORD>(std::size(modulePath))) != 0) {
+		return modulePath;
+	}
+#endif
+	return "<unknown>";
+}
+
 // If we don't set up our own deleter, then at least on linux it'll get the layout mixed up and call a random function
 // Also for the basis of this typedef, see: https://stackoverflow.com/a/26276805
 using correct_layout_unique = std::unique_ptr<CVRCorrectLayout, std::function<void(CVRCorrectLayout*)>>;
@@ -51,6 +74,12 @@ static std::map<std::string, correct_layout_unique> interfaces;
 
 VR_INTERFACE void* VR_CALLTYPE VR_GetGenericInterface(const char* interfaceVersion, EVRInitError* error)
 {
+#ifdef _WIN32
+	void* callerAddress = _ReturnAddress();
+#else
+	void* callerAddress = nullptr;
+#endif
+
 	if (!running) {
 		OOVR_LOGF("[INFO] VR_GetGenericInterface called while OOVR not running, setting error=NotInitialized, for interfaceVersion=%s", interfaceVersion);
 		*error = VRInitError_Init_NotInitialized;
@@ -130,8 +159,16 @@ VR_INTERFACE void* VR_CALLTYPE VR_GetGenericInterface(const char* interfaceVersi
 		return impl;
 	}
 
+	const auto* callerModule = GetCallerModulePath(callerAddress);
+
 	OOVR_LOG(interfaceVersion);
+	OOVR_LOGF(
+		"[OpenVR interface] unsupported request interface=%s caller=%s",
+		interfaceVersion ? interfaceVersion : "<null>",
+		callerModule
+	);
 	OOVR_MESSAGE(interfaceVersion, "Missing interface");
+
 	ERR("Unknown or unsupported OpenVR interface: " + string(interfaceVersion) + "\n\n"
 		"The game or tool you are running requires an OpenVR interface version that this build\n"
 		"of Open Composite Unleashed does not support. This build is designed for Skyrim VR and\n"

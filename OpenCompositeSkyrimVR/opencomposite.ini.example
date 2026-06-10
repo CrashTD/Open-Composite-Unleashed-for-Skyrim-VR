@@ -228,8 +228,8 @@
 
 ; Smooth controller position/rotation to reduce jitter.
 ; Useful for games that have shaky hand rendering.
-; Default: false
-;enableControllerSmoothing=false
+; Default: true
+;enableControllerSmoothing=true
 
 ; 1-Euro filter parameters. Lower minCutoff = more smoothing (but more lag).
 ; Higher beta = faster reaction to quick movements.
@@ -248,8 +248,13 @@
 
 ; Disable the trigger "touch" state (only report full press).
 ; Some games behave oddly with trigger touch events.
-; Default: false
-;disableTriggerTouch=false
+; Default: true
+;disableTriggerTouch=true
+
+; Disable the Quest/Oculus thumbrest capacitive touch binding.
+; When enabled, thumbrest touch will not emit DPad_Up.
+; Default: true
+;disableThumbrestTouch=true
 
 ; Disable trackpad emulation on thumbstick controllers.
 ; Default: false

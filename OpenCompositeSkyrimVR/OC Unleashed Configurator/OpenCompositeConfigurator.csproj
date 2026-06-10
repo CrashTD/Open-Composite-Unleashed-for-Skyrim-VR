@@ -25,8 +25,10 @@
     <EmbeddedResource Include="controlmapvr_vrsafe.txt" />
     <EmbeddedResource Include="controlmapvr_vrik.txt" />
     <EmbeddedResource Include="controlmapvr_oculus_optimized.txt" />
-    <EmbeddedResource Include="controlmapvr_vrik_alternate.txt" />
     <EmbeddedResource Include="controlmapvr_kvite.txt" />
+    <EmbeddedResource Include="controlmapvr_snippy.txt" />
+    <EmbeddedResource Include="controlmapvr_cangar.txt" />
+    <EmbeddedResource Include="controlmapvr_cangar_spellsiphon.txt" />
     <EmbeddedResource Include="PotatoMode.wav" />
   </ItemGroup>
 

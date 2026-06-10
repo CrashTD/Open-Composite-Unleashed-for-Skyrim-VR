@@ -1426,10 +1426,11 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 	activeLayers.clear();
 
 #ifdef _WIN32
-	// Keep game window focused while keyboard is active so keystrokes reach it
+	// Keep the game focused only for PC/SendInput mode. Prisma/direct text
+	// delivery does not need Windows foreground and must not steal desktop focus.
 	static ULONGLONG lastFocusCheck = 0;
 	ULONGLONG now = GetTickCount64();
-	if (now - lastFocusCheck > 500) { // check every 500ms
+	if ((sendInputOnly || consoleActive) && now - lastFocusCheck > 500) { // check every 500ms
 		lastFocusCheck = now;
 		EnsureGameForeground();
 	}

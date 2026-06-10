@@ -1306,6 +1306,7 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	static int s_aswStallCount = 0; // consecutive frames where xrWaitFrame took too long
 	if (g_aswProvider && g_aswProvider->IsReady() && g_aswProvider->HasCachedFrame()
 	    && oovr_global_configuration.ASWEnabled() && sessionActive
+	    && !g_aswProvider->IsPaused()
 	    && !oovr_global_configuration.ASWBufferEnabled()
 	    && s_aswStallCount < 5) { // disable after 5 consecutive stalls
 
@@ -1357,20 +1358,36 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 					XrViewState viewState = { XR_TYPE_VIEW_STATE };
 					uint32_t viewCount = 0;
 					XrView views[XruEyeCount] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
-					xrLocateViews(xr_session.get(), &locateInfo, &viewState, XruEyeCount, &viewCount, views);
+					XrResult locateRes = xrLocateViews(xr_session.get(), &locateInfo, &viewState, XruEyeCount, &viewCount, views);
 
 					// 4. Warp cached frame — translation/parallax only (rotation=0, handled by runtime ATW)
 					bool warpOk = true;
-					for (int eye = 0; eye < 2; eye++) {
-						if (!g_aswProvider->WarpFrame(eye, views[eye].pose, -1,
-						        aswState.predictedDisplayTime)) {
-							warpOk = false;
-							break;
+					bool poseValid = XR_SUCCEEDED(locateRes)
+					    && viewCount == XruEyeCount
+					    && (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0
+					    && (viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0;
+					if (!poseValid) {
+						static int s_poseInvalidLog = 0;
+						if (s_poseInvalidLog++ < 5) {
+							OOVR_LOGF("ASW: skipping warped frame because pose is invalid result=%d flags=0x%X views=%u",
+							    (int)locateRes, viewState.viewStateFlags, viewCount);
+						}
+						warpOk = false;
+					} else {
+						for (int eye = 0; eye < 2; eye++) {
+							if (!g_aswProvider->WarpFrame(eye, views[eye].pose, -1,
+							        aswState.predictedDisplayTime)) {
+								warpOk = false;
+								break;
+							}
 						}
 					}
 
 					// 5. Submit warped frame to XR swapchain
-					if (warpOk && g_aswProvider->SubmitWarpedOutput(aswCtx)) {
+					auto tWarpDone = std::chrono::high_resolution_clock::now();
+					bool submitOk = warpOk && g_aswProvider->SubmitWarpedOutput(aswCtx);
+					auto tSubmitDone = std::chrono::high_resolution_clock::now();
+					if (submitOk) {
 						// 6. Build projection layer — use CACHED pose so runtime ATW corrects to current
 						XrCompositionLayerProjectionView warpedViews[2] = {};
 
@@ -1419,11 +1436,28 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 						aswEndInfo.layers = aswLayers.data();
 						aswEndInfo.layerCount = (uint32_t)aswLayers.size();
 
+						auto tEndStart = std::chrono::high_resolution_clock::now();
 						XrResult endRes = xrEndFrame(xr_session.get(), &aswEndInfo);
+						auto tEndDone = std::chrono::high_resolution_clock::now();
 						{
 							static int s = 0;
 							if (s++ < 5)
 								OOVR_LOGF("ASW: Warped frame injected (result=%d)", (int)endRes);
+						}
+						{
+							auto waitUs = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+							auto warpUs = std::chrono::duration_cast<std::chrono::microseconds>(tWarpDone - t1).count();
+							auto submitUs = std::chrono::duration_cast<std::chrono::microseconds>(tSubmitDone - tWarpDone).count();
+							auto endUs = std::chrono::duration_cast<std::chrono::microseconds>(tEndDone - tEndStart).count();
+							auto totalUs = waitUs + warpUs + submitUs + endUs;
+							static auto s_lastAswLatencyLog = std::chrono::steady_clock::now() - std::chrono::seconds(2);
+							auto now = std::chrono::steady_clock::now();
+							if (totalUs > 8000 && now - s_lastAswLatencyLog > std::chrono::seconds(1)) {
+								s_lastAswLatencyLog = now;
+								OOVR_LOGF("ASW LATENCY: wait=%lldus warp=%lldus submit=%lldus end=%lldus total=%lldus result=%d",
+								    (long long)waitUs, (long long)warpUs, (long long)submitUs,
+								    (long long)endUs, (long long)totalUs, (int)endRes);
+							}
 						}
 					} else {
 						// Warp failed — submit empty frame to keep runtime in sync
