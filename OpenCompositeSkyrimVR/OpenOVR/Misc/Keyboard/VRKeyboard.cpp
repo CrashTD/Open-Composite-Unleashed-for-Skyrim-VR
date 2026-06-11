@@ -1029,10 +1029,10 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 			headFwd = { 0.0f, 0.0f, -1.0f };
 		}
 
-		// Position: 80cm forward, 45cm below head (lower for angled typing)
+		// Position: 80cm forward, 52cm below head (lowered to clear the PrismaUI quad)
 		layer.pose.position = {
 			headLoc.pose.position.x + headFwd.x * 0.80f,
-			headLoc.pose.position.y - 0.45f,
+			headLoc.pose.position.y - 0.52f,
 			headLoc.pose.position.z + headFwd.z * 0.80f
 		};
 
@@ -1042,7 +1042,7 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		layer.pose.orientation = buildTiltedOrientation(yaw, s_tiltDegrees);
 	} else {
 		// Fallback: default position facing -Z with tilt
-		layer.pose.position = { 0.0f, 0.9f, -0.80f };
+		layer.pose.position = { 0.0f, 0.83f, -0.80f };
 		s_lastYaw = 0.0f;
 		layer.pose.orientation = buildTiltedOrientation(0.0f, s_tiltDegrees);
 	}
@@ -1579,7 +1579,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 					grabActive = false;
 					grabbingSide = -1;
 					layer.space = xr_gbl->viewSpace;
-					layer.pose.position = { 0.0f, -0.45f, -0.80f };
+					layer.pose.position = { 0.0f, -0.52f, -0.80f };
 					// Apply tilt in view space (yaw=0 since head-relative)
 					s_lastYaw = 0.0f;
 					float pitchRad = -s_tiltDegrees * 3.14159265f / 180.0f; // negative = bottom toward player
@@ -1606,7 +1606,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 						else { headFwd = { 0.0f, 0.0f, -1.0f }; }
 						layer.pose.position = {
 							hl.pose.position.x + headFwd.x * 0.80f,
-							hl.pose.position.y - 0.45f,
+							hl.pose.position.y - 0.52f,
 							hl.pose.position.z + headFwd.z * 0.80f
 						};
 						float yaw = atan2f(headFwd.x, headFwd.z);
