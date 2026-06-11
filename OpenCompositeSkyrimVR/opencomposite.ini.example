@@ -24,6 +24,7 @@
 
 ; Supersampling multiplier applied to the render resolution.
 ; 1.0 = native,  1.5 = 150%,  0.8 = 80%.  Higher = sharper but heavier on GPU.
+; Runtime range: 0.5-2.0. Values above 2.0 are clamped to prevent oversized VR render targets.
 ; Default: 1.0
 ;supersampleRatio=1.0
 

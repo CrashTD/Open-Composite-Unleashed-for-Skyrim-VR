@@ -32,8 +32,16 @@ cbuffer WarpParams : register(b0) {
     float nearZ, farZ;
     float fovTanLeft, fovTanRight, fovTanUp, fovTanDown;
     float depthScale;           // multiplier on linearized depth (parallax intensity)
-    float _pad0, _pad1, _pad2; // pad to 16-byte boundary
+    float edgeFadeWidth;        // depth-edge fade threshold (depth ratio units)
+    float nearFadeDepth;        // parallax fades to 0 below this depth (game units); 0 = disabled
+    float debugTint;            // >0.5 = red-tint warp frames (aswDebugMode=10)
 };
+
+// Linearize depth from reversed-Z buffer value
+float LinearizeDepth(float d, float zNear, float zFar) {
+    float denom = zFar - d * (zFar - zNear);
+    return (abs(denom) > 0.0001) ? (zNear * zFar / denom) : zFar;
+}
 
 [numthreads(8, 8, 1)]
 void CSMain(uint3 tid : SV_DispatchThreadID) {
@@ -45,31 +53,55 @@ void CSMain(uint3 tid : SV_DispatchThreadID) {
 
     // 1. Read depth from old frame (approximate — depth changes slowly between frames)
     float d = depthTex[tid.xy];
-    float denom = farZ - d * (farZ - nearZ);
-    float linearDepth = (abs(denom) > 0.0001) ? (nearZ * farZ / denom) : farZ;
-    linearDepth *= depthScale;  // adjust parallax intensity
+    float linearDepth = LinearizeDepth(d, nearZ, farZ);
 
-    // 2. Reconstruct view-space position of this output pixel in NEW view
+    // 2. Depth-edge detection: fade parallax at discontinuities to prevent silhouette tears
+    float minD = linearDepth, maxD = linearDepth;
+    int2 pixel = (int2)tid.xy;
+    int2 offsets[4] = { int2(-1,0), int2(1,0), int2(0,-1), int2(0,1) };
+    [unroll] for (int i = 0; i < 4; i++) {
+        int2 np = clamp(pixel + offsets[i], int2(0,0), int2((int)resolution.x-1, (int)resolution.y-1));
+        float nd = LinearizeDepth(depthTex[np], nearZ, farZ);
+        minD = min(minD, nd);
+        maxD = max(maxD, nd);
+    }
+    float depthRatio = maxD / max(minD, 0.001);
+    float edgeFade = saturate(1.0 - (depthRatio - 1.0) / max(edgeFadeWidth, 0.001));
+
+    // 3. Reconstruct view-space position of this output pixel in NEW view
+    float scaledDepth = linearDepth * depthScale;
     float tanX = lerp(fovTanLeft, fovTanRight, uv.x);
     float tanY = lerp(fovTanUp,   fovTanDown,  uv.y);
-    float3 newViewPos = float3(tanX * linearDepth, tanY * linearDepth, linearDepth);
+    float3 newViewPos = float3(tanX * scaledDepth, tanY * scaledDepth, scaledDepth);
 
-    // 3. Transform from NEW view space to OLD view space (backward warping)
+    // 4. Transform from NEW view space to OLD view space (backward warping)
     float4 transformed = mul(poseDeltaMatrix, float4(newViewPos, 1.0));
     float3 oldViewPos = transformed.xyz;
 
-    // 4. Project into OLD view UV to find where to sample from the cached frame
-    float2 sourceUV = uv;  // fallback if behind camera
+    // 5. Project into OLD view UV to find where to sample from the cached frame
+    float2 parallaxUV = uv;  // fallback if behind camera
     if (oldViewPos.z > 0.001) {
         float oldTanX = oldViewPos.x / oldViewPos.z;
         float oldTanY = oldViewPos.y / oldViewPos.z;
-        sourceUV.x = (oldTanX - fovTanLeft) / (fovTanRight - fovTanLeft);
-        sourceUV.y = (oldTanY - fovTanUp) / (fovTanDown - fovTanUp);
+        parallaxUV.x = (oldTanX - fovTanLeft) / (fovTanRight - fovTanLeft);
+        parallaxUV.y = (oldTanY - fovTanUp) / (fovTanDown - fovTanUp);
     }
 
-    // 5. Sample previous frame with bilinear filtering, clamp to edge
+    // 6. Near-field fade: zero parallax below nearFadeDepth, full at 2x (hands, close walls)
+    float depthFade = (nearFadeDepth > 0.0) ? saturate((linearDepth - nearFadeDepth) / nearFadeDepth) : 1.0;
+
+    // 7. Apply combined fade; OOB warp falls back to identity
+    float2 sourceUV = lerp(uv, parallaxUV, edgeFade * depthFade);
+    if (any(sourceUV < -0.01) || any(sourceUV > 1.01))
+        sourceUV = uv;
     sourceUV = saturate(sourceUV);
+
     float4 color = prevColor.SampleLevel(linearClamp, sourceUV, 0);
+
+    // Debug: tint warp frames red so they're distinguishable from real frames
+    if (debugTint > 0.5) {
+        color.rgb = float3(min(1.0, color.r * 1.5 + 0.1), color.g * 0.6, color.b * 0.6);
+    }
 
     output[tid.xy] = color;
 }
@@ -452,14 +484,9 @@ void ASWProvider::CacheFrame(int eye, ID3D11DeviceContext* ctx,
 		}
 	}
 
-	// Copy motion vectors (bridge MV → cached)
-	if (mvTex && mvRegion) {
-		if (!SafeBridgeCopy(ctx, m_cachedMV[eye], 0, 0, 0, 0,
-		    mvTex, 0, mvRegion)) {
-			OOVR_LOG("ASW: TOCTOU — MV texture freed during copy");
-			return;
-		}
-	}
+	// MV copy skipped — parallax-only warp shader never samples t1
+	(void)mvTex;
+	(void)mvRegion;
 
 	// Copy depth (bridge depth → cached)
 	if (depthTex && depthRegion) {
@@ -502,14 +529,37 @@ bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
 		for (int c = 0; c < 3; c++)
 			cb.poseDeltaMatrix[r * 4 + c] = (r == c) ? 1.0f : 0.0f;
 
-	// Scale translation part by master strength × translation scale
+	// Stick turn correction: yaw delta is per game frame; warp sits ~half a frame after cache.
+	// Default aswRotationScale=0 (off); start tuning at 0.5, negate if direction is backwards.
+	float rotS = oovr_global_configuration.ASWRotationScale();
+	if (rotS != 0.0f && m_locoYaw != 0.0f) {
+		float theta = m_locoYaw * rotS;
+		float c = cosf(theta), s = sinf(theta);
+		// R_y(theta) row-major into the 3x3 block
+		cb.poseDeltaMatrix[0] = c;
+		cb.poseDeltaMatrix[2] = s;
+		cb.poseDeltaMatrix[8] = -s;
+		cb.poseDeltaMatrix[10] = c;
+	}
+
+	// Scale translation part by master strength × translation scale.
+	// HMD pose delta is meters; shader view space is game units → ×72 (matches nearFadeDepth conversion).
+	// Negated: field-tested — positive scale displaced the warp further along travel direction.
 	float master = oovr_global_configuration.ASWWarpStrength();
-	float transS = master * oovr_global_configuration.ASWTranslationScale();
+	float transS = master * oovr_global_configuration.ASWTranslationScale() * 72.0f;
 	transS = (transS < 0.0f) ? 0.0f : transS;
-	if (transS != 1.0f) {
-		cb.poseDeltaMatrix[3] *= transS;
-		cb.poseDeltaMatrix[7] *= transS;
-		cb.poseDeltaMatrix[11] *= transS;
+	cb.poseDeltaMatrix[3] *= -transS;
+	cb.poseDeltaMatrix[7] *= -transS;
+	cb.poseDeltaMatrix[11] *= -transS;
+
+	// Stick locomotion correction: shift by the warp's position within the game frame
+	// (slot fraction) × the per-frame view-space camera delta. Game units, matches linearDepth.
+	// Negated: field-tested — positive sign doubled the travel-direction displacement.
+	float locoS = m_slotFraction * oovr_global_configuration.ASWLocoScale();
+	if (locoS != 0.0f && (m_locoX != 0.0f || m_locoY != 0.0f || m_locoZ != 0.0f)) {
+		cb.poseDeltaMatrix[3] -= m_locoX * locoS;
+		cb.poseDeltaMatrix[7] -= m_locoY * locoS;
+		cb.poseDeltaMatrix[11] -= m_locoZ * locoS;
 	}
 
 	cb.resolution[0] = (float)m_eyeWidth;
@@ -522,6 +572,9 @@ bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
 	cb.fovTanDown = tanf(m_cachedFov[eye].angleDown);
 	float ds = oovr_global_configuration.ASWDepthScale();
 	cb.depthScale = (ds < 0.0f) ? 0.0f : ds;
+	cb.edgeFadeWidth = oovr_global_configuration.ASWEdgeFadeWidth();
+	cb.nearFadeDepth = oovr_global_configuration.ASWNearFadeDepth() * 72.0f; // meters → game units
+	cb.debugTint = (oovr_global_configuration.ASWDebugMode() == 10) ? 1.0f : 0.0f;
 
 	// Update constant buffer
 	D3D11_MAPPED_SUBRESOURCE mapped;
@@ -532,7 +585,8 @@ bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
 
 	// Dispatch compute shader
 	ctx->CSSetShader(m_warpCS, nullptr, 0);
-	ID3D11ShaderResourceView* srvs[] = { m_srvColor[eye], m_srvMV[eye], m_srvDepth[eye] };
+	// t1 null — MV texture is never copied or sampled (parallax-only shader)
+	ID3D11ShaderResourceView* srvs[] = { m_srvColor[eye], nullptr, m_srvDepth[eye] };
 	ctx->CSSetShaderResources(0, 3, srvs);
 	ID3D11UnorderedAccessView* uavs[] = { m_uavOutput[eye] };
 	ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);

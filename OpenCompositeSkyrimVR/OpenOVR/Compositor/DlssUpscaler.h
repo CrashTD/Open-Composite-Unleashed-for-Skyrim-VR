@@ -106,6 +106,15 @@ private:
 	// Cached dimensions for lazy re-creation
 	uint32_t m_renderW[kHandleCount]  = {}, m_renderH[kHandleCount]  = {};
 	uint32_t m_outputW[kHandleCount]  = {}, m_outputH[kHandleCount]  = {};
+
+	// NGX feature creation can fail for unsupported preset/resolution tuples.
+	// Cache failed tuples so we fall back instead of retrying expensive creation every frame.
+	bool m_createFailed[kHandleCount] = {};
+	uint32_t m_failedRenderW[kHandleCount] = {}, m_failedRenderH[kHandleCount] = {};
+	uint32_t m_failedOutputW[kHandleCount] = {}, m_failedOutputH[kHandleCount] = {};
+	int m_failedPreset[kHandleCount] = {};
+	int m_failedRenderPreset[kHandleCount] = {};
+	int m_failedModeOverride[kHandleCount] = {};
 };
 
 #endif // OC_HAS_DLSS

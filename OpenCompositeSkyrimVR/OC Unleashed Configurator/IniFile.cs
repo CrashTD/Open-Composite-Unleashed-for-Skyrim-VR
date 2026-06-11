@@ -12,8 +12,202 @@ namespace OpenCompositeConfigurator
     {
         private readonly List<IniLine> _lines = new();
         private string _filePath = "";
+        private static readonly string[] OrganizedRootSections =
+        {
+            "general",
+            "audio",
+            "input",
+            "controller_pose",
+            "laser_aim",
+            "upscaling",
+            "fsr",
+            "fsr3",
+            "dlss",
+            "motion_vectors",
+            "asw",
+            "cas",
+            "mip_bias",
+            "vrs",
+            "debug"
+        };
+
+        private static readonly Dictionary<string, string> RootKeySections = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["supersampleRatio"] = "general",
+            ["renderCustomHands"] = "general",
+            ["handColour"] = "general",
+            ["haptics"] = "general",
+            ["hapticStrength"] = "general",
+            ["enableLayers"] = "general",
+            ["dx10Mode"] = "general",
+            ["enableHiddenMeshFix"] = "general",
+            ["hiddenMeshVerticalScale"] = "general",
+            ["invertUsingShaders"] = "general",
+            ["initUsingVulkan"] = "general",
+            ["enableAppRequestedCubemap"] = "general",
+            ["threePartSubmit"] = "general",
+            ["useViewportStencil"] = "general",
+            ["forceConnectedTouch"] = "general",
+            ["admitUnknownProps"] = "general",
+            ["keyboardText"] = "general",
+            ["controllerModel"] = "general",
+            ["swapThumbsticks"] = "general",
+
+            ["enableAudioSwitch"] = "audio",
+            ["audioDeviceName"] = "audio",
+
+            ["enableInputSmoothing"] = "input",
+            ["inputWindowSize"] = "input",
+            ["enableControllerSmoothing"] = "input",
+            ["posSmoothMinCutoff"] = "input",
+            ["posSmoothBeta"] = "input",
+            ["rotSmoothMinCutoff"] = "input",
+            ["rotSmoothBeta"] = "input",
+            ["disableTriggerTouch"] = "input",
+            ["disableThumbrestTouch"] = "input",
+            ["disableTrackPad"] = "input",
+            ["enableVRIKKnucklesTrackPadSupport"] = "input",
+            ["leftDeadZoneSize"] = "input",
+            ["leftDeadZoneXSize"] = "input",
+            ["leftDeadZoneYSize"] = "input",
+            ["rightDeadZoneSize"] = "input",
+            ["rightDeadZoneXSize"] = "input",
+            ["rightDeadZoneYSize"] = "input",
+            ["triggerDeadzone"] = "input",
+            ["triggerMax"] = "input",
+
+            ["adjustTilt"] = "controller_pose",
+            ["tilt"] = "controller_pose",
+            ["adjustLeftRotation"] = "controller_pose",
+            ["leftXRotation"] = "controller_pose",
+            ["leftYRotation"] = "controller_pose",
+            ["leftZRotation"] = "controller_pose",
+            ["adjustRightRotation"] = "controller_pose",
+            ["rightXRotation"] = "controller_pose",
+            ["rightYRotation"] = "controller_pose",
+            ["rightZRotation"] = "controller_pose",
+            ["adjustLeftPosition"] = "controller_pose",
+            ["leftXPosition"] = "controller_pose",
+            ["leftYPosition"] = "controller_pose",
+            ["leftZPosition"] = "controller_pose",
+            ["adjustRightPosition"] = "controller_pose",
+            ["rightXPosition"] = "controller_pose",
+            ["rightYPosition"] = "controller_pose",
+            ["rightZPosition"] = "controller_pose",
+
+            ["adjustLeftLaserRotation"] = "laser_aim",
+            ["leftLaserXRotation"] = "laser_aim",
+            ["leftLaserYRotation"] = "laser_aim",
+            ["leftLaserZRotation"] = "laser_aim",
+            ["adjustRightLaserRotation"] = "laser_aim",
+            ["rightLaserXRotation"] = "laser_aim",
+            ["rightLaserYRotation"] = "laser_aim",
+            ["rightLaserZRotation"] = "laser_aim",
+
+            ["dlaaEnabled"] = "upscaling",
+            ["dlaaLambda"] = "upscaling",
+            ["dlaaEpsilon"] = "upscaling",
+
+            ["fsrEnabled"] = "fsr",
+            ["fsrNativeAA"] = "fsr",
+            ["fsrRenderScale"] = "fsr",
+            ["fsrSharpness"] = "fsr",
+            ["fsrRadiusEnabled"] = "fsr",
+            ["fsrRadius"] = "fsr",
+
+            ["fsr3Sharpness"] = "fsr3",
+            ["fsr3JitterScale"] = "fsr3",
+            ["fsr3JitterCancellation"] = "fsr3",
+            ["fsr3CameraMV"] = "fsr3",
+            ["fsr3ViewToMeters"] = "fsr3",
+            ["fsr3ReactivenessScale"] = "fsr3",
+            ["fsr3ShadingChangeScale"] = "fsr3",
+            ["fsr3AccumulationPerFrame"] = "fsr3",
+            ["fsr3MinDisocclusionAccumulation"] = "fsr3",
+            ["fsr3VelocityFactor"] = "fsr3",
+            ["fsr3ReactiveBase"] = "fsr3",
+            ["fsr3ReactiveEdgeBoost"] = "fsr3",
+            ["fsr3ReactiveColorBoost"] = "fsr3",
+            ["fsr3ReactiveColorThreshold"] = "fsr3",
+            ["fsr3ReactiveColorScale"] = "fsr3",
+            ["fsr3ReactiveDepthFalloffStart"] = "fsr3",
+            ["fsr3ReactiveDepthFalloffEnd"] = "fsr3",
+            ["fsr3DebugMode"] = "fsr3",
+            ["fsr3PostAAEnabled"] = "fsr3",
+            ["fsr3PostAALambda"] = "fsr3",
+            ["fsr3PostAAEpsilon"] = "fsr3",
+
+            ["dlssEnabled"] = "dlss",
+            ["dlssPreset"] = "dlss",
+            ["dlssRenderScaleOverride"] = "dlss",
+            ["dlssModel"] = "dlss",
+            ["dlssRenderPreset"] = "dlss",
+            ["dlssModeOverride"] = "dlss",
+            ["dlssNgxVerboseLogging"] = "dlss",
+            ["dlssSharpness"] = "dlss",
+            ["dlssMvScale"] = "dlss",
+            ["dlssBiasBase"] = "dlss",
+            ["dlssBiasEdgeBoost"] = "dlss",
+            ["dlssBiasDepthFalloffStart"] = "dlss",
+            ["dlssBiasDepthFalloffEnd"] = "dlss",
+            ["dlssJitterScale"] = "dlss",
+            ["dlssMipBiasOffset"] = "dlss",
+
+            ["motionVectorsEnabled"] = "motion_vectors",
+            ["motionVectorScale"] = "motion_vectors",
+            ["actorMV"] = "motion_vectors",
+
+            ["aswEnabled"] = "asw",
+            ["aswForceCustom"] = "asw",
+            ["aswWarpStrength"] = "asw",
+            ["aswRotationScale"] = "asw",
+            ["aswTranslationScale"] = "asw",
+            ["aswLocoScale"] = "asw",
+            ["aswFPControllerScale"] = "asw",
+            ["aswDepthScale"] = "asw",
+            ["aswEdgeFadeWidth"] = "asw",
+            ["aswNearFadeDepth"] = "asw",
+            ["aswMVConfidence"] = "asw",
+            ["aswMVPixelScale"] = "asw",
+            ["aswDebugMode"] = "asw",
+            ["aswCaptureEnabled"] = "asw",
+            ["aswForceLegacy"] = "asw",
+            ["aswExperimentalMode"] = "asw",
+            ["aswConcurrentFrameThread"] = "asw",
+            ["aswSpeculativeTrackingLead"] = "asw",
+            ["aswBufferEnabled"] = "asw",
+            ["aswUpscalerReset"] = "asw",
+            ["aswUpscalerReactiveMask"] = "asw",
+
+            ["casEnabled"] = "cas",
+            ["casSharpness"] = "cas",
+            ["blueSkyDefenderEnabled"] = "cas",
+            ["blueSkyDefenderLambda"] = "cas",
+            ["blueSkyDefenderEpsilon"] = "cas",
+
+            ["mipBiasEnabled"] = "mip_bias",
+            ["mipBias"] = "mip_bias",
+            ["mipBiasOffset"] = "mip_bias",
+            ["fsr3MipBiasOffset"] = "mip_bias",
+
+            ["vrsEnabled"] = "vrs",
+            ["vrsInnerRadius"] = "vrs",
+            ["vrsMidRadius"] = "vrs",
+            ["vrsOuterRadius"] = "vrs",
+            ["vrsFavorHorizontal"] = "vrs",
+
+            ["enableGpuTiming"] = "debug",
+            ["logAllOpenVRCalls"] = "debug",
+            ["logGetTrackedProperty"] = "debug",
+            ["stopOnSoftAbort"] = "debug"
+        };
 
         public string FilePath => _filePath;
+
+        public void Reset()
+        {
+            _lines.Clear();
+        }
 
         public void Load(string path)
         {
@@ -65,21 +259,39 @@ namespace OpenCompositeConfigurator
         public string Get(string section, string key, string defaultValue = "")
         {
             section = section.ToLowerInvariant();
-            foreach (var line in _lines)
+            string? value = FindValue(section, key);
+            if (value != null)
+                return value;
+
+            if (section == "")
             {
-                if (line.Type == IniLineType.KeyValue &&
-                    line.Section == section &&
-                    string.Equals(line.Key, key, StringComparison.OrdinalIgnoreCase))
+                value = FindValue("default", key);
+                if (value != null)
+                    return value;
+
+                if (RootKeySections.TryGetValue(key, out string? mappedSection))
                 {
-                    return line.Value;
+                    value = FindValue(mappedSection, key);
+                    if (value != null)
+                        return value;
+                }
+
+                foreach (string organizedSection in OrganizedRootSections)
+                {
+                    value = FindValue(organizedSection, key);
+                    if (value != null)
+                        return value;
                 }
             }
+
             return defaultValue;
         }
 
         public void Set(string section, string key, string value)
         {
             section = section.ToLowerInvariant();
+            if (section == "")
+                section = RootKeySections.GetValueOrDefault(key, "general");
 
             // Try to update existing key
             foreach (var line in _lines)
@@ -151,10 +363,26 @@ namespace OpenCompositeConfigurator
         public void Remove(string section, string key)
         {
             section = section.ToLowerInvariant();
-            _lines.RemoveAll(l =>
-                l.Type == IniLineType.KeyValue &&
-                l.Section == section &&
-                string.Equals(l.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (section == "")
+            {
+                var sections = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "", "default" };
+                if (RootKeySections.TryGetValue(key, out string? mappedSection))
+                    sections.Add(mappedSection);
+                foreach (string organizedSection in OrganizedRootSections)
+                    sections.Add(organizedSection);
+
+                _lines.RemoveAll(l =>
+                    l.Type == IniLineType.KeyValue &&
+                    sections.Contains(l.Section) &&
+                    string.Equals(l.Key, key, StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                _lines.RemoveAll(l =>
+                    l.Type == IniLineType.KeyValue &&
+                    l.Section == section &&
+                    string.Equals(l.Key, key, StringComparison.OrdinalIgnoreCase));
+            }
         }
 
         public void ClearSection(string section)
@@ -180,6 +408,21 @@ namespace OpenCompositeConfigurator
         }
 
         private enum IniLineType { Comment, Section, KeyValue }
+
+        private string? FindValue(string section, string key)
+        {
+            foreach (var line in _lines)
+            {
+                if (line.Type == IniLineType.KeyValue &&
+                    line.Section == section &&
+                    string.Equals(line.Key, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return line.Value;
+                }
+            }
+
+            return null;
+        }
 
         private class IniLine
         {

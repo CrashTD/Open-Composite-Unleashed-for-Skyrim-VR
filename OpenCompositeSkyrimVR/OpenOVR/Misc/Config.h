@@ -169,6 +169,9 @@ public:
 	inline bool ASWBufferEnabled() const { return aswBufferEnabled; }
 	inline bool ASWUpscalerReset() const { return aswUpscalerReset; }
 	inline bool ASWUpscalerReactiveMask() const { return aswUpscalerReactiveMask; }
+	inline float ASWEndSpikeMs() const { return aswEndSpikeMs; }
+	inline bool ASWAutoNative() const { return aswAutoNative; }
+	inline float ASWAutoEngageFps() const { return aswAutoEngageFps; }
 
 	// CAS sharpening (RCAS) — independent of FSR
 	inline bool CasEnabled() const { return casEnabled; }
@@ -203,6 +206,9 @@ public:
 	float aswNearFadeDepth = 0.0f;   // parallax fades to 0 below this depth (meters); 0 = disabled
 	float aswMVConfidence = 1.5f;    // MV extrapolation scale: 1.5 = correct for N-1 warping (1.5 periods from cache to display). 0 = off.
 	float aswMVPixelScale = 1.0f;    // overall MV magnitude multiplier (1.0 = identity)
+	float aswEndSpikeMs = 12.0f;     // warp xrEndFrame above this (ms) = compositor backpressure → skip injection briefly; 0 = off
+	bool aswAutoNative = true;       // run native (max fps) whenever possible; engage half-rate ASW only in the band where it helps; 0 = always pin
+	float aswAutoEngageFps = 50.0f;  // auto mode engages only when natural fps falls below this; releases ~10fps above it
 	int aswDebugMode = 0;            // 0=normal, 1=depth viz, 2=linearized depth, 3=MV magnitude, 50=black warp frame, 56=stationary NPC dest-depth reject, 57=stationary NPC path overview
 	bool aswCaptureEnabled = false;  // true = capture warp diagnostics (color/depth/MV/CB) to TestWarp folder
 	bool aswForceLegacy = false;     // Deprecated: Alpha legacy ASW is now the default when aswExperimentalMode=false

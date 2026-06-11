@@ -6480,10 +6480,10 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 	// Copy the texture across
 	Invoke(texture, ptrBounds);
 
-	// OCU ASW: pause warping during loading screens (prevents black flashing
-	// from warping stale pre-loading content).
+	// OCU ASW: pause warping during loading screens and the main menu
+	// (prevents warping stale pre-loading/logo content into a double projection).
 	if (g_aswProvider && s_pBridge) {
-		g_aswProvider->SetPaused(s_pBridge->isLoadingScreen != 0);
+		g_aswProvider->SetPaused(s_pBridge->isLoadingScreen != 0 || s_pBridge->isMainMenu != 0);
 	}
 
 	// OCU Meta Space Warp: submit MV + depth to runtime via XR_FB_space_warp.
@@ -6566,6 +6566,7 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 	// Skip caching during main menu / loading screen — MV and depth data are invalid,
 	// and warping menu content causes visual glitches on save load.
 	if (g_aswProvider && g_aswProvider->IsReady()
+	    && g_aswProvider->IsInjectionWanted() // auto-native: no injection → skip cache copies
 	    && s_pBridge && s_pBridge->status == 1 && s_pBridge->mvTexture
 	    && !s_pBridge->isMainMenu && !s_pBridge->isLoadingScreen
 	    && ValidateBridgeTexture(reinterpret_cast<void*>(s_pBridge->mvTexture), "ASW-MV")) {

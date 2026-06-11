@@ -544,6 +544,7 @@ static void SendSingleVK(WORD vk, bool pcMode = false)
 	inputs[1].ki.wScan = scan;
 	inputs[1].ki.dwFlags = flags | KEYEVENTF_KEYUP;
 
+	EnsureGameForeground();
 	::SendInput(2, inputs, sizeof(INPUT));
 }
 
@@ -774,8 +775,10 @@ static void SendVirtualKey(WORD vk, bool shift, wchar_t ch = 0, bool postChar = 
 	// always pass through. F1-F12 also bypass even in VR mode (game hotkeys).
 	const bool isFKey = (vk >= VK_F1 && vk <= VK_F12);
 	const bool gateBypassed = pcMode || isFKey;
-	if (gateBypassed || !ShouldSuppressSkyrimInput())
+	if (gateBypassed || !ShouldSuppressSkyrimInput()) {
+		EnsureGameForeground();
 		::SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT));
+	}
 
 	// Post character directly to SKSE plugin for Scaleform injection.
 	// This is the ONLY path to Scaleform when ch != 0 (VK events skipped above).
@@ -922,7 +925,10 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 
 
 #ifdef _WIN32
-	EnsureGameForeground();
+	// No EnsureGameForeground() here — keyboard auto-creation (text-input detection) was
+	// stealing desktop focus every few seconds. Focus is restored in the SendInput paths,
+	// the only place it's actually needed.
+	OOVR_LOG("VRKeyboard: created (focus untouched until first keypress)");
 	// Signal SKSE plugin that VR keyboard is active — SKSE suppresses WM_CHAR
 	// to prevent double character entry (scancode WM_CHAR + GFxCharEvent from PostCharToGame)
 	HWND kbHwnd = GetGameWindow();
@@ -949,13 +955,6 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 
 	if (inputMode == EGamepadTextInputMode::k_EGamepadTextInputModePassword)
 		OOVR_ABORT("Password input mode not yet supported!");
-
-#ifdef _WIN32
-	// Bring game window to foreground immediately so SendInput keystrokes
-	// reach the game. Done here (not on CONSOLE click) to give Windows
-	// time to complete the focus switch before the user interacts.
-	EnsureGameForeground();
-#endif
 
 	// zero stuff out
 	memset(lastInputTime, 0, sizeof(lastInputTime));
@@ -1426,15 +1425,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 	activeLayers.clear();
 
 #ifdef _WIN32
-	// Keep the game focused only for PC/SendInput mode. Prisma/direct text
-	// delivery does not need Windows foreground and must not steal desktop focus.
-	static ULONGLONG lastFocusCheck = 0;
 	ULONGLONG now = GetTickCount64();
-	if ((sendInputOnly || consoleActive) && now - lastFocusCheck > 500) { // check every 500ms
-		lastFocusCheck = now;
-		EnsureGameForeground();
-	}
-
 	// Periodically reload settings from INI so configurator changes apply live
 	static ULONGLONG lastSettingsCheck = 0;
 	if (now - lastSettingsCheck > 1000) { // check every 1000ms (1 second)

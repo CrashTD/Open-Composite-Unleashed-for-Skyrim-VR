@@ -1272,13 +1272,14 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 					FILE* f = _wfopen(iniPath.c_str(), L"r");
 					if (f) {
 						char line[512];
-						bool inDefaultSection = true;
+						// Accept keys from the default (pre-section) area AND the [asw] section
+						bool inAswSection = true;
 						while (fgets(line, sizeof(line), f)) {
 							if (line[0] == '[') {
-								inDefaultSection = false;
+								inAswSection = (strncmp(line, "[asw]", 5) == 0);
 								continue;
 							}
-							if (!inDefaultSection)
+							if (!inAswSection)
 								continue;
 							float fval;
 							if (sscanf(line, "aswWarpStrength=%f", &fval) == 1)
@@ -1289,6 +1290,26 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 								oovr_global_configuration.aswTranslationScale = fval;
 							else if (sscanf(line, "aswDepthScale=%f", &fval) == 1)
 								oovr_global_configuration.aswDepthScale = fval;
+							else if (sscanf(line, "aswLocoScale=%f", &fval) == 1)
+								oovr_global_configuration.aswLocoScale = fval;
+							else if (sscanf(line, "aswEdgeFadeWidth=%f", &fval) == 1)
+								oovr_global_configuration.aswEdgeFadeWidth = fval;
+							else if (sscanf(line, "aswNearFadeDepth=%f", &fval) == 1)
+								oovr_global_configuration.aswNearFadeDepth = fval;
+							else if (sscanf(line, "aswEndSpikeMs=%f", &fval) == 1)
+								oovr_global_configuration.aswEndSpikeMs = fval;
+							else {
+								int ival;
+								if (sscanf(line, "aswDebugMode=%d", &ival) == 1)
+									oovr_global_configuration.aswDebugMode = ival;
+								else if (strncmp(line, "aswAutoNative=", 14) == 0) {
+									const char* v = line + 14;
+									oovr_global_configuration.aswAutoNative =
+									    (strncmp(v, "true", 4) == 0 || strncmp(v, "on", 2) == 0 || v[0] == '1');
+								}
+								else if (sscanf(line, "aswAutoEngageFps=%f", &fval) == 1)
+									oovr_global_configuration.aswAutoEngageFps = fval;
+							}
 						}
 						fclose(f);
 					}
@@ -1303,12 +1324,145 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	// a warped version of the cached frame. This doubles the effective framerate
 	// sent to the VR runtime, eliminating the need for SSW.
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	static int s_aswStallCount = 0; // consecutive frames where xrWaitFrame took too long
+	// Adaptive backoff: stalls/spikes skip injection for escalating durations;
+	// sustained clean injection de-escalates. Never permanently disables.
+	static int s_aswBackoffFrames = 0; // frames left to skip
+	static int s_aswBackoffLevel = 0; // escalation index
+	static int s_aswCleanStreak = 0; // consecutive clean injections
+	static constexpr int kAswBackoffFrames[] = { 8, 32, 128, 512 };
+	static constexpr int kAswBackoffMaxLevel = 3; // ≈ 11s max — aggressive re-engage, native fps during backoffs
+	static bool s_aswForceRelease = false; // chronic backpressure → auto-native releases the engagement
+	static int s_aswEngagedClean = 0; // engaged frames since last trouble (resets engage hold when sustained)
+	static int s_aswEngageHold = 270; // min native dwell before re-engaging; escalates per forced release
+	auto aswTrouble = [](const char* what, float ms) {
+		s_aswCleanStreak = 0;
+		s_aswEngagedClean = 0;
+		s_aswBackoffFrames = kAswBackoffFrames[s_aswBackoffLevel];
+		if (s_aswBackoffLevel < kAswBackoffMaxLevel)
+			s_aswBackoffLevel++;
+		// Second trouble within one engagement = the zone can't take 90 submits/s — release instead of grinding
+		if (s_aswBackoffLevel >= 2)
+			s_aswForceRelease = true;
+		OOVR_LOGF("ASW: %s %.1fms — backing off %d frames (level %d)",
+		    what, ms, s_aswBackoffFrames, s_aswBackoffLevel);
+	};
+	if (s_aswBackoffFrames > 0)
+		s_aswBackoffFrames--;
+	// Canary: the real frame's xrEndFrame sees the same compositor backpressure as warp
+	// frames. Only gates re-entry during/after trouble episodes (backoffLevel > 0) —
+	// VD has routine isolated end-spikes even at native 90 that shouldn't park ASW.
+	static constexpr int kAswCanaryFrames = 8;
+	static int s_aswRealCleanStreak = kAswCanaryFrames;
+	{
+		// Spike thresholds are calibrated at 90Hz (11.1ms period); scale with actual refresh
+		float aswPeriodScale = (predictedDisplayPeriodMs > 0.0f) ? (predictedDisplayPeriodMs / 11.1f) : 1.0f;
+		float canaryMs = oovr_global_configuration.ASWEndSpikeMs() * aswPeriodScale;
+		if (canaryMs > 0.0f && measuredEndFrameMs > canaryMs) {
+			// Canary only acts in auto mode (gates re-entry after trouble). With auto off,
+			// injection policy is purely backoff-driven — inject whenever clean.
+			if (oovr_global_configuration.ASWAutoNative() && s_aswBackoffLevel > 0
+			    && s_aswRealCleanStreak >= kAswCanaryFrames) {
+				static auto s_lastCanaryLog = std::chrono::steady_clock::now() - std::chrono::seconds(20);
+				auto cnow = std::chrono::steady_clock::now();
+				if (cnow - s_lastCanaryLog > std::chrono::seconds(10)) {
+					s_lastCanaryLog = cnow;
+					OOVR_LOGF("ASW: real xrEndFrame %.1fms — holding injection until clean", measuredEndFrameMs);
+				}
+			}
+			s_aswRealCleanStreak = 0;
+		} else if (s_aswRealCleanStreak < kAswCanaryFrames) {
+			s_aswRealCleanStreak++;
+		}
+	}
+
+	// ── ASW AUTO: native when the game holds refresh, half-rate only where it helps ──
+	// native → engage: frame interval sustained in the band (can't hold ~87% of refresh,
+	//                   but CAN hold half-rate). Below the band ASW can't help — stay native.
+	// engage → native: idle time per pinned cycle (real wait + warp wait) shows the game
+	//                   could comfortably run at refresh, or it can't even hold half-rate.
+	static bool s_aswEngaged = true;
+	static int s_aswInjectCount = 1; // cadence ladder: 1 = pin refresh/2, 2 = pin refresh/3 (e.g. 30→90)
+	static float s_aswIntervalEma = 0.0f;
+	static float s_aswIdleEma = 0.0f;
+	static int s_aswDwell = 0;
+	static float s_aswLastWarpWaitMs = 0.0f; // sum of warp slot waits this frame (injection block below)
+	{
+		float period = (predictedDisplayPeriodMs > 0.0f) ? predictedDisplayPeriodMs : 11.1f;
+		if (measuredFrameIntervalMs > 0.0f && measuredFrameIntervalMs < 200.0f)
+			s_aswIntervalEma = (s_aswIntervalEma <= 0.0f) ? measuredFrameIntervalMs
+			                                              : s_aswIntervalEma * 0.92f + measuredFrameIntervalMs * 0.08f;
+		if (s_aswDwell < 1000000)
+			s_aswDwell++;
+
+		if (!oovr_global_configuration.ASWAutoNative()) {
+			s_aswEngaged = true; // legacy: always pin while enabled
+			s_aswForceRelease = false;
+		} else if (!s_aswEngaged) {
+			// Native mode: engage only when natural fps drops below aswAutoEngageFps (hold escalates per chronic zone)
+			float engageFps = oovr_global_configuration.ASWAutoEngageFps();
+			engageFps = (engageFps < 20.0f) ? 20.0f : engageFps;
+			float engageIntervalMs = 1000.0f / engageFps;
+			if (engageIntervalMs < period * 1.15f)
+				engageIntervalMs = period * 1.15f;
+			if (s_aswDwell > s_aswEngageHold && s_aswIntervalEma > engageIntervalMs && s_aswIntervalEma < period * 2.05f) {
+				s_aswEngaged = true;
+				s_aswDwell = 0;
+				s_aswIdleEma = 0.0f;
+				s_aswEngagedClean = 0;
+				OOVR_LOGF("ASW AUTO: engaging half-rate (interval %.1fms, period %.1fms)",
+				    s_aswIntervalEma, period);
+			}
+		} else if (s_aswForceRelease) {
+			// Chronic backpressure: go native and stay there longer each time this zone proves hostile
+			s_aswForceRelease = false;
+			s_aswEngaged = false;
+			s_aswDwell = 0;
+			s_aswBackoffFrames = 0;
+			s_aswBackoffLevel = 0;
+			s_aswEngageHold = (s_aswEngageHold < 10800) ? s_aswEngageHold * 4 : 10800;
+			OOVR_LOGF("ASW AUTO: chronic backpressure — native, re-engage hold %d frames", s_aswEngageHold);
+		} else {
+			// Sustained clean engagement → zone is fine, reset the escalating hold
+			if (s_aswBackoffLevel == 0 && ++s_aswEngagedClean >= 1350)
+				s_aswEngageHold = 270;
+			// Release when estimated game work fits ~10fps above the engage point (hysteresis),
+			// not only at full refresh — otherwise a 65fps-capable town stays pinned forever.
+			float engageFps = oovr_global_configuration.ASWAutoEngageFps();
+			engageFps = (engageFps < 20.0f) ? 20.0f : engageFps;
+			float releaseWorkMs = 1000.0f / (engageFps + 10.0f);
+			float releaseIdleMs = 2.0f * period - releaseWorkMs - 1.5f; // 1.5ms ≈ injection cpu overhead
+			bool aboveBand = s_aswIdleEma > releaseIdleMs;
+			bool belowHalfRate = s_aswIntervalEma > period * 2.3f; // can't hold the pin — release
+			if (s_aswDwell > 270 && (aboveBand || belowHalfRate)) {
+				s_aswEngaged = false;
+				s_aswDwell = 0;
+				OOVR_LOGF("ASW AUTO: releasing to native (%s: idle %.1fms, interval %.1fms)",
+				    aboveBand ? "above engage band" : "below half-rate",
+				    s_aswIdleEma, s_aswIntervalEma);
+			}
+		}
+
+		// ── Cadence rule: max ONE warp between two real frames (multi-warp field-tested worse).
+		// Engaged = pin refresh/2 at whatever refresh the headset runs; below that, release.
+		s_aswInjectCount = 1;
+		if (s_aswEngaged) {
+			float idle = measuredWaitFrameMs + s_aswLastWarpWaitMs;
+			s_aswIdleEma = (s_aswIdleEma <= 0.0f) ? idle : s_aswIdleEma * 0.92f + idle * 0.08f;
+		}
+	}
+	if (g_aswProvider)
+		g_aswProvider->SetInjectionWanted(s_aswEngaged && oovr_global_configuration.ASWEnabled()
+		    && !oovr_global_configuration.ASWBufferEnabled());
+
 	if (g_aswProvider && g_aswProvider->IsReady() && g_aswProvider->HasCachedFrame()
 	    && oovr_global_configuration.ASWEnabled() && sessionActive
 	    && !g_aswProvider->IsPaused()
 	    && !oovr_global_configuration.ASWBufferEnabled()
-	    && s_aswStallCount < 5) { // disable after 5 consecutive stalls
+	    && s_aswEngaged
+	    && s_aswBackoffFrames == 0
+	    && (!oovr_global_configuration.ASWAutoNative()
+	        || s_aswBackoffLevel == 0
+	        || s_aswRealCleanStreak >= kAswCanaryFrames)) {
 
 		// Get D3D11 context from ASWProvider's device (independent of GPU timing)
 		ID3D11DeviceContext* aswCtx = nullptr;
@@ -1318,6 +1472,12 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 		if (aswCtx) {
 			auto lock = xr_session.lock_shared();
 
+			s_aswLastWarpWaitMs = 0.0f;
+			// Cadence ladder: claim 1 or 2 warp slots per real frame (pin refresh/2 or refresh/3)
+			for (int aswInj = 0; aswInj < s_aswInjectCount; aswInj++) {
+			if (s_aswBackoffFrames > 0)
+				break; // trouble on a previous injection this frame — stop claiming slots
+
 			// 1. Claim next display slot (measure time — xrWaitFrame can block the game)
 			auto t0 = std::chrono::high_resolution_clock::now();
 			XrFrameWaitInfo aswWaitInfo{ XR_TYPE_FRAME_WAIT_INFO };
@@ -1325,13 +1485,12 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 			XrResult res = xrWaitFrame(xr_session.get(), &aswWaitInfo, &aswState);
 			auto t1 = std::chrono::high_resolution_clock::now();
 			float waitMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
+			s_aswLastWarpWaitMs += waitMs; // feeds the auto-native idle estimate
 
 			if (XR_SUCCEEDED(res)) {
 				// Check if xrWaitFrame took unreasonably long (>30ms = missed a whole frame)
 				if (waitMs > 30.0f) {
-					s_aswStallCount++;
-					OOVR_LOGF("ASW: xrWaitFrame stalled %.1fms (stall %d/5)", waitMs, s_aswStallCount);
-					// Submit empty frame to keep runtime in sync, then skip
+					// Submit empty frame to keep runtime in sync, then back off
 					XrFrameBeginInfo aswBeginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
 					xrBeginFrame(xr_session.get(), &aswBeginInfo);
 					XrFrameEndInfo aswEndInfo{ XR_TYPE_FRAME_END_INFO };
@@ -1340,10 +1499,10 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 					aswEndInfo.layers = nullptr;
 					aswEndInfo.layerCount = 0;
 					xrEndFrame(xr_session.get(), &aswEndInfo);
+					aswTrouble("xrWaitFrame stall", waitMs);
 					aswCtx->Release();
 					goto asw_done;
 				}
-				s_aswStallCount = 0; // reset on successful fast wait
 
 				// 2. Begin frame
 				XrFrameBeginInfo aswBeginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
@@ -1374,6 +1533,9 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 						}
 						warpOk = false;
 					} else {
+						// Loco shift scales with where this warp sits in the game frame (¼, ½, ¾...)
+						g_aswProvider->SetWarpSlotFraction(
+						    (float)(aswInj + 1) / (float)(s_aswInjectCount + 1));
 						for (int eye = 0; eye < 2; eye++) {
 							if (!g_aswProvider->WarpFrame(eye, views[eye].pose, -1,
 							        aswState.predictedDisplayTime)) {
@@ -1458,6 +1620,18 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 								    (long long)waitUs, (long long)warpUs, (long long)submitUs,
 								    (long long)endUs, (long long)totalUs, (int)endRes);
 							}
+
+							// Slow warp xrEndFrame = compositor backpressure; pushing more warp frames compounds it
+							// (threshold calibrated at 90Hz — scale with actual refresh)
+							float spikeMs = oovr_global_configuration.ASWEndSpikeMs()
+							    * ((predictedDisplayPeriodMs > 0.0f) ? (predictedDisplayPeriodMs / 11.1f) : 1.0f);
+							if (spikeMs > 0.0f && endUs > (long long)(spikeMs * 1000.0f)) {
+								aswTrouble("xrEndFrame backpressure", (float)endUs / 1000.0f);
+							} else if (++s_aswCleanStreak >= 450 && s_aswBackoffLevel > 0) {
+								// ~10s clean at 45fps → step escalation back down
+								s_aswBackoffLevel--;
+								s_aswCleanStreak = 0;
+							}
 						}
 					} else {
 						// Warp failed — submit empty frame to keep runtime in sync
@@ -1473,23 +1647,13 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 				static int s = 0;
 				if (s++ < 3)
 					OOVR_LOGF("ASW: xrWaitFrame for warped slot failed result=%d", (int)res);
+				break; // wait failed — don't try further slots this frame
 			}
+			} // end per-frame injection loop
 			aswCtx->Release(); // GetImmediateContext adds a ref
-		}
-	} else if (s_aswStallCount >= 5 && g_aswProvider && oovr_global_configuration.ASWEnabled()) {
-		static bool s_warned = false;
-		if (!s_warned) {
-			OOVR_LOG("ASW: Disabled — xrWaitFrame stalled 5 consecutive frames. Restart game to re-enable.");
-			s_warned = true;
 		}
 	}
 asw_done:
-	if (aswStallCount >= 5 && g_aswProvider && oovr_global_configuration.ASWEnabled()) {
-		if (!aswDisableWarned) {
-			OOVR_LOG("ASW: Disabled - xrWaitFrame stalled 5 consecutive frames. Restart game to re-enable.");
-			aswDisableWarned = true;
-		}
-	}
 #endif
 
 	BaseSystem* sys = GetUnsafeBaseSystem();

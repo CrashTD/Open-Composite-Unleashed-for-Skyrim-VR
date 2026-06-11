@@ -133,8 +133,11 @@ public:
 	void SetRSSViewMatPtr(const float* ptr) { (void)ptr; }
 	void SetFPReplayPtr(FPReplayData* ptr) { (void)ptr; }
 	void SetMenuOpen(bool open) { (void)open; }
-	void SetLocomotionTranslation(float x, float y, float z) { (void)x; (void)y; (void)z; }
-	void SetLocomotionYaw(float yaw) { (void)yaw; }
+	// View-space camera delta per game frame (new − old, game units) from dx11compositor
+	void SetLocomotionTranslation(float x, float y, float z) { m_locoX = x; m_locoY = y; m_locoZ = z; }
+	void SetLocomotionYaw(float yaw) { m_locoYaw = yaw; }
+	// Where this warp sits in the game frame (slot i of n → (i+1)/(n+1)); scales loco shift
+	void SetWarpSlotFraction(float f) { m_slotFraction = f; }
 	void SetMVConfidenceScale(float scale) { (void)scale; }
 	float GetMVConfidenceScale() const { return 1.0f; }
 	void SetControllerPos(int hand, float x, float y, float z, bool valid)
@@ -151,6 +154,17 @@ public:
 	void SetPaused(bool paused) { m_paused = paused; }
 	bool IsPaused() const { return m_paused; }
 
+	// Auto-native: XrBackend signals whether injection will run; compositor skips
+	// CacheFrame copies when not. Disabling invalidates the cache so re-engage
+	// never warps a stale frame.
+	void SetInjectionWanted(bool wanted)
+	{
+		if (m_injectionWanted && !wanted)
+			m_hasCachedFrame = false;
+		m_injectionWanted = wanted;
+	}
+	bool IsInjectionWanted() const { return m_injectionWanted; }
+
 private:
 	bool CreateComputeShader(ID3D11Device* device);
 	bool CreateStagingTextures(ID3D11Device* device);
@@ -166,6 +180,11 @@ private:
 
 	bool m_ready = false;
 	bool m_paused = false;
+	bool m_injectionWanted = true;
+	// Stick locomotion delta for warp correction (view space, new − old, game units)
+	float m_locoX = 0.0f, m_locoY = 0.0f, m_locoZ = 0.0f;
+	float m_locoYaw = 0.0f; // stick yaw delta (old − new, radians)
+	float m_slotFraction = 0.5f; // warp position within the game frame (0..1)
 	uint32_t m_eyeWidth = 0, m_eyeHeight = 0;
 	ID3D11Device* m_device = nullptr; // kept for obtaining immediate context in XrBackend
 
@@ -208,6 +227,8 @@ private:
 		float nearZ, farZ;
 		float fovTanLeft, fovTanRight, fovTanUp, fovTanDown;
 		float depthScale;          // multiplier on linearized depth
-		float _pad[3];             // pad to 16-byte boundary
+		float edgeFadeWidth;       // depth-edge fade threshold (depth ratio units)
+		float nearFadeDepth;       // parallax fades to 0 below this depth (game units); 0 = disabled
+		float debugTint;           // >0.5 = red-tint warp frames (aswDebugMode=10)
 	};
 };

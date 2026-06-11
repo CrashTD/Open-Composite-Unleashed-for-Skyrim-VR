@@ -342,9 +342,6 @@ bool DlssUpscaler::EnsureFeature(int eyeIdx, ID3D11DeviceContext* ctx,
 	if (m_handle[eyeIdx])
 		DestroyFeature(eyeIdx, ctx);
 
-	if (!EnsureOutputTexture(eyeIdx, outputW, outputH))
-		return false;
-
 	// Map config preset to NGX quality value
 	// 0=Quality(67%) 1=Balanced(58%) 2=Performance(50%) 3=UltraPerf(33%) 4=DLAA(100%) 5=UltraQuality(77%)
 	static const NVSDK_NGX_PerfQuality_Value presetMap[] = {
@@ -353,13 +350,25 @@ bool DlssUpscaler::EnsureFeature(int eyeIdx, ID3D11DeviceContext* ctx,
 		NVSDK_NGX_PerfQuality_Value_MaxPerf,           // 2 = Performance
 		NVSDK_NGX_PerfQuality_Value_UltraPerformance,  // 3 = UltraPerf
 		NVSDK_NGX_PerfQuality_Value_DLAA,              // 4 = DLAA (native res, AA only)
-		NVSDK_NGX_PerfQuality_Value_UltraQuality,      // 5 = Ultra Quality
+		NVSDK_NGX_PerfQuality_Value_MaxQuality,        // 5 = Ultra Quality (NGX has no UltraQuality mode; 0.77 scale comes from explicit render dims, not this hint)
 	};
 	int preset = (m_presetOverride >= 0) ? m_presetOverride : oovr_global_configuration.DlssPreset();
 	int presetIdx = std::max(0, std::min(5, preset));
 	NVSDK_NGX_PerfQuality_Value perfQuality = presetMap[presetIdx];
 	int renderPreset = NormalizeDlssRenderPreset(oovr_global_configuration.DlssRenderPreset());
 	int modeOverride = oovr_global_configuration.DlssModeOverride();
+
+	if (m_createFailed[eyeIdx] &&
+	    m_failedRenderW[eyeIdx] == renderW && m_failedRenderH[eyeIdx] == renderH &&
+	    m_failedOutputW[eyeIdx] == outputW && m_failedOutputH[eyeIdx] == outputH &&
+	    m_failedPreset[eyeIdx] == presetIdx &&
+	    m_failedRenderPreset[eyeIdx] == renderPreset &&
+	    m_failedModeOverride[eyeIdx] == modeOverride) {
+		return false;
+	}
+
+	if (!EnsureOutputTexture(eyeIdx, outputW, outputH))
+		return false;
 
 	// Set creation parameters
 	NVSDK_NGX_DLSS_Create_Params createParams = {};
@@ -385,10 +394,20 @@ bool DlssUpscaler::EnsureFeature(int eyeIdx, ID3D11DeviceContext* ctx,
 	if (NVSDK_NGX_FAILED(result)) {
 		OOVR_LOGF("DLSS: CreateFeature failed for eye %d (0x%08X) render=%ux%u output=%ux%u",
 		    eyeIdx, (unsigned)result, renderW, renderH, outputW, outputH);
+		OOVR_LOGF("DLSS: suppressing repeated create retries for eye %d until resolution or preset changes", eyeIdx);
 		m_handle[eyeIdx] = nullptr;
+		m_createFailed[eyeIdx] = true;
+		m_failedRenderW[eyeIdx] = renderW;
+		m_failedRenderH[eyeIdx] = renderH;
+		m_failedOutputW[eyeIdx] = outputW;
+		m_failedOutputH[eyeIdx] = outputH;
+		m_failedPreset[eyeIdx] = presetIdx;
+		m_failedRenderPreset[eyeIdx] = renderPreset;
+		m_failedModeOverride[eyeIdx] = modeOverride;
 		return false;
 	}
 
+	m_createFailed[eyeIdx] = false;
 	m_renderW[eyeIdx] = renderW;  m_renderH[eyeIdx] = renderH;
 	OOVR_LOGF("DLSS: Feature created eye=%d render=%ux%u output=%ux%u preset=%d renderPreset=%s(%d)",
 	    eyeIdx, renderW, renderH, outputW, outputH, presetIdx,

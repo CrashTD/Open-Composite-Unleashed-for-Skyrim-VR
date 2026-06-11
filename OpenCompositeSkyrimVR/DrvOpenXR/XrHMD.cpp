@@ -27,6 +27,19 @@ extern float g_fsr3CameraFar;
 void XrHMD::GetRecommendedRenderTargetSize(uint32_t* width, uint32_t* height)
 {
 	float scale = oovr_global_configuration.SupersampleRatio();
+	constexpr float kMinSupersampleRatio = 0.5f;
+	constexpr float kMaxSupersampleRatio = 2.0f;
+
+	if (scale < kMinSupersampleRatio || scale > kMaxSupersampleRatio) {
+		static bool loggedSupersampleClamp = false;
+		float requestedScale = scale;
+		scale = std::min(std::max(scale, kMinSupersampleRatio), kMaxSupersampleRatio);
+		if (!loggedSupersampleClamp) {
+			loggedSupersampleClamp = true;
+			OOVR_LOGF("supersampleRatio %.2f clamped to %.2f. Valid runtime range is %.1f-%.1f.",
+			    requestedScale, scale, kMinSupersampleRatio, kMaxSupersampleRatio);
+		}
+	}
 
 	// FSR / DLSS: tell the game to render at a lower resolution — we upscale in the compositor
 	bool needsDownscale = oovr_global_configuration.FsrEnabled();

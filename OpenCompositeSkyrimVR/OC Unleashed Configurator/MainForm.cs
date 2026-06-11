@@ -49,6 +49,9 @@ namespace OpenCompositeConfigurator
         private NumericUpDown _nudAswTranslationScale = null!;
         private NumericUpDown _nudAswLocoScale = null!;
         private NumericUpDown _nudAswDepthScale = null!;
+        private CheckBox _chkAswAutoNative = null!;
+        private NumericUpDown _nudAswAutoEngageFps = null!;
+        private CheckBox _chkAswDebugMode = null!;
         // Advanced ASW + trigger settings (no UI controls — preserved through saves)
         private float _aswNearFadeDepth = 0.0f;
         private float _aswFPControllerScale = 0.45f;
@@ -943,7 +946,7 @@ namespace OpenCompositeConfigurator
             _nudSuperSample = new NumericUpDown
             {
                 Location = new Point(gc1 + 120, y), Width = 75,
-                DecimalPlaces = 1, Increment = 0.1m, Minimum = 0.5m, Maximum = 3.0m, Value = 1.0m,
+                DecimalPlaces = 1, Increment = 0.1m, Minimum = 0.5m, Maximum = 2.0m, Value = 1.0m,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             container.Controls.Add(_nudSuperSample);
@@ -4893,7 +4896,7 @@ namespace OpenCompositeConfigurator
                 aswAdv = new Panel
                 {
                     Location = new Point(leftMargin, y),
-                    Size = new Size(advW, 226),
+                    Size = new Size(advW, 252),
                     BackColor = Color.FromArgb(26, 28, 40),
                     BorderStyle = BorderStyle.FixedSingle,
                     Visible = false
@@ -4925,6 +4928,12 @@ namespace OpenCompositeConfigurator
                 aswAdv.Controls.Add(_chkAswBufferEnabled);
                 _chkAswUpscalerReset = MakeCheckBox("Reset upscaler history", 560, ap);
                 aswAdv.Controls.Add(_chkAswUpscalerReset);
+                ap += 26;
+
+                _chkAswAutoNative = MakeCheckBox("Auto mode (native FPS when fast)", 20, ap);
+                aswAdv.Controls.Add(_chkAswAutoNative);
+                _chkAswDebugMode = MakeCheckBox("Debug: highlight synthetic frames", 280, ap);
+                aswAdv.Controls.Add(_chkAswDebugMode);
                 ap += 26;
 
                 // Warp Strength
@@ -5004,6 +5013,22 @@ namespace OpenCompositeConfigurator
                 lblDepthDesc.ForeColor = Color.FromArgb(130, 130, 130);
                 lblDepthDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
                 aswAdv.Controls.Add(lblDepthDesc);
+                ap += 26;
+
+                // Auto-mode engage threshold
+                var lblEngageFps = MakeLabel("Engage below FPS:", 20, ap + 3, 115);
+                aswAdv.Controls.Add(lblEngageFps);
+                _nudAswAutoEngageFps = new NumericUpDown
+                {
+                    Location = new Point(140, ap), Width = 60,
+                    DecimalPlaces = 0, Increment = 1m, Minimum = 20m, Maximum = 90m, Value = 50m,
+                    BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+                };
+                aswAdv.Controls.Add(_nudAswAutoEngageFps);
+                var lblAutoDesc = MakeLabel("Auto mode: run uncapped when the game is faster than this; engage ASW below it.", 215, ap + 3, advW - 231);
+                lblAutoDesc.ForeColor = Color.FromArgb(130, 130, 130);
+                lblAutoDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
+                aswAdv.Controls.Add(lblAutoDesc);
 
                 container.Controls.Add(aswAdv);
 
@@ -5141,6 +5166,10 @@ namespace OpenCompositeConfigurator
             // ── NVIDIA FIXED FOVEATED RENDERING (VRS) ──
             var lblMipSection = MakeSectionLabel("Texture MIP Bias", leftMargin, y);
             container.Controls.Add(lblMipSection);
+            var lblMipSectionHint = MakeLabel("(Recommended for increased sharpness while using upscaling)", leftMargin + 150, y + 3, 420);
+            lblMipSectionHint.ForeColor = Color.FromArgb(130, 130, 130);
+            lblMipSectionHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
+            container.Controls.Add(lblMipSectionHint);
             y += 26;
 
             _chkMipBiasEnabled = MakeCheckBox("Correct MIPs for upscaling", leftMargin, y);
@@ -5970,7 +5999,7 @@ namespace OpenCompositeConfigurator
             if (int.TryParse(_ini.Get("keyboard", "shortcutTiming", "500"), out int timing))
                 _nudTiming.Value = Math.Clamp(timing, 100, 3000);
 
-            if (float.TryParse(_ini.Get("keyboard", "displayTilt", "22.5"), out float dt))
+            if (TryParseIniFloat(_ini.Get("keyboard", "displayTilt", "22.5"), out float dt))
                 _nudDisplayTilt.Value = (decimal)Math.Clamp(dt, -30f, 80f);
             if (int.TryParse(_ini.Get("keyboard", "displayOpacity", "30"), out int dop))
                 _nudDisplayOpacity.Value = Math.Clamp(dop, 1, 100);
@@ -5985,11 +6014,11 @@ namespace OpenCompositeConfigurator
             if (int.TryParse(_ini.Get("keyboard", "hapticStrength", "50"), out int kbhap))
                 _nudKbHapticStrength.Value = Math.Clamp(kbhap, 0, 100);
 
-            if (float.TryParse(_ini.Get("", "supersampleRatio", "1.0"), out float ss))
-                _nudSuperSample.Value = (decimal)Math.Clamp(ss, 0.5f, 3.0f);
+            if (TryParseIniFloat(_ini.Get("", "supersampleRatio", "1.0"), out float ss))
+                _nudSuperSample.Value = (decimal)Math.Clamp(ss, 0.5f, 2.0f);
             _chkRenderHands.Checked = ParseBool(_ini.Get("", "renderCustomHands", "true"));
             _chkHaptics.Checked = ParseBool(_ini.Get("", "haptics", "true"));
-            if (float.TryParse(_ini.Get("", "hapticStrength", "0.1"), out float hs))
+            if (TryParseIniFloat(_ini.Get("", "hapticStrength", "0.1"), out float hs))
                 _nudHapticStrength.Value = (decimal)Math.Clamp(hs, 0f, 1f);
             _chkHiddenMesh.Checked = ParseBool(_ini.Get("", "enableHiddenMeshFix", "true"));
             _chkInvertShaders.Checked = ParseBool(_ini.Get("", "invertUsingShaders", "false"));
@@ -6042,9 +6071,9 @@ namespace OpenCompositeConfigurator
             }
             UpdateDeletePresetEnabled();
             _chkGpuTiming.Checked = ParseBool(_ini.Get("", "enableGpuTiming", "true"));
-            if (float.TryParse(_ini.Get("", "leftDeadZoneSize", "0.0"), out float ldz))
+            if (TryParseIniFloat(_ini.Get("", "leftDeadZoneSize", "0.0"), out float ldz))
                 _nudLeftDeadZone.Value = (decimal)Math.Clamp(ldz, 0f, 1f);
-            if (float.TryParse(_ini.Get("", "rightDeadZoneSize", "0.0"), out float rdz))
+            if (TryParseIniFloat(_ini.Get("", "rightDeadZoneSize", "0.0"), out float rdz))
                 _nudRightDeadZone.Value = (decimal)Math.Clamp(rdz, 0f, 1f);
 
             // Controller axis adjustments
@@ -6175,6 +6204,10 @@ namespace OpenCompositeConfigurator
                 _aswMVConfidence = Math.Clamp(amc, 0f, 5f);
             if (float.TryParse(_ini.Get("", "aswMVPixelScale", "1.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float amps))
                 _aswMVPixelScale = Math.Clamp(amps, 0f, 3f);
+            _chkAswAutoNative.Checked = ParseBool(_ini.Get("", "aswAutoNative", "true"));
+            if (float.TryParse(_ini.Get("", "aswAutoEngageFps", "50"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float aengf))
+                _nudAswAutoEngageFps.Value = (decimal)Math.Clamp(aengf, 20f, 90f);
+            _chkAswDebugMode.Checked = _ini.Get("", "aswDebugMode", "0").Trim() == "10";
             if (float.TryParse(_ini.Get("", "triggerDeadzone", "0.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float tdz))
                 _triggerDeadzone = Math.Clamp(tdz, 0f, 0.5f);
             if (float.TryParse(_ini.Get("", "triggerMax", "1.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float tmax))
@@ -6282,6 +6315,8 @@ namespace OpenCompositeConfigurator
 
         private void WriteToIni()
         {
+            _ini.Reset();
+
             _ini.Set("keyboard", "shortcutEnabled", _chkShortcutEnabled.Checked ? "true" : "false");
 
             var selected = GetSelectedButtons();
@@ -6402,6 +6437,9 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "aswEdgeFadeWidth", _aswEdgeFadeWidth.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswMVConfidence", _aswMVConfidence.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswMVPixelScale", _aswMVPixelScale.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            _ini.Set("", "aswAutoNative", _chkAswAutoNative.Checked ? "true" : "false");
+            _ini.Set("", "aswAutoEngageFps", _nudAswAutoEngageFps.Value.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
+            _ini.Set("", "aswDebugMode", _chkAswDebugMode.Checked ? "10" : "0");
             _ini.Set("", "triggerDeadzone", _triggerDeadzone.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "triggerMax", _triggerMax.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "fsr3Sharpness", _nudFsr3Sharpness.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
@@ -6444,6 +6482,7 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "vrsFavorHorizontal", _chkVrsFavorHorizontal.Checked ? "true" : "false");
 
             WriteCombosToIni();
+            _ini.Set("configurator", "activeBindingPreset", _cmbBindingPreset.SelectedItem?.ToString() ?? "");
         }
 
         private void LoadConfiguratorSettings()
@@ -6522,6 +6561,15 @@ namespace OpenCompositeConfigurator
         {
             val = val.Trim().ToLowerInvariant();
             return val == "true" || val == "on" || val == "enabled";
+        }
+
+        private static bool TryParseIniFloat(string val, out float parsed)
+        {
+            return float.TryParse(
+                val,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out parsed);
         }
 
         private static Label MakeLabel(string text, int x, int y, int width) => new()

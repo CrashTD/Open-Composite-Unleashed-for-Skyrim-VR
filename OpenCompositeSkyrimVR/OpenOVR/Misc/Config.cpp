@@ -201,7 +201,22 @@ int Config::ini_handler(void* user, const char* pSection,
 		return true;                                    \
 	}
 
-	if (section == "" || section == "default") {
+	if (section == "" || section == "default"
+	    || section == "general"
+	    || section == "audio"
+	    || section == "input"
+	    || section == "controller_pose"
+	    || section == "laser_aim"
+	    || section == "upscaling"
+	    || section == "fsr"
+	    || section == "fsr3"
+	    || section == "dlss"
+	    || section == "motion_vectors"
+	    || section == "asw"
+	    || section == "cas"
+	    || section == "mip_bias"
+	    || section == "vrs"
+	    || section == "debug") {
 		CFGOPT(bool, renderCustomHands);
 		CFGOPT(HmdColor_t, handColour);
 		CFGOPT(float, supersampleRatio);
@@ -316,6 +331,9 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, aswNearFadeDepth);
 		CFGOPT(float, aswMVConfidence);
 		CFGOPT(float, aswMVPixelScale);
+		CFGOPT(float, aswEndSpikeMs);
+		CFGOPT(bool, aswAutoNative);
+		CFGOPT(float, aswAutoEngageFps);
 		CFGOPT(int, aswDebugMode);
 		CFGOPT(bool, aswCaptureEnabled);
 		CFGOPT(bool, aswForceLegacy);
@@ -376,6 +394,10 @@ int Config::ini_handler(void* user, const char* pSection,
 		if (name == "hoverVolume") { cfg->kbHoverVolume = parse_int(value, name, lineno); return true; }
 		if (name == "pressVolume") { cfg->kbPressVolume = parse_int(value, name, lineno); return true; }
 		if (name == "hapticStrength") { cfg->kbHapticStrength = parse_int(value, name, lineno); return true; }
+	}
+
+	if (section == "configurator") {
+		return true;
 	}
 
 #undef CFGOPT
