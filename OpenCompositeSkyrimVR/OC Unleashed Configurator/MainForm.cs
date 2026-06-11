@@ -6204,7 +6204,7 @@ namespace OpenCompositeConfigurator
                 _aswMVConfidence = Math.Clamp(amc, 0f, 5f);
             if (float.TryParse(_ini.Get("", "aswMVPixelScale", "1.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float amps))
                 _aswMVPixelScale = Math.Clamp(amps, 0f, 3f);
-            _chkAswAutoNative.Checked = ParseBool(_ini.Get("", "aswAutoNative", "true"));
+            _chkAswAutoNative.Checked = ParseBool(_ini.Get("", "aswAutoNative", "false"));
             if (float.TryParse(_ini.Get("", "aswAutoEngageFps", "50"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float aengf))
                 _nudAswAutoEngageFps.Value = (decimal)Math.Clamp(aengf, 20f, 90f);
             _chkAswDebugMode.Checked = _ini.Get("", "aswDebugMode", "0").Trim() == "10";
