@@ -25,6 +25,7 @@ static bool g_initialized = false;
 static bool g_enabled = false;
 static float g_lodBias = 0.0f;
 static std::unordered_map<ID3D11SamplerState*, CachedSampler> g_samplerCache;
+static bool g_cacheFlushPending = false;
 
 static void ClearSamplerCache()
 {
@@ -57,10 +58,11 @@ static CachedSampler CacheSampler(ID3D11SamplerState* sampler)
 		return entry;
 
 	// Bound the cache: games/ENBs that churn sampler objects would otherwise grow
-	// this map forever (entries hold refs, raw-pointer keys go stale). A periodic
-	// flush costs one re-cache pass; unbounded growth costs the user's commit limit.
+	// this map forever (entries hold refs, raw-pointer keys go stale). Flush is
+	// deferred to the start of the next hook call — clearing here could release
+	// a biased sampler already borrowed into this call's modified[] array.
 	if (g_samplerCache.size() >= 4096)
-		ClearSamplerCache();
+		g_cacheFlushPending = true;
 
 	entry.original = sampler;
 	entry.original->AddRef();
@@ -98,6 +100,12 @@ static void STDMETHODCALLTYPE Hook_PSSetSamplers(
 	    || numSamplers > D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
 		g_origPSSetSamplers(ctx, startSlot, numSamplers, ppSamplers);
 		return;
+	}
+
+	// Safe point for the deferred cache flush: nothing borrowed from the map yet
+	if (g_cacheFlushPending) {
+		ClearSamplerCache();
+		g_cacheFlushPending = false;
 	}
 
 	ID3D11SamplerState* modified[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
