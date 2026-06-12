@@ -167,13 +167,14 @@ VR_INTERFACE void* VR_CALLTYPE VR_GetGenericInterface(const char* interfaceVersi
 		interfaceVersion ? interfaceVersion : "<null>",
 		callerModule
 	);
-	OOVR_MESSAGE(interfaceVersion, "Missing interface");
 
-	ERR("Unknown or unsupported OpenVR interface: " + string(interfaceVersion) + "\n\n"
-		"The game or tool you are running requires an OpenVR interface version that this build\n"
-		"of Open Composite Unleashed does not support. This build is designed for Skyrim VR and\n"
-		"Fallout 4 VR only — other games may request newer or different interface versions.\n\n"
-		"Do NOT contact Virtual Desktop support for this issue.");
+	// Per the OpenVR contract a missing interface returns null with InterfaceNotFound
+	// so callers can fall back. Aborting here pops a dialog the user cannot see in the
+	// headset — field-reported as a "hard freeze" (e.g. a plugin probing IVRSystem_023
+	// against a build missing that stub). The log above names the interface and caller.
+	if (error)
+		*error = VRInitError_Init_InterfaceNotFound;
+	return nullptr;
 #undef INTERFACE
 }
 
