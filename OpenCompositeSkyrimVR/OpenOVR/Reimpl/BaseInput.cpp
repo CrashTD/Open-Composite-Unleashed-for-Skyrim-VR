@@ -1231,10 +1231,23 @@ XrResult BaseInput::getBooleanOrDpadData(Action& action, const XrActionStateGetI
 		// read state of parent
 		XrActionStateVector2f parent_state = { XR_TYPE_ACTION_STATE_VECTOR2F };
 		auto iter = DpadBindingInfo::parents.find(parent_name);
-		OOVR_FALSE_ABORT(iter != DpadBindingInfo::parents.end());
+		if (iter == DpadBindingInfo::parents.end()) {
+			// Unknown compound binding (modded gesture presets can produce these).
+			// Never abort here: the abort's hidden message box reads as a hard
+			// freeze to a user wearing the headset. Skip the binding instead.
+			static int s_dpadMissLog = 0;
+			if (s_dpadMissLog++ < 5)
+				OOVR_LOGF("BaseInput: dpad parent '%s' not found — skipping binding", parent_name.c_str());
+			continue;
+		}
 		XrActionStateGetInfo info2 = *getInfo;
 		info2.action = iter->second.vectorAction;
-		OOVR_FAILED_XR_ABORT(xrGetActionStateVector2f(xr_session.get(), &info2, &parent_state));
+		if (XR_FAILED(xrGetActionStateVector2f(xr_session.get(), &info2, &parent_state))) {
+			static int s_dpadStateLog = 0;
+			if (s_dpadStateLog++ < 5)
+				OOVR_LOGF("BaseInput: dpad parent '%s' state read failed — skipping binding", parent_name.c_str());
+			continue;
+		}
 
 		// convert to polar coordinates
 		// angle is in radians
@@ -1962,7 +1975,8 @@ EVRInputError BaseInput::TriggerHapticVibrationAction(VRActionHandle_t action, f
 	vibration.duration = (int)(fDurationSeconds * 1000000000.0f);
 	vibration.amplitude = fAmplitude;
 
-	OOVR_FAILED_XR_ABORT(xrApplyHapticFeedback(xr_session.get(), &info, (XrHapticBaseHeader*)&vibration));
+	// Haptic failure must never kill the game (abort = hidden message box = perceived freeze)
+	OOVR_FAILED_XR_SOFT_ABORT(xrApplyHapticFeedback(xr_session.get(), &info, (XrHapticBaseHeader*)&vibration));
 
 	return VRInputError_None;
 }
@@ -2596,7 +2610,8 @@ void BaseInput::TriggerLegacyHapticPulse(vr::TrackedDeviceIndex_t controllerDevi
 	vibration.duration = durationNanos;
 	vibration.amplitude = (amplitude >= 0.0f) ? amplitude : oovr_global_configuration.HapticStrength();
 
-	OOVR_FAILED_XR_ABORT(xrApplyHapticFeedback(xr_session.get(), &info, (XrHapticBaseHeader*)&vibration));
+	// Haptic failure must never kill the game (abort = hidden message box = perceived freeze)
+	OOVR_FAILED_XR_SOFT_ABORT(xrApplyHapticFeedback(xr_session.get(), &info, (XrHapticBaseHeader*)&vibration));
 }
 
 int BaseInput::DeviceIndexToHandId(vr::TrackedDeviceIndex_t idx)
