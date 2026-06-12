@@ -56,6 +56,12 @@ static CachedSampler CacheSampler(ID3D11SamplerState* sampler)
 	if (!sampler)
 		return entry;
 
+	// Bound the cache: games/ENBs that churn sampler objects would otherwise grow
+	// this map forever (entries hold refs, raw-pointer keys go stale). A periodic
+	// flush costs one re-cache pass; unbounded growth costs the user's commit limit.
+	if (g_samplerCache.size() >= 4096)
+		ClearSamplerCache();
+
 	entry.original = sampler;
 	entry.original->AddRef();
 
