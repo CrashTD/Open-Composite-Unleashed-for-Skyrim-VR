@@ -183,6 +183,12 @@ private:
 	// Virtual Keyboard
 	std::unique_ptr<VRKeyboard> keyboard;
 
+	// Overlay whose event queue the keyboard's dispatch lambda targets (null = system
+	// queue). DestroyOverlay must close the keyboard when its owner dies — otherwise
+	// Done pushes into the deleted overlay's freed event deque (field crash: UAF →
+	// bad_array_new_length in deque::_Growmap).
+	OverlayData* keyboardOwner = nullptr;
+
 	// Cached copy of the keyboard contents, available after it is closed
 	std::string keyboardCache;
 

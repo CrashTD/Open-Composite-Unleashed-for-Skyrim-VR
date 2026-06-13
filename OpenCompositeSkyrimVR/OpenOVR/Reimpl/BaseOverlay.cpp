@@ -827,6 +827,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						} catch (const std::exception& e) {
 							OOVR_LOGF("Keyboard creation failed (shortcut): %s", e.what());
 							keyboard.reset();
+	keyboardOwner = nullptr;
 						}
 					} else {
 						OOVR_LOG("Keyboard activation skipped - D3D device unavailable");
@@ -932,6 +933,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					} catch (const std::exception& e) {
 						OOVR_LOGF("Keyboard creation failed (auto-detect): %s", e.what());
 						keyboard.reset();
+	keyboardOwner = nullptr;
 					}
 				} else {
 					OOVR_LOG("Auto keyboard skipped - D3D device unavailable");
@@ -1622,6 +1624,17 @@ EVROverlayError BaseOverlay::DestroyOverlay(VROverlayHandle_t ulOverlayHandle)
 		    (unsigned long long)(uintptr_t)preDeviceCheck);
 	}
 #endif
+
+	// If the keyboard was opened for this overlay, its dispatch lambda holds a raw
+	// pointer to the overlay's event queue. Close it before the queue is freed —
+	// pressing Done afterwards pushed into deleted memory (field crash, b.2).
+	if (keyboard && keyboardOwner == overlay) {
+		OOVR_LOG("DestroyOverlay: closing keyboard bound to dying overlay");
+		keyboard.reset();
+	keyboardOwner = nullptr;
+	}
+	if (keyboardOwner == overlay)
+		keyboardOwner = nullptr;
 
 	overlays.erase(overlay->key);
 	validOverlays.erase(overlay);
@@ -2525,6 +2538,7 @@ EVROverlayError BaseOverlay::ShowKeyboardWithDispatch(EGamepadTextInputMode eInp
 	} catch (const std::exception& e) {
 		OOVR_LOGF("Keyboard creation failed (ShowKeyboard): %s", e.what());
 		keyboard.reset();
+	keyboardOwner = nullptr;
 		SubmitPlaceholderKeyboardEvent(VREvent_KeyboardDone, eventDispatch, uUserValue);
 		keyboardCache = "Adventurer";
 		return VROverlayError_None;
@@ -2584,7 +2598,10 @@ EVROverlayError BaseOverlay::ShowKeyboardForOverlay(VROverlayHandle_t ulOverlayH
 		overlay->eventQueue.push(ev);
 	};
 
-	return ShowKeyboardWithDispatch(eInputMode, eLineInputMode, pchDescription, unCharMax, pchExistingText, bUseMinimalMode, uUserValue, dispatch);
+	EVROverlayError err = ShowKeyboardWithDispatch(eInputMode, eLineInputMode, pchDescription, unCharMax, pchExistingText, bUseMinimalMode, uUserValue, dispatch);
+	if (err == VROverlayError_None && keyboard)
+		keyboardOwner = overlay;
+	return err;
 }
 EVROverlayError BaseOverlay::ShowKeyboardForOverlay(VROverlayHandle_t ulOverlayHandle, EGamepadTextInputMode eInputMode,
     EGamepadTextInputLineMode eLineInputMode, uint32_t unFlags, const char* pchDescription, uint32_t unCharMax,
@@ -2598,7 +2615,10 @@ EVROverlayError BaseOverlay::ShowKeyboardForOverlay(VROverlayHandle_t ulOverlayH
 	};
 
 	bool bUseMinimalMode = (unFlags & 1) != 0;
-	return ShowKeyboardWithDispatch(eInputMode, eLineInputMode, pchDescription, unCharMax, pchExistingText, bUseMinimalMode, uUserValue, dispatch);
+	EVROverlayError err = ShowKeyboardWithDispatch(eInputMode, eLineInputMode, pchDescription, unCharMax, pchExistingText, bUseMinimalMode, uUserValue, dispatch);
+	if (err == VROverlayError_None && keyboard)
+		keyboardOwner = overlay;
+	return err;
 }
 uint32_t BaseOverlay::GetKeyboardText(char* pchText, uint32_t cchText)
 {
@@ -2629,6 +2649,7 @@ void BaseOverlay::HideKeyboard()
 
 	// Delete the keyboard instance
 	keyboard.reset();
+	keyboardOwner = nullptr;
 
 	{
 		ID3D11Device* postDestroyDev = BaseCompositor::dxcomp ? BaseCompositor::dxcomp->GetDevice() : nullptr;
