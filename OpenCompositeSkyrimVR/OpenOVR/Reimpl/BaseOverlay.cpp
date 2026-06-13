@@ -37,6 +37,12 @@ using namespace vr;
 // The keyboard itself uses GetUnmaskedControllerState() so it still sees triggers.
 bool g_kbLaserConsumesTrigger[2] = { false, false };
 
+// When true, the keyboard is being grab-moved. BaseSystem::GetControllerState() masks
+// thumbstick locomotion + action buttons on BOTH hands so the player doesn't walk/turn/
+// jump/act while repositioning the keyboard (matches PrismaVR's grab masking). The
+// keyboard reads GetUnmaskedControllerState() so its own depth/pinch sticks still work.
+bool g_kbGrabActive = false;
+
 bool g_menuLaserActive = false; // Kept defined — BaseSystem.cpp extern's it (always false when laser disabled)
 
 // [EXPERIMENTAL — DISABLED] Custom Windows message for laser→Scaleform injection

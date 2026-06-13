@@ -170,6 +170,10 @@ static void UpdateIniKey(const std::wstring& iniPath, const char* key, const cha
 	}
 }
 
+// Set while the keyboard is grab-moved; BaseSystem::GetControllerState masks player
+// locomotion/turn/jump/action on both hands so dragging doesn't move the character.
+extern bool g_kbGrabActive;
+
 // Two-handed pinch scale: while one hand grab-drags, the second trigger on the grab
 // bar enters pinch mode — hand separation scales the keyboard (same 50-150% value as
 // the size arrows and Configurator).
@@ -1277,6 +1281,8 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 
 VRKeyboard::~VRKeyboard()
 {
+	g_kbGrabActive = false; // never leave player movement masked if closed mid-grab
+
 	if (crosshairChain != XR_NULL_HANDLE) {
 		xrDestroySwapchain(crosshairChain);
 		crosshairChain = XR_NULL_HANDLE;
@@ -1785,6 +1791,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				// The laser already hit the keyboard — use that hit point
 				if (laserActive[side]) {
 					grabActive = true;
+					g_kbGrabActive = true; // mask player movement while grabbing
 					grabbingSide = side;
 					grabPlaneOrigin = layer.pose.position;
 					// Offset from hit point to keyboard center
@@ -1799,6 +1806,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 			if (grabActive && grabbingSide == side) {
 				if (trigJustReleased) {
 					grabActive = false;
+					g_kbGrabActive = false; // restore player movement
 					grabbingSide = -1;
 					if (s_pinchActive) {
 						s_pinchActive = false;
@@ -1890,11 +1898,13 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 						}
 					}
 
-					// Prisma-style depth control: thumbstick Y pushes/pulls the keyboard
-					// along its facing normal while grabbed (clamped to arm's reach).
-					// The grab plane moves with it so the in-plane slide stays consistent.
+					// Prisma-style depth control: the NON-grabbing hand's thumbstick Y
+					// pushes/pulls the keyboard along its facing normal (matches PrismaVR,
+					// where the grabbing hand's stick is reserved). Clamped to arm's reach;
+					// the grab plane moves with it so the in-plane slide stays consistent.
 					{
-						float stickY = states[side].rAxis[0].y;
+						int depthHand = 1 - side;
+						float stickY = hasState[depthHand] ? states[depthHand].rAxis[0].y : 0.0f;
 						if (!s_pinchActive && fabsf(stickY) > 0.2f) {
 							XrVector3f n;
 							rotate_vector_by_quaternion({ 0, 0, 1 }, layer.pose.orientation, n);
