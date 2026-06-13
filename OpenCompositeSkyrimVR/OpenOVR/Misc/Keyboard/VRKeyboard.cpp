@@ -1823,6 +1823,31 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 						}
 					}
 				} else if (trigNow) {
+					// Prisma-style depth control: thumbstick Y pushes/pulls the keyboard
+					// along its facing normal while grabbed (clamped to arm's reach).
+					// The grab plane moves with it so the in-plane slide stays consistent.
+					{
+						float stickY = states[side].rAxis[0].y;
+						if (fabsf(stickY) > 0.2f) {
+							XrVector3f n;
+							rotate_vector_by_quaternion({ 0, 0, 1 }, layer.pose.orientation, n);
+							float step = stickY * 0.015f; // ~1.2 m/s at 90fps, half deflection
+							XrVector3f newPos = {
+								layer.pose.position.x - n.x * step,
+								layer.pose.position.y - n.y * step,
+								layer.pose.position.z - n.z * step
+							};
+							float ddx = newPos.x - headWorldPos.x;
+							float ddz = newPos.z - headWorldPos.z;
+							float dist = sqrtf(ddx * ddx + ddz * ddz);
+							if (dist >= 0.35f && dist <= 1.6f) {
+								grabPlaneOrigin.x += newPos.x - layer.pose.position.x;
+								grabPlaneOrigin.y += newPos.y - layer.pose.position.y;
+								grabPlaneOrigin.z += newPos.z - layer.pose.position.z;
+								layer.pose.position = newPos;
+							}
+						}
+					}
 					// Intersect the laser ray with the ORIGINAL grab plane
 					// (not the current keyboard position — avoids feedback lag)
 					std::shared_ptr<BaseInput> input = GetBaseInput();
