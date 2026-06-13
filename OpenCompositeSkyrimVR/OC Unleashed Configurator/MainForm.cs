@@ -918,12 +918,12 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(_nudKbHapticStrength);
             container.Controls.Add(MakeLabel("%", rx + 398, ry + 3, 20));
-            ry += 32;
+            ry += 36;
 
             // Row 5: Sticky-position reset. The keyboard remembers where the user parks it
             // (head-relative offset written by the DLL on grab release); this restores the
             // factory spawn offset without touching any other keyboard settings.
-            var btnKbPosReset = MakeButton("Reset Keyboard Position", rx, ry, 200, 26);
+            var btnKbPosReset = MakeButton("Reset Keyboard Position", rx, ry, 250, 28);
             btnKbPosReset.Click += (s, e) =>
             {
                 _ini.Set("keyboard", "positionForward", "0.80");
@@ -934,12 +934,14 @@ namespace OpenCompositeConfigurator
                     "OCU Configurator", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
             container.Controls.Add(btnKbPosReset);
-            var lblKbPosDesc = MakeLabel("The keyboard remembers where you park it. This restores the default spot.", rx + 210, ry + 5, 420);
+            ry += 32;
+            var lblKbPosDesc = MakeLabel("The keyboard remembers where you park it. This restores the default spot.", rx, ry, 440);
             lblKbPosDesc.ForeColor = Color.FromArgb(130, 130, 130);
             lblKbPosDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
             container.Controls.Add(lblKbPosDesc);
+            ry += 24;
 
-            y = Math.Max(Math.Max(imageBottom, chkY), ry + 32);
+            y = Math.Max(Math.Max(imageBottom, chkY), ry);
 
             y += 12;
             container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
