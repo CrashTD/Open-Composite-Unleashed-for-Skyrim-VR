@@ -170,6 +170,25 @@ static void UpdateIniKey(const std::wstring& iniPath, const char* key, const cha
 	}
 }
 
+// Sticky spawn position: head-relative offset persisted on grab release. Head-relative
+// (not world-anchored) so the keyboard always opens within reach — just where the user
+// last parked it. Clamps make even a hand-edited ini un-strandable.
+static float s_posForward = 0.80f; // meters in front of head
+static float s_posDown = 0.52f;    // meters below head
+static float s_posRight = 0.0f;    // meters to the right of head
+
+static void SaveKeyboardPosition()
+{
+	std::wstring path = GetOCDllDirectory() + L"opencomposite.ini";
+	char buf[32];
+	snprintf(buf, sizeof(buf), "%.2f", s_posForward);
+	UpdateIniKey(path, "positionForward", buf);
+	snprintf(buf, sizeof(buf), "%.2f", s_posDown);
+	UpdateIniKey(path, "positionDown", buf);
+	snprintf(buf, sizeof(buf), "%.2f", s_posRight);
+	UpdateIniKey(path, "positionRight", buf);
+}
+
 static void SaveKeyboardSettings()
 {
 	std::wstring path = GetOCDllDirectory() + L"opencomposite.ini";
@@ -188,6 +207,8 @@ static void SaveKeyboardSettings()
 	snprintf(buf, sizeof(buf), "%d", s_hapticStrength);
 	UpdateIniKey(path, "hapticStrength", buf);
 }
+
+static bool ReloadKeyboardSettings();
 
 static void LoadKeyboardSettings()
 {
@@ -219,6 +240,9 @@ static void LoadKeyboardSettings()
 	if (s_pressVolume > 100) s_pressVolume = 100;
 	if (s_hapticStrength < 0) s_hapticStrength = 0;
 	if (s_hapticStrength > 100) s_hapticStrength = 100;
+
+	// Pick up [keyboard] keys not mirrored in Config (volumes, sticky position)
+	ReloadKeyboardSettings();
 }
 
 // Re-read opencomposite.ini [keyboard] section (called when file changes externally)
@@ -244,6 +268,7 @@ static bool ReloadKeyboardSettings()
 	int newHoverVol = s_hoverVolume;
 	int newPressVol = s_pressVolume;
 	int newHaptic = s_hapticStrength;
+	float newPosF = s_posForward, newPosD = s_posDown, newPosR = s_posRight;
 	bool inKeyboardSection = false;
 	bool inDefaultSection = true;  // starts in default section (before any [header])
 	char line[256];
@@ -274,6 +299,12 @@ static bool ReloadKeyboardSettings()
 				newPressVol = ival;
 			if (sscanf(line, "hapticStrength=%d", &ival) == 1)
 				newHaptic = ival;
+			if (sscanf(line, "positionForward=%f", &val) == 1)
+				newPosF = val;
+			if (sscanf(line, "positionDown=%f", &val) == 1)
+				newPosD = val;
+			if (sscanf(line, "positionRight=%f", &val) == 1)
+				newPosR = val;
 		}
 
 		// Hot-reload ASW tuning values (in default section of ini)
@@ -312,6 +343,16 @@ static bool ReloadKeyboardSettings()
 	if (newPressVol > 100) newPressVol = 100;
 	if (newHaptic < 0) newHaptic = 0;
 	if (newHaptic > 100) newHaptic = 100;
+	// Position clamps: keyboard must always spawn within reach
+	if (newPosF < 0.3f) newPosF = 0.3f;
+	if (newPosF > 1.5f) newPosF = 1.5f;
+	if (newPosD < -0.3f) newPosD = -0.3f;
+	if (newPosD > 1.2f) newPosD = 1.2f;
+	if (newPosR < -1.0f) newPosR = -1.0f;
+	if (newPosR > 1.0f) newPosR = 1.0f;
+	s_posForward = newPosF;
+	s_posDown = newPosD;
+	s_posRight = newPosR;
 
 	bool changed = (newTilt != s_tiltDegrees || newOpacity != s_opacityPercent ||
 	                newScale != s_scalePercent || newSounds != s_soundsEnabled ||
@@ -1029,11 +1070,12 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 			headFwd = { 0.0f, 0.0f, -1.0f };
 		}
 
-		// Position: 80cm forward, 52cm below head (lowered to clear the PrismaUI quad)
+		// Sticky spawn: user-parked head-relative offset (defaults: 0.80m fwd, 0.52m below)
+		XrVector3f headRight = { -headFwd.z, 0.0f, headFwd.x };
 		layer.pose.position = {
-			headLoc.pose.position.x + headFwd.x * 0.80f,
-			headLoc.pose.position.y - 0.52f,
-			headLoc.pose.position.z + headFwd.z * 0.80f
+			headLoc.pose.position.x + headFwd.x * s_posForward + headRight.x * s_posRight,
+			headLoc.pose.position.y - s_posDown,
+			headLoc.pose.position.z + headFwd.z * s_posForward + headRight.z * s_posRight
 		};
 
 		// Orientation: face toward user + tilt
@@ -1579,7 +1621,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 					grabActive = false;
 					grabbingSide = -1;
 					layer.space = xr_gbl->viewSpace;
-					layer.pose.position = { 0.0f, -0.52f, -0.80f };
+					layer.pose.position = { s_posRight, -s_posDown, -s_posForward };
 					// Apply tilt in view space (yaw=0 since head-relative)
 					s_lastYaw = 0.0f;
 					float pitchRad = -s_tiltDegrees * 3.14159265f / 180.0f; // negative = bottom toward player
@@ -1604,10 +1646,11 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 						float fwdLen = sqrtf(headFwd.x * headFwd.x + headFwd.z * headFwd.z);
 						if (fwdLen > 0.001f) { headFwd.x /= fwdLen; headFwd.z /= fwdLen; }
 						else { headFwd = { 0.0f, 0.0f, -1.0f }; }
+						XrVector3f headRight = { -headFwd.z, 0.0f, headFwd.x };
 						layer.pose.position = {
-							hl.pose.position.x + headFwd.x * 0.80f,
-							hl.pose.position.y - 0.52f,
-							hl.pose.position.z + headFwd.z * 0.80f
+							hl.pose.position.x + headFwd.x * s_posForward + headRight.x * s_posRight,
+							hl.pose.position.y - s_posDown,
+							hl.pose.position.z + headFwd.z * s_posForward + headRight.z * s_posRight
 						};
 						float yaw = atan2f(headFwd.x, headFwd.z);
 						s_lastYaw = yaw;
@@ -1750,6 +1793,35 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				if (trigJustReleased) {
 					grabActive = false;
 					grabbingSide = -1;
+					// Sticky position: persist the parked spot as a head-relative offset
+					if (!headLocked) {
+						XrSpaceLocation shl = { XR_TYPE_SPACE_LOCATION };
+						if (XR_SUCCEEDED(xrLocateSpace(xr_gbl->viewSpace, xr_gbl->floorSpace,
+						        xr_gbl->GetBestTime(), &shl))
+						    && (shl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
+						    && (shl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+							XrVector3f f3;
+							rotate_vector_by_quaternion({ 0, 0, -1 }, shl.pose.orientation, f3);
+							f3.y = 0;
+							float len = sqrtf(f3.x * f3.x + f3.z * f3.z);
+							if (len > 0.001f) {
+								f3.x /= len;
+								f3.z /= len;
+								XrVector3f r3 = { -f3.z, 0, f3.x };
+								float dx = layer.pose.position.x - shl.pose.position.x;
+								float dz = layer.pose.position.z - shl.pose.position.z;
+								float fwd = dx * f3.x + dz * f3.z;
+								float right = dx * r3.x + dz * r3.z;
+								float down = shl.pose.position.y - layer.pose.position.y;
+								s_posForward = (fwd < 0.3f) ? 0.3f : ((fwd > 1.5f) ? 1.5f : fwd);
+								s_posRight = (right < -1.0f) ? -1.0f : ((right > 1.0f) ? 1.0f : right);
+								s_posDown = (down < -0.3f) ? -0.3f : ((down > 1.2f) ? 1.2f : down);
+								SaveKeyboardPosition();
+								OOVR_LOGF("[KB] Sticky position saved: fwd=%.2f down=%.2f right=%.2f",
+								    s_posForward, s_posDown, s_posRight);
+							}
+						}
+					}
 				} else if (trigNow) {
 					// Intersect the laser ray with the ORIGINAL grab plane
 					// (not the current keyboard position — avoids feedback lag)
