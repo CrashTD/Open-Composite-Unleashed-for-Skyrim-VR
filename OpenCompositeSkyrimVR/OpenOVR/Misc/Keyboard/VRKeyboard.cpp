@@ -170,6 +170,13 @@ static void UpdateIniKey(const std::wstring& iniPath, const char* key, const cha
 	}
 }
 
+// Two-handed pinch scale: while one hand grab-drags, the second trigger on the grab
+// bar enters pinch mode — hand separation scales the keyboard (same 50-150% value as
+// the size arrows and Configurator).
+static bool s_pinchActive = false;
+static float s_pinchBaseDist = 0.0f;
+static int s_pinchBaseScale = 100;
+
 // Sticky spawn position: head-relative offset persisted on grab release. Head-relative
 // (not world-anchored) so the keyboard always opens within reach — just where the user
 // last parked it. Clamps make even a hand-edited ini un-strandable.
@@ -1793,6 +1800,10 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				if (trigJustReleased) {
 					grabActive = false;
 					grabbingSide = -1;
+					if (s_pinchActive) {
+						s_pinchActive = false;
+						SaveKeyboardSettings(); // persist the pinched scale
+					}
 					// Sticky position: persist the parked spot as a head-relative offset
 					if (!headLocked) {
 						XrSpaceLocation shl = { XR_TYPE_SPACE_LOCATION };
@@ -1823,12 +1834,68 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 						}
 					}
 				} else if (trigNow) {
+					// Two-handed pinch scale: second trigger on the grab bar while this
+					// hand is grabbing. Hand separation drives the scale; position freezes
+					// while pinching so the keyboard doesn't swim as it stretches.
+					{
+						auto handSeparation = [&]() -> float {
+							std::shared_ptr<BaseInput> input = GetBaseInput();
+							if (!input || !input->AreActionsLoaded())
+								return 0.0f;
+							XrVector3f p[2];
+							for (int h = 0; h < 2; h++) {
+								XrSpace hs = XR_NULL_HANDLE;
+								input->GetHandSpace((vr::TrackedDeviceIndex_t)(h + 1), hs, true);
+								if (hs == XR_NULL_HANDLE)
+									return 0.0f;
+								XrSpaceLocation hloc = { XR_TYPE_SPACE_LOCATION };
+								if (XR_FAILED(xrLocateSpace(hs, xr_gbl->floorSpace, xr_gbl->GetBestTime(), &hloc))
+								    || !(hloc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+									return 0.0f;
+								p[h] = hloc.pose.position;
+							}
+							float pdx = p[0].x - p[1].x, pdy = p[0].y - p[1].y, pdz = p[0].z - p[1].z;
+							return sqrtf(pdx * pdx + pdy * pdy + pdz * pdz);
+						};
+
+						int other = 1 - side;
+						bool otherTrig = hasState[other] && (states[other].ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)) != 0;
+						if (!s_pinchActive && otherTrig && laserOnGrabBar[other]) {
+							float d = handSeparation();
+							if (d > 0.01f) {
+								s_pinchActive = true;
+								s_pinchBaseDist = d;
+								s_pinchBaseScale = s_scalePercent;
+								PlayPressSound();
+							}
+						}
+						if (s_pinchActive) {
+							if (!otherTrig) {
+								s_pinchActive = false;
+								SaveKeyboardSettings(); // persist the pinched scale
+							} else {
+								float d = handSeparation();
+								if (d > 0.01f && s_pinchBaseDist > 0.01f) {
+									int ns = (int)(s_pinchBaseScale * (d / s_pinchBaseDist) + 0.5f);
+									if (ns < 50) ns = 50;
+									if (ns > 150) ns = 150;
+									if (ns != s_scalePercent) {
+										s_scalePercent = ns;
+										float sf = s_scalePercent / 100.0f;
+										layer.size.width = 1.05f * sf;
+										layer.size.height = 0.49f * sf;
+									}
+								}
+							}
+						}
+					}
+
 					// Prisma-style depth control: thumbstick Y pushes/pulls the keyboard
 					// along its facing normal while grabbed (clamped to arm's reach).
 					// The grab plane moves with it so the in-plane slide stays consistent.
 					{
 						float stickY = states[side].rAxis[0].y;
-						if (fabsf(stickY) > 0.2f) {
+						if (!s_pinchActive && fabsf(stickY) > 0.2f) {
 							XrVector3f n;
 							rotate_vector_by_quaternion({ 0, 0, 1 }, layer.pose.orientation, n);
 							float step = stickY * 0.015f; // ~1.2 m/s at 90fps, half deflection
@@ -1875,7 +1942,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 										grabPlaneOrigin.z - rayOrig.z
 									};
 									float t = xr_dot(PO, planeN) / d;
-									if (t > 0.0f) {
+									if (t > 0.0f && !s_pinchActive) { // position frozen while pinch-scaling
 										XrVector3f hit = {
 											rayOrig.x + t * rayDir.x,
 											rayOrig.y + t * rayDir.y,
