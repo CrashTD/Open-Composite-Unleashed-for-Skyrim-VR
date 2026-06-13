@@ -920,26 +920,9 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(MakeLabel("%", rx + 398, ry + 3, 20));
             ry += 36;
 
-            // Row 5: Sticky-position reset. The keyboard remembers where the user parks it
-            // (head-relative offset written by the DLL on grab release); this restores the
-            // factory spawn offset without touching any other keyboard settings.
-            var btnKbPosReset = MakeButton("Reset Keyboard Position", rx, ry, 250, 28);
-            btnKbPosReset.Click += (s, e) =>
-            {
-                _ini.Set("keyboard", "positionForward", "0.80");
-                _ini.Set("keyboard", "positionDown", "0.52");
-                _ini.Set("keyboard", "positionRight", "0.00");
-                _ini.Save();
-                MessageBox.Show("Keyboard position reset to default (80cm forward, 52cm below eyes).",
-                    "OCU Configurator", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            };
-            container.Controls.Add(btnKbPosReset);
-            ry += 32;
-            var lblKbPosDesc = MakeLabel("The keyboard remembers where you park it. This restores the default spot.", rx, ry, 440);
-            lblKbPosDesc.ForeColor = Color.FromArgb(130, 130, 130);
-            lblKbPosDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-            container.Controls.Add(lblKbPosDesc);
-            ry += 24;
+            // No reset-position control: the keyboard spawns head-relative and clamped to
+            // arm's reach, so it can never be lost — moving it is the reset. The DLL still
+            // persists the parked offset (positionForward/Down/Right) for sticky placement.
 
             y = Math.Max(Math.Max(imageBottom, chkY), ry);
 
