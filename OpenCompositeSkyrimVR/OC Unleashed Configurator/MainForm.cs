@@ -209,6 +209,12 @@ namespace OpenCompositeConfigurator
         private Button _btnSave = null!;
         private Button _btnReload = null!;
 
+        // Unsaved-changes indicator: breathing overlay banner + on-close save prompt
+        private Label _lblUnsavedBanner = null!;
+        private System.Windows.Forms.Timer _breatheTimer = null!;
+        private double _breathePhase = 0.0;
+        private bool _dirty = false;
+
         // Status
         private Label _lblStatus = null!;
 
@@ -416,6 +422,7 @@ namespace OpenCompositeConfigurator
             SetDefaults();
             LoadDefaultKeyBindings();
             ApplyCurrentGamePaths();
+            WireDirtyTracking(this);   // subscribe AFTER initial population so loading never marks dirty
         }
 
         private void LoadControllerImage()
@@ -502,6 +509,25 @@ namespace OpenCompositeConfigurator
                 Text = "Keep this EXE in the OCU mod folder. Create a desktop shortcut; do not move the EXE."
             };
             Controls.Add(_lblInstallNotice);
+
+            // Floating overlay (Visible=false until dirty) — occupies no layout space, can't reflow/overflow
+            _lblUnsavedBanner = new Label
+            {
+                Location = new Point(leftMargin + 225, y),
+                Width = 860,
+                Height = 24,
+                Visible = false,
+                BackColor = Color.FromArgb(55, 38, 14),
+                ForeColor = Color.FromArgb(190, 150, 95),
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Text = "●  Unsaved changes — remember to Save"
+            };
+            Controls.Add(_lblUnsavedBanner);
+            _lblUnsavedBanner.BringToFront();
+
+            _breatheTimer = new System.Windows.Forms.Timer { Interval = 33 };
+            _breatheTimer.Tick += BreatheTimer_Tick;
 
             y += 40;
 
@@ -5922,6 +5948,7 @@ namespace OpenCompositeConfigurator
                 _lblStatus.ForeColor = Color.FromArgb(100, 200, 100);
                 _lblVideoStatus.Text = $"{locationMsg} \u2014 restart game for changes";
                 _lblVideoStatus.ForeColor = Color.FromArgb(100, 200, 100);
+                ClearDirty();
             }
             catch (Exception ex)
             {
@@ -5935,6 +5962,79 @@ namespace OpenCompositeConfigurator
         private void BtnReload_Click(object? sender, EventArgs e)
         {
             LoadFromDir();
+            ClearDirty();   // reloaded state matches disk — no unsaved changes
+        }
+
+        private void MarkDirty()
+        {
+            if (_isLoading || _dirty) return;
+            _dirty = true;
+            _lblUnsavedBanner.Visible = true;
+            _lblUnsavedBanner.BringToFront();
+            _breathePhase = 0.0;
+            _breatheTimer.Start();
+        }
+
+        private void ClearDirty()
+        {
+            _dirty = false;
+            _breatheTimer.Stop();
+            _lblUnsavedBanner.Visible = false;
+        }
+
+        // Subscribe dirty-tracking to every settings input; skip the Bindings tab (own save + nav combos)
+        private void WireDirtyTracking(Control root)
+        {
+            foreach (Control c in root.Controls)
+            {
+                if (c == _tabKeyboard) continue;
+                switch (c)
+                {
+                    case CheckBox cb:     cb.CheckedChanged += (s, e) => MarkDirty(); break;
+                    case RadioButton rb:  rb.CheckedChanged += (s, e) => MarkDirty(); break;
+                    case NumericUpDown n: n.ValueChanged += (s, e) => MarkDirty(); break;
+                    case TrackBar t:      t.ValueChanged += (s, e) => MarkDirty(); break;
+                    case ComboBox cmb:    cmb.SelectedIndexChanged += (s, e) => MarkDirty(); break;
+                    case TextBox tb:      tb.TextChanged += (s, e) => MarkDirty(); break;
+                }
+                if (c.HasChildren) WireDirtyTracking(c);
+            }
+        }
+
+        // Smooth in/out "breathing" glow via sine-driven color lerp (not a hard flash)
+        private void BreatheTimer_Tick(object? sender, EventArgs e)
+        {
+            _breathePhase += 0.14;
+            double t = (Math.Sin(_breathePhase) + 1.0) / 2.0;
+            _lblUnsavedBanner.BackColor = BannerLerp(Color.FromArgb(55, 38, 14), Color.FromArgb(150, 100, 30), t);
+            _lblUnsavedBanner.ForeColor = BannerLerp(Color.FromArgb(190, 150, 95), Color.FromArgb(255, 235, 190), t);
+        }
+
+        private static Color BannerLerp(Color a, Color b, double t)
+        {
+            return Color.FromArgb(
+                (int)(a.R + (b.R - a.R) * t),
+                (int)(a.G + (b.G - a.G) * t),
+                (int)(a.B + (b.B - a.B) * t));
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (_dirty)
+            {
+                var r = MessageBox.Show(
+                    "You have unsaved changes.\n\nSave before exiting?",
+                    "Unsaved Changes",
+                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                if (r == DialogResult.Cancel)
+                    e.Cancel = true;
+                else if (r == DialogResult.Yes)
+                {
+                    BtnSave_Click(this, EventArgs.Empty);
+                    if (_dirty) e.Cancel = true;   // save didn't complete — keep window open, don't lose changes
+                }
+            }
+            base.OnFormClosing(e);
         }
 
         private void LoadFromDir()
