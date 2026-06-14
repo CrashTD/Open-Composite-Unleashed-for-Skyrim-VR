@@ -212,7 +212,7 @@ namespace OpenCompositeConfigurator
         // Unsaved-changes indicator: breathing overlay banner + on-close save prompt
         private Label _lblUnsavedBanner = null!;
         private System.Windows.Forms.Timer _breatheTimer = null!;
-        private double _breathePhase = 0.0;
+        private bool _flashOn = false;
         private bool _dirty = false;
 
         // Status
@@ -526,7 +526,7 @@ namespace OpenCompositeConfigurator
             Controls.Add(_lblUnsavedBanner);
             _lblUnsavedBanner.BringToFront();
 
-            _breatheTimer = new System.Windows.Forms.Timer { Interval = 33 };
+            _breatheTimer = new System.Windows.Forms.Timer { Interval = 450 };
             _breatheTimer.Tick += BreatheTimer_Tick;
 
             y += 40;
@@ -5971,7 +5971,8 @@ namespace OpenCompositeConfigurator
             _dirty = true;
             _lblUnsavedBanner.Visible = true;
             _lblUnsavedBanner.BringToFront();
-            _breathePhase = 0.0;
+            _flashOn = true;
+            _lblUnsavedBanner.ForeColor = Color.FromArgb(255, 205, 60);
             _breatheTimer.Start();
         }
 
@@ -6001,12 +6002,11 @@ namespace OpenCompositeConfigurator
             }
         }
 
-        // Pronounced "breathing" of the big bold letters — wide swing, brighter peak (noticeable, not a hard flash)
+        // Color-flash: alternate the big bold letters between gold and orange-red (~1Hz, attention-grabbing, not a strobe)
         private void BreatheTimer_Tick(object? sender, EventArgs e)
         {
-            _breathePhase += 0.18;
-            double t = (Math.Sin(_breathePhase) + 1.0) / 2.0;
-            _lblUnsavedBanner.ForeColor = BannerLerp(Color.FromArgb(120, 75, 20), Color.FromArgb(255, 200, 70), t);
+            _flashOn = !_flashOn;
+            _lblUnsavedBanner.ForeColor = _flashOn ? Color.FromArgb(255, 205, 60) : Color.FromArgb(235, 75, 40);
         }
 
         private static Color BannerLerp(Color a, Color b, double t)
