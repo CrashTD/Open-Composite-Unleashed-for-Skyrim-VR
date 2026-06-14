@@ -510,19 +510,18 @@ namespace OpenCompositeConfigurator
             };
             Controls.Add(_lblInstallNotice);
 
-            // Floating overlay just under the install notice (Visible=false until dirty) — no layout reflow.
-            // BackColor matches the form bg so there's no box; only the bold letters breathe.
+            // Floating overlay on the top notice line (Visible=false until dirty) — big bold letters breathe, no box, no reflow
             _lblUnsavedBanner = new Label
             {
-                Location = new Point(leftMargin + 225, y + 22),
+                Location = new Point(leftMargin + 225, y - 5),
                 Width = 860,
-                Height = 18,
+                Height = 34,
                 Visible = false,
                 BackColor = Color.FromArgb(30, 30, 35),
-                ForeColor = Color.FromArgb(150, 110, 50),
-                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(120, 75, 20),
+                Font = new Font("Segoe UI", 20f, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleCenter,
-                Text = "●  Unsaved changes — remember to Save"
+                Text = "YOU HAVE UNSAVED CHANGES, REMEMBER TO SAVE."
             };
             Controls.Add(_lblUnsavedBanner);
             _lblUnsavedBanner.BringToFront();
@@ -6002,12 +6001,12 @@ namespace OpenCompositeConfigurator
             }
         }
 
-        // Smooth in/out "breathing" of the bold letters via sine-driven text-color lerp (no box, no flash)
+        // Pronounced "breathing" of the big bold letters — wide swing, brighter peak (noticeable, not a hard flash)
         private void BreatheTimer_Tick(object? sender, EventArgs e)
         {
-            _breathePhase += 0.14;
+            _breathePhase += 0.18;
             double t = (Math.Sin(_breathePhase) + 1.0) / 2.0;
-            _lblUnsavedBanner.ForeColor = BannerLerp(Color.FromArgb(150, 110, 50), Color.FromArgb(255, 220, 130), t);
+            _lblUnsavedBanner.ForeColor = BannerLerp(Color.FromArgb(120, 75, 20), Color.FromArgb(255, 200, 70), t);
         }
 
         private static Color BannerLerp(Color a, Color b, double t)
