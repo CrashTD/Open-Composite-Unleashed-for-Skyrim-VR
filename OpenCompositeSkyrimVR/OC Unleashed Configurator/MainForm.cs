@@ -6445,6 +6445,8 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "supersampleRatio", _nudSuperSample.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "renderCustomHands", _chkRenderHands.Checked ? "true" : "false");
             _ini.Set("", "haptics", _chkHaptics.Checked ? "true" : "false");
+            // Always-visible control (both games) — must write unconditionally to match the unconditional read
+            _ini.Set("", "hapticStrength", _nudHapticStrength.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "enableHiddenMeshFix", _chkHiddenMesh.Checked ? "true" : "false");
             _ini.Set("", "invertUsingShaders", _chkInvertShaders.Checked ? "true" : "false");
             _ini.Set("", "dx10Mode", _chkDx10.Checked ? "true" : "false");
@@ -6459,7 +6461,6 @@ namespace OpenCompositeConfigurator
 
             if (_gameType == "skyrim")
             {
-                _ini.Set("", "hapticStrength", _nudHapticStrength.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
                 _ini.Set("", "enableInputSmoothing", _chkInputSmoothing.Checked ? "true" : "false");
                 _ini.Set("", "inputWindowSize", ((int)_nudInputWindow.Value).ToString());
                 _ini.Set("", "enableControllerSmoothing", _chkControllerSmoothing.Checked ? "true" : "false");
