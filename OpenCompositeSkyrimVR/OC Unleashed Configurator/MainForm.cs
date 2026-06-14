@@ -510,16 +510,17 @@ namespace OpenCompositeConfigurator
             };
             Controls.Add(_lblInstallNotice);
 
-            // Floating overlay (Visible=false until dirty) — occupies no layout space, can't reflow/overflow
+            // Floating overlay just under the install notice (Visible=false until dirty) — no layout reflow.
+            // BackColor matches the form bg so there's no box; only the bold letters breathe.
             _lblUnsavedBanner = new Label
             {
-                Location = new Point(leftMargin + 225, y),
+                Location = new Point(leftMargin + 225, y + 22),
                 Width = 860,
-                Height = 24,
+                Height = 18,
                 Visible = false,
-                BackColor = Color.FromArgb(55, 38, 14),
-                ForeColor = Color.FromArgb(190, 150, 95),
-                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+                BackColor = Color.FromArgb(30, 30, 35),
+                ForeColor = Color.FromArgb(150, 110, 50),
+                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleCenter,
                 Text = "●  Unsaved changes — remember to Save"
             };
@@ -6001,13 +6002,12 @@ namespace OpenCompositeConfigurator
             }
         }
 
-        // Smooth in/out "breathing" glow via sine-driven color lerp (not a hard flash)
+        // Smooth in/out "breathing" of the bold letters via sine-driven text-color lerp (no box, no flash)
         private void BreatheTimer_Tick(object? sender, EventArgs e)
         {
             _breathePhase += 0.14;
             double t = (Math.Sin(_breathePhase) + 1.0) / 2.0;
-            _lblUnsavedBanner.BackColor = BannerLerp(Color.FromArgb(55, 38, 14), Color.FromArgb(150, 100, 30), t);
-            _lblUnsavedBanner.ForeColor = BannerLerp(Color.FromArgb(190, 150, 95), Color.FromArgb(255, 235, 190), t);
+            _lblUnsavedBanner.ForeColor = BannerLerp(Color.FromArgb(150, 110, 50), Color.FromArgb(255, 220, 130), t);
         }
 
         private static Color BannerLerp(Color a, Color b, double t)
