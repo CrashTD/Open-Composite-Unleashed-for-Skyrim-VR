@@ -76,6 +76,12 @@ public:
 	const std::string& KbShortcutButton() const { return kbShortcutButton; }
 	const std::string& KbShortcutMode() const { return kbShortcutMode; }
 	int KbShortcutTiming() const { return kbShortcutTiming; }
+	const std::string& KbShortcutTrackpad() const { return kbShortcutTrackpad; }
+	bool KbGesturesEnabled() const { return kbGesturesEnabled; }
+	float KbGestureThreshold() const { return kbGestureThreshold; }
+	bool KbGestureSounds() const { return kbGestureSounds; }
+	const std::string& KbGestureFinishSound() const { return kbGestureFinishSound; }
+	float KbGestureArmHeight() const { return kbGestureArmHeight; }
 	float KbDisplayTilt() const { return kbDisplayTilt; }
 	int KbDisplayOpacity() const { return kbDisplayOpacity; }
 	int KbDisplayScale() const { return kbDisplayScale; }
@@ -395,6 +401,12 @@ private:
 	std::string kbShortcutButton = "left_stick";
 	std::string kbShortcutMode = "double_tap";
 	int kbShortcutTiming = 500;
+	std::string kbShortcutTrackpad = "none"; // none | swipe_up | swipe_down (Index knuckles trackpad)
+	bool kbGesturesEnabled = true;   // gesture recognizer (Gestures folder)
+	float kbGestureThreshold = 0.70f; // match score needed to fire (0..1, higher = stricter)
+	bool kbGestureSounds = true;      // trace loop + finish sound (Gestures folder wavs)
+	std::string kbGestureFinishSound = "impact"; // impact | dark
+	float kbGestureArmHeight = -0.10f; // hand height vs head (m) to arm a cast; -0.10 = forehead level
 	float kbDisplayTilt = 22.5f;
 	int kbDisplayOpacity = 30;
 	int kbDisplayScale = 100;
