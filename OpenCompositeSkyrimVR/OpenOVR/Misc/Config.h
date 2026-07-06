@@ -289,7 +289,7 @@ private:
 	float rightDeadZoneSize = 0.0f;
 	float rightDeadZoneXSize = 0.0f;
 	float rightDeadZoneYSize = 0.0f;
-	bool disableTriggerTouch = false;
+	bool disableTriggerTouch = true;  // default true: capacitive trigger-touch confuses mods that gate on it (e.g. Weapon Throw VR won't throw while the trigger reads touched). Matches the configurator + ini-example documented default. Touch is still synthesized from a >=30% trigger pull in BaseInput.
 	bool disableThumbrestTouch = true;
 	float triggerDeadzone = 0.0f;   // raw trigger value below which output = 0
 	float triggerMax = 1.0f;        // raw trigger value at which output = 1.0 (for worn controllers)
