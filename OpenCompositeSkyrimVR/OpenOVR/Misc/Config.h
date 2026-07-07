@@ -123,6 +123,7 @@ public:
 	inline float Fsr3ReactiveDepthFalloffStart() const { return fsr3ReactiveDepthFalloffStart; }
 	inline float Fsr3ReactiveDepthFalloffEnd() const { return fsr3ReactiveDepthFalloffEnd; }
 	inline bool Fsr3CameraMV() const { return fsr3CameraMV; }
+	inline bool Fsr3LocoInjection() const { return fsr3LocoInjection; }
 	inline float Fsr3ViewToMeters() const { return fsr3ViewToMeters; }
 	inline int Fsr3DebugMode() const { return fsr3DebugMode; }
 	inline bool Fsr3PostAAEnabled() const { return fsr3PostAAEnabled; }
@@ -330,6 +331,13 @@ private:
 	float fsr3ReactiveDepthFalloffStart = 0.95f; // Depth where reactive mask begins fading (standard-Z, 0=near 1=far)
 	float fsr3ReactiveDepthFalloffEnd = 0.998f;  // Depth where reactive mask reaches zero (distant mountains/sky)
 	bool fsr3CameraMV = true;          // Camera MVs from depth + view-projection deltas (captures locomotion + head tracking)
+	// Locomotion injection adds the per-frame camera-position delta into the current VP before
+	// computing the reprojection MV. Default OFF: the RSS viewProjMatrixUnjittered appears to be
+	// full world-to-clip, so prevVP*inv(curVP) already contains camera translation; injecting it
+	// again double-counted motion and produced the ASW+MV "double image" while moving. Set true to
+	// restore the old behavior if a build's VP turns out to be camera-relative (walking would smear
+	// with this off). Toggle in-headset to A/B the double image without rebuilding.
+	bool fsr3LocoInjection = false;
 	float fsr3ViewToMeters = 0.01428f;  // Skyrim: ~70 units = 1 meter
 	int fsr3DebugMode = 0;             // 0=off, 1=FSR3 debug overlay, 2=bypass, 3=depth, 4=final MV, 5=residual MV, 6=raw bridge MV, 7=bridge fallback mask, 8=reactive mask
 	bool fsr3PostAAEnabled = false;    // Optional post-FSR spatial AA pass for testing foliage shimmer

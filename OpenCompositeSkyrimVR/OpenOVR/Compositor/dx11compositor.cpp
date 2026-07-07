@@ -4896,8 +4896,11 @@ void DX11Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBou
 						}
 					}
 
-					// Apply locomotion injection to curVP
-					if (s_cmvLocoDx != 0.0f || s_cmvLocoDy != 0.0f || s_cmvLocoDz != 0.0f) {
+					// Apply locomotion injection to curVP (OFF by default — see fsr3LocoInjection
+					// in Config.h. The raw VP delta already carries camera translation, so this
+					// double-counted it and produced the FSR/ASW+MV double image while moving.)
+					if (oovr_global_configuration.Fsr3LocoInjection()
+					    && (s_cmvLocoDx != 0.0f || s_cmvLocoDy != 0.0f || s_cmvLocoDz != 0.0f)) {
 						InjectLocoIntoVP(curVP, s_cmvLocoDx, s_cmvLocoDy, s_cmvLocoDz);
 					}
 
@@ -5606,8 +5609,9 @@ void DX11Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBou
 					}
 				}
 
-				// Apply locomotion injection to curVP
-				if (s_cmvLocoDx != 0.0f || s_cmvLocoDy != 0.0f || s_cmvLocoDz != 0.0f) {
+				// Apply locomotion injection to curVP (DLSS path; gated by fsr3LocoInjection, off by default — same double-count as the FSR path)
+				if (oovr_global_configuration.Fsr3LocoInjection()
+				    && (s_cmvLocoDx != 0.0f || s_cmvLocoDy != 0.0f || s_cmvLocoDz != 0.0f)) {
 					InjectLocoIntoVP(curVP, s_cmvLocoDx, s_cmvLocoDy, s_cmvLocoDz);
 				}
 
@@ -6340,8 +6344,13 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 		// IMPORTANT: Do NOT compute next-frame jitter here — right eye's GetProjectionRaw
 		// hasn't been called yet and would pick up the wrong (next) jitter value.
 		if (s_fsr3Upscaler && s_fsr3Upscaler->IsReady()) {
-			// No jitter on main menu / loading screen — spatial-only upscale (reset=true)
-			if (s_pBridge && (s_pBridge->isMainMenu || s_pBridge->isLoadingScreen)) {
+			// No jitter on main menu / loading screen — spatial-only upscale (reset=true).
+			// Also no jitter when motion vectors are OFF: the FSR3 temporal dispatch is gated
+			// on MotionVectorsEnabled() (see the entry condition ~4595), so with MVs off it is
+			// skipped and nothing resolves the sub-pixel jitter — the game would render jittered
+			// frames that never get reconstructed, showing as shimmer/jitter while moving.
+			if (!oovr_global_configuration.MotionVectorsEnabled()
+			    || (s_pBridge && (s_pBridge->isMainMenu || s_pBridge->isLoadingScreen))) {
 				g_fsr3JitterEnabled = false;
 				s_temporalJitterSubmittedEyeMask = 0;
 			} else {
@@ -6749,9 +6758,11 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 
 					// Full c2c WITH locomotion: inject actorPos delta into curVP
 					// (same as camera MV code), giving depth-aware locomotion parallax.
+					// Gated by fsr3LocoInjection (off by default — same double-count as FSR path).
 					float curVPWithLoco[16];
 					memcpy(curVPWithLoco, curVP, sizeof(curVPWithLoco));
-					if (s_cmvLocoDx != 0.0f || s_cmvLocoDy != 0.0f || s_cmvLocoDz != 0.0f) {
+					if (oovr_global_configuration.Fsr3LocoInjection()
+					    && (s_cmvLocoDx != 0.0f || s_cmvLocoDy != 0.0f || s_cmvLocoDz != 0.0f)) {
 						InjectLocoIntoVP(curVPWithLoco, s_cmvLocoDx, s_cmvLocoDy, s_cmvLocoDz);
 					}
 					float c2cWithLoco[16];

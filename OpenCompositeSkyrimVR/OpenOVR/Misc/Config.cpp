@@ -308,6 +308,7 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, fsr3ReactiveDepthFalloffStart);
 		CFGOPT(float, fsr3ReactiveDepthFalloffEnd);
 		CFGOPT(bool, fsr3CameraMV);
+		CFGOPT(bool, fsr3LocoInjection);
 		CFGOPT(float, fsr3ViewToMeters);
 		CFGOPT(int, fsr3DebugMode);
 		CFGOPT(bool, fsr3PostAAEnabled);
