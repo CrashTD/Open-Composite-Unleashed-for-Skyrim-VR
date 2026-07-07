@@ -5756,32 +5756,90 @@ namespace OpenCompositeConfigurator
 
         private static bool TryGetSteamVrSettingsPath(out string path)
         {
-            path = GetSteamVrSettingsPath();
-            if (File.Exists(path)) return true;
+            string? resolved = ResolveSteamVrSettingsPath();
+            if (resolved != null && File.Exists(resolved))
+            {
+                path = resolved;
+                return true;
+            }
 
+            string initialDir = GetSteamVrSettingsFolder();
             using var dlg = new OpenFileDialog
             {
                 Title = "Select steamvr.vrsettings",
                 Filter = "SteamVR settings|steamvr.vrsettings|JSON files|*.json|All files|*.*",
                 CheckFileExists = true,
-                InitialDirectory = Directory.Exists(GetSteamVrSettingsFolder())
-                    ? GetSteamVrSettingsFolder()
+                InitialDirectory = Directory.Exists(initialDir)
+                    ? initialDir
                     : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
             };
 
-            if (dlg.ShowDialog() != DialogResult.OK) return false;
+            if (dlg.ShowDialog() != DialogResult.OK) { path = ""; return false; }
             path = dlg.FileName;
             return true;
         }
 
+        // SteamVR stores steamvr.vrsettings in <Steam>\config, NOT %LOCALAPPDATA%\openvr.
+        // The authoritative pointer to that folder is openvrpaths.vrpath (which DOES live in
+        // %LOCALAPPDATA%\openvr): its "config" array lists the SteamVR config dir(s). We read
+        // that, then fall back to the Steam install path from the registry. Returns null if
+        // neither resolves (caller then prompts with a file picker).
+        private static string? ResolveSteamVrSettingsPath()
+        {
+            // 1) openvrpaths.vrpath -> config[] -> steamvr.vrsettings
+            try
+            {
+                string vrpath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "openvr", "openvrpaths.vrpath");
+                if (File.Exists(vrpath) && JsonNode.Parse(File.ReadAllText(vrpath)) is JsonNode root
+                    && root["config"] is JsonArray configs)
+                {
+                    // Prefer a config dir that already contains the file.
+                    foreach (JsonNode? c in configs)
+                    {
+                        string? dir = c?.GetValue<string>();
+                        if (string.IsNullOrWhiteSpace(dir)) continue;
+                        string candidate = Path.Combine(dir, "steamvr.vrsettings");
+                        if (File.Exists(candidate)) return candidate;
+                    }
+                    // Otherwise return the first known config dir's target path.
+                    string? first = configs.Count > 0 ? configs[0]?.GetValue<string>() : null;
+                    if (!string.IsNullOrWhiteSpace(first))
+                        return Path.Combine(first, "steamvr.vrsettings");
+                }
+            }
+            catch { /* fall through to registry lookup */ }
+
+            // 2) Steam install path from registry -> <Steam>\config\steamvr.vrsettings
+            try
+            {
+                string? steam =
+                    Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null) as string
+                    ?? Microsoft.Win32.Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null) as string
+                    ?? Microsoft.Win32.Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null) as string;
+                if (!string.IsNullOrWhiteSpace(steam))
+                    return Path.Combine(steam.Replace('/', '\\'), "config", "steamvr.vrsettings");
+            }
+            catch { /* fall through to null -> caller prompts */ }
+
+            return null;
+        }
+
         private static string GetSteamVrSettingsFolder()
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "openvr");
+            string? dir = ResolveSteamVrSettingsPath() is string p ? Path.GetDirectoryName(p) : null;
+            return !string.IsNullOrWhiteSpace(dir)
+                ? dir
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "openvr");
         }
 
         private static string GetSteamVrSettingsPath()
         {
-            return Path.Combine(GetSteamVrSettingsFolder(), "steamvr.vrsettings");
+            return ResolveSteamVrSettingsPath()
+                ?? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "openvr", "steamvr.vrsettings");
         }
 
         private static string ApplySteamVrOcuProfile(string path)
