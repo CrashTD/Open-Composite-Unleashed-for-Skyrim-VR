@@ -397,10 +397,9 @@ VR_INTERFACE const char* VR_CALLTYPE VR_RuntimePath()
 	OOVR_ABORT("Stub");
 }
 
-VR_INTERFACE void VR_CALLTYPE VR_ShutdownInternal()
+// Isolated so the SEH wrapper below contains no C++ objects requiring unwinding (MSVC C2712).
+static void ShutdownInternalImpl()
 {
-	OOVR_LOG("OpenComposite shutdown");
-
 	// Reset interfaces
 	// Do this first, while the OVR session is still available in case they
 	//  need to use it for cleanup.
@@ -408,6 +407,40 @@ VR_INTERFACE void VR_CALLTYPE VR_ShutdownInternal()
 
 	// Shut down OpenXR
 	BackendManager::Reset();
+}
+
+#ifdef _WIN32
+// Runs the teardown under SEH. On machines carrying foreign implicit OpenXR API
+// layers (Vive/Oculus/WMR compat shims), those layer DLLs can unload before our
+// final xr* calls, leaving a stale trampoline that faults during BackendManager::Reset().
+// The process is exiting anyway, so swallow the access violation and log it instead of
+// crashing + writing a misleading CrashLogger report. (yujujo crash 2026-07-05: AV in
+// BaseInput/XrBackend/IVRCompositor_022 on quit.)  Returns the exception code, 0 on success.
+// MUST contain no local objects requiring unwinding (C2712).
+static unsigned long ShutdownInternalGuarded()
+{
+	__try {
+		ShutdownInternalImpl();
+		return 0;
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return GetExceptionCode();
+	}
+}
+#endif
+
+VR_INTERFACE void VR_CALLTYPE VR_ShutdownInternal()
+{
+	OOVR_LOG("OpenComposite shutdown");
+
+#ifdef _WIN32
+	unsigned long ec = ShutdownInternalGuarded();
+	if (ec != 0) {
+		OOVR_LOGF("VR_ShutdownInternal: swallowed exception 0x%08lX during XR teardown "
+		          "(likely a foreign OpenXR API layer unloading early); exit continues cleanly.", ec);
+	}
+#else
+	ShutdownInternalImpl();
+#endif
 
 	running = false;
 }

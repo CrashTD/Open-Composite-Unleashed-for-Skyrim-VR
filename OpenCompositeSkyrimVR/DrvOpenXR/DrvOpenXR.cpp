@@ -23,6 +23,54 @@ static bool initialised = false;
 static std::shared_ptr<BaseInput> sessionInputKeepalive;
 
 #ifdef _WIN32
+// xrEnumerateApiLayerProperties only reports EXPLICIT layers. The layers that
+// silently wrap every xr* call — the Vive/Oculus/WMR runtime compat shims that
+// cause teardown crashes and phantom device identity — are IMPLICIT and invisible
+// to the app. Read them straight from the OpenXR loader's registry so they land in
+// our log for support. (yujujo, 2026-07-05: five foreign implicit layers on an Index.)
+static void LogImplicitOpenXRLayersFromHive(HKEY root, const char* rootName)
+{
+	HKEY key;
+	if (RegOpenKeyExA(root, "SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit", 0, KEY_READ, &key) != ERROR_SUCCESS)
+		return;
+
+	char valueName[1024];
+	for (DWORD idx = 0;; ++idx) {
+		DWORD nameLen = sizeof(valueName);
+		DWORD type = 0, data = 0, dataLen = sizeof(data);
+		LSTATUS st = RegEnumValueA(key, idx, valueName, &nameLen, nullptr, &type, (LPBYTE)&data, &dataLen);
+		if (st != ERROR_SUCCESS)
+			break; // ERROR_NO_MORE_ITEMS or failure — done
+
+		// Loader convention (matches Vulkan): DWORD 0 = enabled, non-zero = disabled.
+		bool enabled = (type == REG_DWORD) ? (data == 0) : true;
+
+		std::string lower = valueName;
+		for (char& c : lower)
+			if (c >= 'A' && c <= 'Z')
+				c += 32;
+		bool foreign = lower.find("oculus") != std::string::npos || lower.find("meta") != std::string::npos
+		    || lower.find("libovr") != std::string::npos || lower.find("vive") != std::string::npos
+		    || lower.find("htc") != std::string::npos || lower.find("mixedreality") != std::string::npos;
+
+		OOVR_LOGF("Implicit OpenXR layer [%s]: %s (%s%s)", rootName, valueName,
+		    enabled ? "ENABLED" : "disabled",
+		    (enabled && foreign) ? " -- FOREIGN RUNTIME, possible teardown/tracking conflict" : "");
+	}
+	RegCloseKey(key);
+}
+
+static void LogImplicitOpenXRLayers()
+{
+	OOVR_LOG("Enumerating IMPLICIT OpenXR API layers from registry (invisible to xrEnumerateApiLayerProperties):");
+	LogImplicitOpenXRLayersFromHive(HKEY_LOCAL_MACHINE, "HKLM");
+	LogImplicitOpenXRLayersFromHive(HKEY_CURRENT_USER, "HKCU");
+}
+#else
+static void LogImplicitOpenXRLayers() {}
+#endif
+
+#ifdef _WIN32
 std::string GetExeName()
 {
 	char exePath[MAX_PATH + 1] = { 0 };
@@ -128,8 +176,11 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	std::set<std::string> availableLayers;
 	for (const XrApiLayerProperties& layer : layerProperties) {
 		availableLayers.insert(layer.layerName);
-		OOVR_LOGF("Layer: %s", layer.layerName);
+		OOVR_LOGF("Layer (explicit): %s", layer.layerName);
 	}
+
+	// Explicit layers above are only half the story — log the implicit ones too.
+	LogImplicitOpenXRLayers();
 
 	// Create the OpenXR instance - this is the overall handle that connects us to the runtime
 	// https://www.khronos.org/registry/OpenXR/specs/1.0/refguide/openxr-10-reference-guide.pdf

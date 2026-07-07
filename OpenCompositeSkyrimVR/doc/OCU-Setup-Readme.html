@@ -476,6 +476,42 @@
       <p>
         Use Laser Aim Calibration, not controller axis adjustments, if the pointer direction is wrong while the controller model itself feels fine.
       </p>
+
+      <h3>Crashes on exit, an invisible body, or a log that reports the wrong headset (foreign OpenXR API layers)</h3>
+      <p>
+        Other VR software can register <strong>implicit OpenXR API layers</strong> that silently load into every OpenXR
+        session, including OCU. Common sources are VIVE Business Streaming (VIVE HUB), Virtual Desktop Streamer, Ultraleap
+        Hand Tracking, and the Oculus / Meta runtime. On a machine that carries several of these, the extra layers wrap
+        every call OCU makes and can cause:
+      </p>
+      <ul>
+        <li>A crash log written on quit, even when the play session itself ran fine.</li>
+        <li>An invisible or misplaced VRIK body, or a shifted play space.</li>
+        <li>A crash or diagnostics log that reports a headset you are not actually using (for example a Quest while you are on an Index), because a compatibility layer is impersonating another runtime.</li>
+      </ul>
+      <p>
+        None of this is caused by OCU or by your headset. A Valve Index runs on OCU through the SteamVR OpenXR runtime
+        (lighthouse) and is fully supported. The fix is to remove the stray layers:
+      </p>
+      <ol>
+        <li>Open <code>SteamVR Settings &gt; OpenXR</code>. For an Index or Vive, confirm <code>Current OpenXR Runtime</code> reads <code>SteamVR</code> (if it already does, the "Set SteamVR as OpenXR Runtime" button is correctly absent).</li>
+        <li>Click <code>Manage OpenXR API Layers</code> and turn <strong>Off</strong> every layer you do not actively use. Aim for zero active.</li>
+        <li>Set <code>Meta Plugin Compatibility</code> to <strong>Off</strong> unless you are deliberately using a Meta headset.</li>
+        <li>Fully restart SteamVR, then recenter and re-run the VRIK Calibration power on flat ground.</li>
+      </ol>
+      <div class="warn">
+        <strong>They keep coming back?</strong> The owning app (VIVE Business Streaming, Virtual Desktop Streamer,
+        Ultraleap, Oculus / Meta) re-enables its own layer every time it launches or updates. If you are not using that
+        software, close it or uninstall it so the layer stays off.
+      </div>
+      <p class="muted">
+        Advanced: these layers live in the registry under
+        <code>HKLM\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit</code> and
+        <code>HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit</code>. Each value is a path to a layer JSON file, and its
+        data is <code>0</code> for enabled or any non-zero value such as <code>1</code> for disabled. OCU records the
+        active implicit layers at startup, so you can also check the <code>OCUnleashedSKSE</code> log for lines that begin
+        <code>Implicit OpenXR layer</code>, which flag foreign-runtime layers for you.
+      </p>
     </section>
   </main>
 </body>
