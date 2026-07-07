@@ -261,10 +261,12 @@ namespace OpenCompositeConfigurator
             // strip below, so the tab stays short enough for any desktop. The
             // boxes still shrink on small screens as the last resort.
             int screenH = (Screen.PrimaryScreen?.WorkingArea.Height) ?? 1080;
-            int budget = screenH - container.Top - 130; // header above + footer/chrome below
-            const int fixedRows = 260; // every row on this tab except the draw boxes
+            int budget = screenH - container.Top - 150; // header above + footer/taskbar clearance below
+            const int fixedRows = 290; // every row on this tab except the draw boxes (incl. the split-out Style row)
+            // Box cap trimmed from 420 so the taller (split) trail section still clears the taskbar.
+            int boxCap = 390;
             int gap = 10;
-            int boxSide = Math.Max(280, Math.Min(420, budget - fixedRows));
+            int boxSide = Math.Max(280, Math.Min(boxCap, budget - fixedRows));
             int pairW = boxSide * 2 + gap;
             int startX = leftMargin;
             int boxTop = y;
@@ -603,16 +605,28 @@ namespace OpenCompositeConfigurator
             _cmbTrailWidth.SelectedIndex = 1; // Normal
             container.Controls.Add(_cmbTrailWidth);
 
-            _chkTrailTransparent = MakeTrailCheck("Transparent", leftMargin + 480, false);
-            _chkTrailSmoky = MakeTrailCheck("Smoky", leftMargin + 580, false);
-            _chkTrailWispy = MakeTrailCheck("Wispy", leftMargin + 644, false);
-            _chkTrailGlowing = MakeTrailCheck("Glowing", leftMargin + 706, true);
+            // Style flags drop to their own row so the Trail line isn't a wall of controls.
+            y += 30;
+            var lblStyle = new Label
+            {
+                Text = "Style",
+                Location = new Point(leftMargin, y + 4),
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9f),
+                ForeColor = Color.FromArgb(190, 192, 200),
+            };
+            container.Controls.Add(lblStyle);
+
+            _chkTrailTransparent = MakeTrailCheck("Transparent", leftMargin + 48, false);
+            _chkTrailSmoky = MakeTrailCheck("Smoky", leftMargin + 156, false);
+            _chkTrailWispy = MakeTrailCheck("Wispy", leftMargin + 226, false);
+            _chkTrailGlowing = MakeTrailCheck("Glowing", leftMargin + 294, true);
 
             var lblTrailHint = new Label
             {
                 Text = "Trail = the ribbon while you draw; Rune = the flash when the shape completes. Smoky = billowing puffs, wispy = thin tendrils.",
-                Location = new Point(leftMargin + 788, y + 4),
-                Size = new Size(rightEdge - leftMargin - 788, 20),
+                Location = new Point(leftMargin + 380, y + 4),
+                Size = new Size(rightEdge - leftMargin - 380, 20),
                 Font = new Font("Segoe UI", 8f, FontStyle.Italic),
                 ForeColor = Color.FromArgb(120, 122, 132),
             };

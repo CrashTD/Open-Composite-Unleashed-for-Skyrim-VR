@@ -4835,9 +4835,9 @@ namespace OpenCompositeConfigurator
                 // Motion Vectors checkbox
                 _chkMotionVectorsEnabled = MakeCheckBox("Enable Motion Vectors", 20, ap);
                 fsrAdv.Controls.Add(_chkMotionVectorsEnabled);
-                _chkActorMV = MakeCheckBox("Actor MV", 170, ap);
+                _chkActorMV = MakeCheckBox("Actor MV", 205, ap);
                 fsrAdv.Controls.Add(_chkActorMV);
-                _chkFsr3CameraMV = MakeCheckBox("Camera MV", 270, ap);
+                _chkFsr3CameraMV = MakeCheckBox("Camera MV", 300, ap);
                 fsrAdv.Controls.Add(_chkFsr3CameraMV);
                 var lblMvDesc = MakeLabel("SKSE/game, actor, and camera motion vectors feed temporal upscalers and ASW.", 395, ap + 3, advW - 411);
                 lblMvDesc.ForeColor = Color.FromArgb(130, 130, 130);

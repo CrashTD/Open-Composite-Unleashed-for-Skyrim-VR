@@ -154,22 +154,47 @@ namespace OpenCompositeConfigurator
             };
             _cmbControllerModel.Items.Add("Oculus / Quest Touch");
             _cmbControllerModel.Items.Add("Valve Index Knuckles");
-            _cmbControllerModel.SelectedIndex = 0;
+            _cmbControllerModel.SelectedIndex = 0; // default Meta / Quest Touch
+
+            // Explicit Save button so the choice only sticks when the user commits it.
+            // (Auto-saving on every dropdown change made an accidental flick to Index
+            //  persist and greet Meta owners with knuckles on the next launch.)
+            var btnSaveController = new Button
+            {
+                Text = "Save",
+                Location = new Point(x + 222, y),
+                Size = new Size(66, 24),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(40, 70, 50),
+                ForeColor = Color.FromArgb(210, 212, 220),
+                Font = new Font("Segoe UI", 8.5f),
+            };
+            btnSaveController.FlatAppearance.BorderColor = Color.FromArgb(70, 95, 75);
+
             _cmbControllerModel.SelectedIndexChanged += (s, e) =>
             {
+                // Live-update the picture on change, but do NOT persist until Save is clicked.
                 ApplyControllerModel(_cmbControllerModel.SelectedIndex == 1 ? "knuckles" : "touch");
-                SaveUiModelChoice();
+                btnSaveController.Text = "Save";
             };
             container.Controls.Add(_cmbControllerModel);
 
-            // Restore the persisted choice (fires the handler above when knuckles)
+            btnSaveController.Click += (s, e) =>
+            {
+                SaveUiModelChoice();
+                btnSaveController.Text = "Saved ✓";
+            };
+            container.Controls.Add(btnSaveController);
+
+            // Restore the persisted choice (fires the change handler when knuckles).
+            // No saved file => stays on the Meta/Touch default above.
             if (LoadUiModelChoice() == "knuckles")
                 _cmbControllerModel.SelectedIndex = 1;
 
             _chkMoveDots = new CheckBox
             {
                 Text = "Move dots (drag to calibrate, saves on release)",
-                Location = new Point(x + 228, y + 2),
+                Location = new Point(x + 296, y + 2),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 8.5f),
                 ForeColor = Color.FromArgb(190, 192, 200),
