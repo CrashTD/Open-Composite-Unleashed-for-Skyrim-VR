@@ -6628,8 +6628,15 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 			D3D11_BOX colorRegion = {};
 
 #ifdef OC_HAS_FSR3
-			// Use FSR3 upscaled output when available (display-res, per-eye)
+			// Warp-source selection, gated on motion vectors:
+			//  - MV OFF: warp the FSR3 display-res output (crisp). No temporal MVs means
+			//    no warp-of-warp, so caching the already-upscaled frame is safe and sharp.
+			//  - MV ON: DON'T cache the upscaled output — fall through to the render-res game
+			//    frame (colorSrc stays texture->handle) so ASW warps the pre-upscale image and
+			//    the runtime upscales the warp. Softer, but it breaks the double-image
+			//    (warp-of-warp) that only occurs when FSR3 temporal MVs are active.
 			if (!g_aswProvider->HasWarpUpscaleCallback()
+			    && !oovr_global_configuration.MotionVectorsEnabled()
 			    && s_fsr3Upscaler && s_fsr3Upscaler->IsReady()
 			    && oovr_global_configuration.FsrEnabled()) {
 				ID3D11Texture2D* fsr3Out = s_fsr3Upscaler->GetOutputDX11(eyeIdx);
