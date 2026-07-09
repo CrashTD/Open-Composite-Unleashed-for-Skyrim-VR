@@ -30,6 +30,8 @@
     <EmbeddedResource Include="controlmapvr_snippy.txt" />
     <EmbeddedResource Include="controlmapvr_cangar.txt" />
     <EmbeddedResource Include="controlmapvr_cangar_spellsiphon.txt" />
+    <EmbeddedResource Include="controlmapvr_peakcombat.txt" />
+    <EmbeddedResource Include="controlmapvr_wondernutts.txt" />
     <EmbeddedResource Include="PotatoMode.wav" />
   </ItemGroup>
 

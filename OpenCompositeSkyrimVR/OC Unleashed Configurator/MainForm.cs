@@ -1837,6 +1837,8 @@ namespace OpenCompositeConfigurator
                 "Cangar",
                 "Cangar Spellsiphon",
                 "Vanilla + Oculus Touch Hotkeys",
+                "Peak Combat",
+                "Wondernutts",
             });
             _cmbBindingPreset.SelectedIndex = 2;
             _cmbBindingPreset.SelectedIndexChanged += CmbBindingPreset_SelectedIndexChanged;
@@ -3057,6 +3059,8 @@ namespace OpenCompositeConfigurator
             { "Cangar", "OpenCompositeConfigurator.controlmapvr_cangar.txt" },
             { "Cangar Spellsiphon", "OpenCompositeConfigurator.controlmapvr_cangar_spellsiphon.txt" },
             { "Vanilla + Oculus Touch Hotkeys", "OpenCompositeConfigurator.controlmapvr_oculus_optimized.txt" },
+            { "Peak Combat", "OpenCompositeConfigurator.controlmapvr_peakcombat.txt" },
+            { "Wondernutts", "OpenCompositeConfigurator.controlmapvr_wondernutts.txt" },
         };
 
         private void CmbBindingPreset_SelectedIndexChanged(object? sender, EventArgs e)
