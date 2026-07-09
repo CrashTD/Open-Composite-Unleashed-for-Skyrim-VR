@@ -5115,7 +5115,7 @@ void DX11Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBou
 				fsr3Params.cameraFovY = s_fsr3CameraFovY;
 				fsr3Params.sharpness = oovr_global_configuration.Fsr3Sharpness();
 				fsr3Params.reset = s_fsr3FirstDispatch
-				    || (s_pBridge && (s_pBridge->isMainMenu || s_pBridge->isLoadingScreen));
+				    || (s_pBridge && (s_pBridge->isMainMenu || s_pBridge->isLoadingScreen || s_pBridge->isMenuOpen));
 				// Camera MVs are generated in unjittered UV space, matching the DLSS path.
 				// FSR3 still receives the jitter offset separately; context-level jitter
 				// cancellation should only be enabled for MV sources that already include jitter.
@@ -5801,7 +5801,7 @@ void DX11Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBou
 			dlssParams.biasMask = dlssBiasMaskTex;
 			dlssParams.biasMaskSourceRegion = dlssBiasMaskRegionPtr;
 			dlssParams.reset = s_fsr3FirstDispatch
-			    || (s_pBridge && (s_pBridge->isMainMenu || s_pBridge->isLoadingScreen));
+			    || (s_pBridge && (s_pBridge->isMainMenu || s_pBridge->isLoadingScreen || s_pBridge->isMenuOpen));
 			dlssParams.debugMode = 0;
 			s_fsr3FirstDispatch = false;
 
