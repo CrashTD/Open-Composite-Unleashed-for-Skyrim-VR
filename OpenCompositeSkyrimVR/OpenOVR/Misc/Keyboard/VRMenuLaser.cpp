@@ -501,19 +501,25 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 			// Flip V so 0=top, 1=bottom (Scaleform convention: 0,0 is top-left)
 			hitV[side] = 1.0f - v;
 
-			XrVector3f hitPoint = {
-				rayOrigin.x + t * rayDir.x,
-				rayOrigin.y + t * rayDir.y,
-				rayOrigin.z + t * rayDir.z
-			};
-			UpdateDot(side, hitPoint);
-			activeLayers.push_back((XrCompositionLayerBaseHeader*)&dotLayer[side]);
+			if (renderHand[side]) {
+				XrVector3f hitPoint = {
+					rayOrigin.x + t * rayDir.x,
+					rayOrigin.y + t * rayDir.y,
+					rayOrigin.z + t * rayDir.z
+				};
+				UpdateDot(side, hitPoint);
+				activeLayers.push_back((XrCompositionLayerBaseHeader*)&dotLayer[side]);
+			}
 		}
 
-		// Beam stops at menu surface when hitting, short hint otherwise
-		float beamLen = hit ? t : DEFAULT_BEAM;
-		UpdateBeam(side, rayOrigin, rayDir, beamLen, headPos);
-		activeLayers.push_back((XrCompositionLayerBaseHeader*)&beamLayer[side]);
+		// Beam stops at menu surface when hitting, short hint otherwise.
+		// Hidden hands still track hits/trigger above so they can claim the
+		// pointer, but draw nothing.
+		if (renderHand[side]) {
+			float beamLen = hit ? t : DEFAULT_BEAM;
+			UpdateBeam(side, rayOrigin, rayDir, beamLen, headPos);
+			activeLayers.push_back((XrCompositionLayerBaseHeader*)&beamLayer[side]);
+		}
 
 		// Track trigger state with hysteresis to prevent bouncing
 		if (sys) {

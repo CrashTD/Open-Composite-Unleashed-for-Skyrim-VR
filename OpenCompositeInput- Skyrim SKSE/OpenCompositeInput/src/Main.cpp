@@ -18,8 +18,9 @@
 namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.h
 // #include <RE/G/GFxMovieRoot.h>   // Was: movieRoot->perspective3D
 #include <RE/I/IMenu.h>             // Still needed: MenuWatcher accesses IMenu for OC_MENU_ACTIVE
-// #include <RE/M/MenuCursor.h>     // Was: SetCursorVisibility, cursorPosX/Y
+#include <RE/M/MenuCursor.h>        // Laser cursor pump v2: cursor feedback + visibility (game singleton, NOT Scaleform)
 #include <RE/M/MenuOpenCloseEvent.h>
+#include <RE/N/NiNode.h>            // Laser cursor pump v2: uiNode plane export
 #include <RE/N/NiCamera.h>
 #include <RE/N/NiRTTI.h>
 #include <RE/P/PlayerCamera.h>
@@ -39,6 +40,7 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <RE/U/UI.h>
 #include <RE/U/UIMessageQueue.h>    // console show/hide via UI queue
 #include <SKSE/SKSE.h>
+#include <algorithm> // laser cursor pump: std::clamp
 #include <chrono> // gesture concentration-spell burst pacing
 #include <fstream>
 #include <thread> // gesture concentration-spell burst
@@ -62,7 +64,7 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #pragma pack(push, 1)
 struct OCMenuTransform {
 	static constexpr uint32_t MAGIC = 0x54434D4F; // 'OCMT'
-	static constexpr uint32_t VERSION = 1;
+	static constexpr uint32_t VERSION = 2;
 
 	uint32_t magic;           // Must be MAGIC
 	uint32_t version;         // Protocol version
@@ -81,7 +83,36 @@ struct OCMenuTransform {
 	bool     hasPerspective;
 	float    perspectiveMatrix[4][4];
 
-	uint8_t  reserved[64];    // Future use
+	// ---- v2: laser cursor bridge (NO Scaleform access on either side) ----
+
+	// UI plane ground truth (SKSE -> DLL). The game's own uiNode transform,
+	// expressed RoomNode-local and converted to OpenXR floor space (Y-up,
+	// meters). Quad convention matches VRMenuLaser: +X right, +Y up,
+	// +Z = plane normal toward the viewer.
+	uint8_t  uiPlaneValid;    // 1 = pose below is fresh
+	float    uiPlanePos[3];   // plane center, meters
+	float    uiPlaneQuat[4];  // orientation x,y,z,w
+	float    uiPlaneWidth;    // meters
+	float    uiPlaneHeight;   // meters
+
+	// Cursor feedback (SKSE -> DLL): MenuCursor state for closed-loop drive
+	float    cursorPosX;      // MenuCursor current position
+	float    cursorPosY;
+	float    cursorRangeX;    // MenuCursor screenWidthX/Y (cursor space bounds)
+	float    cursorRangeY;
+
+	// Laser command (DLL -> SKSE). u,v in [0,1], Scaleform convention:
+	// (0,0) = top-left (VRMenuLaser GetHitV already returns top-down V).
+	uint8_t  laserActive;     // 1 = laser is hitting the quad this frame
+	float    laserU;
+	float    laserV;
+	uint32_t laserPressSeq;   // DLL increments on trigger press edge
+	uint32_t laserReleaseSeq; // DLL increments on trigger release edge
+	uint32_t laserFrameSeq;   // DLL increments once per submitted frame
+	uint8_t  laserShowCursor; // 1 = show the 2D arrow (diagnostic only; default
+	                          // 0 — the laser dot on the quad IS the pointer)
+
+	uint8_t  reserved[15];    // Future use
 };
 #pragma pack(pop)
 
@@ -321,6 +352,42 @@ namespace
 		g_pBridge->status = 1;
 		SKSE::log::info("RT Bridge: Ready — shared memory Local\\OpenCompositeRenderTargets ({} bytes)",
 			sizeof(OCRenderTargetBridge));
+	}
+
+	// Re-capture the game's MV + depth render target pointers. Render-scale
+	// mods (e.g. Community Shaders VR) destroy and recreate the game's render
+	// targets mid-session ("relatch"); without this refresh the bridge keeps
+	// serving freed texture pointers to the compositor (garbage ASW warps,
+	// flashing, potential use-after-free). Called on the game thread ~1/sec.
+	void RefreshBridgeRenderTargets()
+	{
+		if (!g_pBridge || g_pBridge->status != 1)
+			return;
+
+		auto renderer = RE::BSGraphics::Renderer::GetSingleton();
+		if (!renderer)
+			return;
+
+		auto& runtimeData = renderer->GetRuntimeData();
+		auto& mvRT = runtimeData.renderTargets[RE::RENDER_TARGET::kMOTION_VECTOR];
+		uint64_t mvTexNow = reinterpret_cast<uint64_t>(mvRT.texture);
+		if (mvTexNow && mvTexNow != g_pBridge->mvTexture) {
+			g_pBridge->mvTexture = mvTexNow;
+			g_pBridge->mvSRV = reinterpret_cast<uint64_t>(mvRT.SRV);
+			g_pBridge->mvUAV = reinterpret_cast<uint64_t>(mvRT.UAV);
+			SKSE::log::info("RT Bridge: kMOTION_VECTOR RECREATED — refreshed to {:p}",
+				static_cast<void*>(mvRT.texture));
+		}
+
+		auto& depthData = renderer->GetDepthStencilData();
+		auto& mainDepth = depthData.depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN];
+		uint64_t depthTexNow = reinterpret_cast<uint64_t>(mainDepth.texture);
+		if (depthTexNow && depthTexNow != g_pBridge->depthTexture) {
+			g_pBridge->depthTexture = depthTexNow;
+			g_pBridge->depthSRV = reinterpret_cast<uint64_t>(mainDepth.depthSRV);
+			SKSE::log::info("RT Bridge: kMAIN depth RECREATED — refreshed to {:p}",
+				static_cast<void*>(mainDepth.texture));
+		}
 	}
 
 	// =========================================================================
@@ -760,6 +827,437 @@ namespace
 			return RE::BSEventNotifyControl::kContinue;
 		}
 	};
+
+	// =========================================================================
+	// VR laser cursor pump — Scaleform-free menu pointing (Sovngarde-safe)
+	//
+	// Replaces the old WM_OC_LASER GFxMouseEvent injection. Design rules:
+	//   1. NEVER touch any menu's uiMovie/MovieDef. The Sovngarde bug came
+	//      from out-of-band Scaleform calls (wrong thread, wrong movie) while
+	//      StatsMenu's constellation scene owned the shared renderer state.
+	//   2. Everything here runs on the game thread (via SKSE task queue).
+	//   3. Input goes through BSInputEventQueue, so the game itself routes
+	//      mouse moves/clicks to the topmost menu with its own locking.
+	//
+	// Per pump tick:
+	//   - Export the game's own uiNode plane (RoomNode-local -> OpenXR floor
+	//     space) so the DLL raycasts against the REAL menu plane.
+	//   - Export MenuCursor position/range as feedback.
+	//   - If the DLL reports a laser hit, drive the cursor toward the target
+	//     with closed-loop MouseMoveEvents and forward trigger press/release
+	//     as mouse button 0 events.
+	// =========================================================================
+
+	// 1 meter = 69.99125 Skyrim units (Bethesda's VR world scale)
+	constexpr float kSkyrimUnitsPerMeter = 69.99125f;
+
+	std::atomic<bool> g_laserPumpRunning{ false };
+
+	// Skyrim (X right, Y forward, Z up) -> OpenXR floor space (X right, Y up, Z back)
+	inline void MapSkyrimToXr(const RE::NiPoint3& s, float out[3])
+	{
+		out[0] = s.x;
+		out[1] = s.z;
+		out[2] = -s.y;
+	}
+
+	// Build quaternion (x,y,z,w) from three orthonormal OpenXR-space columns:
+	// col0 = quad right, col1 = quad up, col2 = quad normal (toward viewer)
+	void QuatFromBasis(const float right[3], const float up[3], const float normal[3], float q[4])
+	{
+		float m00 = right[0], m01 = up[0], m02 = normal[0];
+		float m10 = right[1], m11 = up[1], m12 = normal[1];
+		float m20 = right[2], m21 = up[2], m22 = normal[2];
+		float trace = m00 + m11 + m22;
+		if (trace > 0.0f) {
+			float s = sqrtf(trace + 1.0f) * 2.0f;
+			q[3] = 0.25f * s;
+			q[0] = (m21 - m12) / s;
+			q[1] = (m02 - m20) / s;
+			q[2] = (m10 - m01) / s;
+		} else if (m00 > m11 && m00 > m22) {
+			float s = sqrtf(1.0f + m00 - m11 - m22) * 2.0f;
+			q[3] = (m21 - m12) / s;
+			q[0] = 0.25f * s;
+			q[1] = (m01 + m10) / s;
+			q[2] = (m02 + m20) / s;
+		} else if (m11 > m22) {
+			float s = sqrtf(1.0f + m11 - m00 - m22) * 2.0f;
+			q[3] = (m02 - m20) / s;
+			q[0] = (m01 + m10) / s;
+			q[1] = 0.25f * s;
+			q[2] = (m12 + m21) / s;
+		} else {
+			float s = sqrtf(1.0f + m22 - m00 - m11) * 2.0f;
+			q[3] = (m10 - m01) / s;
+			q[0] = (m02 + m20) / s;
+			q[1] = (m12 + m21) / s;
+			q[2] = 0.25f * s;
+		}
+	}
+
+	// R^T * v for NiMatrix3 (entry[row][col], columns = rotated basis vectors)
+	inline RE::NiPoint3 TransposeMul(const RE::NiMatrix3& r, const RE::NiPoint3& v)
+	{
+		return {
+			r.entry[0][0] * v.x + r.entry[1][0] * v.y + r.entry[2][0] * v.z,
+			r.entry[0][1] * v.x + r.entry[1][1] * v.y + r.entry[2][1] * v.z,
+			r.entry[0][2] * v.x + r.entry[1][2] * v.y + r.entry[2][2] * v.z
+		};
+	}
+
+	// Column extraction: image of local axis a (0=X,1=Y,2=Z) under rotation
+	inline RE::NiPoint3 MatColumn(const RE::NiMatrix3& r, int a)
+	{
+		return { r.entry[0][a], r.entry[1][a], r.entry[2][a] };
+	}
+
+	// Export the game's UI plane (uiNode) into shared memory, RoomNode-local,
+	// converted to OpenXR floor space. Returns true if a valid plane was written.
+	bool ExportUiPlane(bool logDiagnostics)
+	{
+		auto pc = RE::PlayerCharacter::GetSingleton();
+		if (!pc)
+			return false;
+		auto vrData = pc->GetVRNodeData();
+		if (!vrData)
+			return false;
+
+		RE::NiNode* uiNode = vrData->uiNode.get();
+		RE::NiNode* roomNode = vrData->RoomNode.get();
+		if (!uiNode || !roomNode)
+			return false;
+
+		const RE::NiTransform& uiW = uiNode->world;
+		const RE::NiTransform& roomW = roomNode->world;
+		float roomScale = (roomW.scale != 0.0f) ? roomW.scale : 1.0f;
+
+		// Stale-node filter: on the first frame(s) of a menu the uiNode still
+		// carries its previous/unplaced transform far from the playspace.
+		// Exporting that garbage froze the display once (invalid layer pose).
+		RE::NiPoint3 rel = uiNode->worldBound.center - roomW.translate;
+		float relDist = sqrtf(rel.x * rel.x + rel.y * rel.y + rel.z * rel.z);
+		if (relDist > 700.0f || uiNode->worldBound.radius < 1.0f)
+			return false;
+
+		// RoomNode-local pose of the UI plane. Use worldBound.center for the
+		// plane center — the node origin can be an off-center pivot.
+		RE::NiPoint3 centerLocal = TransposeMul(roomW.rotate, rel);
+		centerLocal /= roomScale;
+
+		// Local rotation = R_room^T * R_ui. The game's uiNode world matrix can
+		// contain a REFLECTION (negative determinant — observed live), so we
+		// only trust two axes and REBUILD an orthonormal right-handed basis
+		// with cross products. A hand-rolled quat from a reflected basis is
+		// non-unit -> XR_ERROR_POSE_INVALID -> frozen display. Never again.
+		RE::NiPoint3 fwdS = TransposeMul(roomW.rotate, MatColumn(uiW.rotate, 1)); // local +Y
+		RE::NiPoint3 upS = TransposeMul(roomW.rotate, MatColumn(uiW.rotate, 2));  // local +Z
+		RE::NiPoint3 normalS = { -fwdS.x, -fwdS.y, -fwdS.z }; // toward viewer
+
+		auto norm3 = [](RE::NiPoint3& v) -> bool {
+			float m = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+			if (m < 1e-4f)
+				return false;
+			v.x /= m; v.y /= m; v.z /= m;
+			return true;
+		};
+		auto cross3 = [](const RE::NiPoint3& a, const RE::NiPoint3& b) -> RE::NiPoint3 {
+			return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x };
+		};
+		if (!norm3(upS) || !norm3(normalS))
+			return false;
+		RE::NiPoint3 rightS = cross3(upS, normalS);   // right-handed: X = Y x Z
+		if (!norm3(rightS))
+			return false;
+		upS = cross3(normalS, rightS);                // re-orthogonalize
+		if (!norm3(upS))
+			return false;
+
+		// Convert to OpenXR floor space (the axis map is a proper rotation, so
+		// the basis stays orthonormal and right-handed).
+		float rightXr[3], upXr[3], normalXr[3], posXr[3], quat[4];
+		MapSkyrimToXr(rightS, rightXr);
+		MapSkyrimToXr(upS, upXr);
+		MapSkyrimToXr(normalS, normalXr);
+		MapSkyrimToXr(centerLocal, posXr);
+		posXr[0] /= kSkyrimUnitsPerMeter;
+		posXr[1] /= kSkyrimUnitsPerMeter;
+		posXr[2] /= kSkyrimUnitsPerMeter;
+		QuatFromBasis(rightXr, upXr, normalXr, quat);
+
+		// Guaranteed by construction, but never ship a non-unit quat to the
+		// compositor: renormalize and bail if degenerate.
+		float qn = sqrtf(quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3]);
+		if (qn < 0.5f || !std::isfinite(qn))
+			return false;
+		for (int i = 0; i < 4; i++)
+			quat[i] /= qn;
+
+		// Plane extents from the node's bounding sphere. The plane geometry
+		// ('In World UI Quad Geometry') is a 16:9 quad (verified live: local
+		// half-extents 1.0 x 0.5625, corner radius 1.1473 — matches
+		// worldBound.radius / world.scale exactly). Do NOT use the cursor
+		// range for aspect: that's the square 2048x2048 render target.
+		constexpr float aspect = 16.0f / 9.0f;
+		float radiusM = (uiNode->worldBound.radius / roomScale) / kSkyrimUnitsPerMeter;
+		float heightM = 2.0f * radiusM / sqrtf(1.0f + aspect * aspect);
+		float widthM = heightM * aspect;
+
+		g_pTransform->uiPlanePos[0] = posXr[0];
+		g_pTransform->uiPlanePos[1] = posXr[1];
+		g_pTransform->uiPlanePos[2] = posXr[2];
+		for (int i = 0; i < 4; i++)
+			g_pTransform->uiPlaneQuat[i] = quat[i];
+		g_pTransform->uiPlaneWidth = widthM;
+		g_pTransform->uiPlaneHeight = heightM;
+
+		if (logDiagnostics) {
+			SKSE::log::info("LASER uiNode world t({:.2f},{:.2f},{:.2f}) bound c({:.2f},{:.2f},{:.2f}) r={:.2f} scale={:.3f}",
+			    uiW.translate.x, uiW.translate.y, uiW.translate.z,
+			    uiNode->worldBound.center.x, uiNode->worldBound.center.y, uiNode->worldBound.center.z,
+			    uiNode->worldBound.radius, uiW.scale);
+			SKSE::log::info("LASER uiNode rot rows [{:.2f},{:.2f},{:.2f}] [{:.2f},{:.2f},{:.2f}] [{:.2f},{:.2f},{:.2f}]",
+			    uiW.rotate.entry[0][0], uiW.rotate.entry[0][1], uiW.rotate.entry[0][2],
+			    uiW.rotate.entry[1][0], uiW.rotate.entry[1][1], uiW.rotate.entry[1][2],
+			    uiW.rotate.entry[2][0], uiW.rotate.entry[2][1], uiW.rotate.entry[2][2]);
+			SKSE::log::info("LASER room t({:.2f},{:.2f},{:.2f}) scale={:.3f}",
+			    roomW.translate.x, roomW.translate.y, roomW.translate.z, roomW.scale);
+			SKSE::log::info("LASER plane XR pos({:.3f},{:.3f},{:.3f}) quat({:.3f},{:.3f},{:.3f},{:.3f}) size {:.3f}x{:.3f}m",
+			    posXr[0], posXr[1], posXr[2], quat[0], quat[1], quat[2], quat[3], widthM, heightM);
+			// First-level children of uiNode — identifies the actual menu geometry
+			for (auto& child : uiNode->GetChildren()) {
+				if (child) {
+					SKSE::log::info("LASER uiNode child '{}' bound r={:.2f} culled={}",
+					    child->name.c_str(), child->worldBound.radius, child->GetAppCulled());
+				}
+			}
+		}
+		return true;
+	}
+
+	// Game-thread pump body. Scheduled by the scheduler thread below.
+	void LaserCursorPumpOnce()
+	{
+		if (!g_pTransform)
+			return;
+
+		// State that persists across pump ticks (game thread only)
+		static uint32_t s_lastFrameSeq = 0;
+		static uint32_t s_lastPressSeq = 0;
+		static uint32_t s_lastReleaseSeq = 0;
+		static bool     s_mouseHeld = false;
+		static bool     s_cursorShown = false;
+		static ULONGLONG s_pressTick = 0;
+		static bool     s_wasActive = false;
+		static int      s_diagLogsLeft = 0;
+		static float    s_gain = 0.5f;       // closed-loop gain, adapted below
+		static float    s_lastSentDx = 0.0f, s_lastSentDy = 0.0f;
+		static float    s_lastCurX = -1.0f, s_lastCurY = -1.0f;
+
+		bool menuActive = !g_activeTrackedMenus.empty();
+
+		// Hard Sovngarde guard: while StatsMenu (level-up constellation) is up,
+		// do nothing at all. We never touch Scaleform anyway, but stay out of
+		// the input path too while its special scene owns rendering.
+		auto ui = RE::UI::GetSingleton();
+		bool statsOpen = ui && ui->IsMenuOpen("StatsMenu");
+
+		if (!menuActive || statsOpen) {
+			if (s_wasActive) {
+				g_pTransform->updateCounter++;
+				g_pTransform->uiPlaneValid = 0;
+				g_pTransform->updateCounter++;
+				if (s_mouseHeld) {
+					// Release a stuck button if the menu closed mid-press
+					if (auto q = RE::BSInputEventQueue::GetSingleton())
+						q->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 0.0f,
+						    (GetTickCount64() - s_pressTick) / 1000.0f);
+					s_mouseHeld = false;
+				}
+				if (s_cursorShown) {
+					if (auto mc = RE::MenuCursor::GetSingleton())
+						mc->SetCursorVisibility(false);
+					s_cursorShown = false;
+				}
+				s_wasActive = false;
+			}
+			return;
+		}
+
+		if (!s_wasActive) {
+			s_wasActive = true;
+			s_diagLogsLeft = 3; // log diagnostics for the first few ticks per menu
+			s_gain = 0.5f;
+			s_lastCurX = s_lastCurY = -1.0f;
+		}
+
+		// ---- Export UI plane + cursor feedback (SKSE-owned fields, seqlock) ----
+		g_pTransform->updateCounter++;
+		bool planeOk = ExportUiPlane(s_diagLogsLeft > 0);
+		g_pTransform->uiPlaneValid = planeOk ? 1 : 0;
+
+		auto mc = RE::MenuCursor::GetSingleton();
+		if (mc) {
+			auto& cd = mc->GetRuntimeData();
+			g_pTransform->cursorPosX = cd.cursorPosX;
+			g_pTransform->cursorPosY = cd.cursorPosY;
+			g_pTransform->cursorRangeX = cd.screenWidthX;
+			g_pTransform->cursorRangeY = cd.screenWidthY;
+			if (s_diagLogsLeft > 0)
+				SKSE::log::info("LASER cursor pos({:.1f},{:.1f}) range({:.1f},{:.1f}) sens={:.3f} showCount={}",
+				    cd.cursorPosX, cd.cursorPosY, cd.screenWidthX, cd.screenWidthY,
+				    cd.cursorSensitivity, cd.showCursorCount);
+		}
+		g_pTransform->updateCounter++;
+		if (s_diagLogsLeft > 0)
+			s_diagLogsLeft--;
+
+		// ---- Closed-loop cursor drive (once per rendered frame) ----
+		uint32_t frameSeq = g_pTransform->laserFrameSeq;
+		if (frameSeq == s_lastFrameSeq)
+			return;
+		s_lastFrameSeq = frameSeq;
+
+		auto queue = RE::BSInputEventQueue::GetSingleton();
+		if (!queue || !mc)
+			return;
+
+		if (g_pTransform->laserActive) {
+			auto& cd = mc->GetRuntimeData();
+			// The game's cursor MUST be active while the laser drives it: the
+			// engine only feeds MenuCursor position into Scaleform hover when
+			// the cursor is shown (confirmed live: hidden cursor = no hover
+			// highlight, and clicks "Accept" the stale focused item instead of
+			// the pointed-at one). The arrow renders exactly under the laser
+			// dot on the menu plane.
+			bool wantArrow = true;
+			if (wantArrow && !s_cursorShown) {
+				mc->SetCursorVisibility(true);
+				s_cursorShown = true;
+			} else if (!wantArrow && s_cursorShown) {
+				mc->SetCursorVisibility(false);
+				s_cursorShown = false;
+			}
+
+			float rangeX = (cd.screenWidthX > 0.0f) ? cd.screenWidthX : 1280.0f;
+			float rangeY = (cd.screenWidthY > 0.0f) ? cd.screenWidthY : 720.0f;
+			// Safe-zone inset: the game insets UI content by safeZoneX/Y, so
+			// plane UV maps into [safeZone, range - safeZone], not [0, range].
+			float szX = cd.safeZoneX, szY = cd.safeZoneY;
+			if (!std::isfinite(szX) || szX < 0.0f || szX > rangeX * 0.4f) szX = 0.0f;
+			if (!std::isfinite(szY) || szY < 0.0f || szY > rangeY * 0.4f) szY = 0.0f;
+			// laserU/V are already Scaleform top-left convention
+			float targetX = szX + g_pTransform->laserU * (rangeX - 2.0f * szX);
+			float targetY = szY + g_pTransform->laserV * (rangeY - 2.0f * szY);
+			float errX = targetX - cd.cursorPosX;
+			float errY = targetY - cd.cursorPosY;
+
+			// Adapt gain: estimate how much the cursor actually moved per unit
+			// of injected delta (the game applies its own sensitivity scale).
+			if (s_lastCurX >= 0.0f && (fabsf(s_lastSentDx) > 2.0f || fabsf(s_lastSentDy) > 2.0f)) {
+				float movedX = cd.cursorPosX - s_lastCurX;
+				float movedY = cd.cursorPosY - s_lastCurY;
+				float sentMag = sqrtf(s_lastSentDx * s_lastSentDx + s_lastSentDy * s_lastSentDy);
+				float movedMag = sqrtf(movedX * movedX + movedY * movedY);
+				if (sentMag > 2.0f && movedMag > 0.1f) {
+					float k = movedMag / sentMag;
+					k = std::clamp(k, 0.05f, 20.0f);
+					float targetGain = std::clamp(0.6f / k, 0.05f, 4.0f);
+					s_gain = s_gain * 0.8f + targetGain * 0.2f;
+				}
+			}
+			s_lastCurX = cd.cursorPosX;
+			s_lastCurY = cd.cursorPosY;
+
+			// Chase hysteresis: stream mouse moves only while genuinely off
+			// target, and go COMPLETELY quiet once converged. A continuous
+			// mouse stream fights the wand inputs for the game's input-device
+			// mode (kills hover, swallows the next button press = the
+			// "have to exit twice" symptom).
+			static bool s_chasing = false;
+			float errMag = sqrtf(errX * errX + errY * errY);
+			if (!s_chasing && errMag > 6.0f)
+				s_chasing = true;
+			else if (s_chasing && errMag < 2.5f)
+				s_chasing = false;
+
+			int dx = 0, dy = 0;
+			if (s_chasing) {
+				dx = (int)lroundf(errX * s_gain);
+				dy = (int)lroundf(errY * s_gain);
+				if (dx != 0 || dy != 0)
+					queue->AddMouseMoveEvent(dx, dy);
+			}
+			s_lastSentDx = (float)dx;
+			s_lastSentDy = (float)dy;
+
+			// Throttled drive diagnostics (every 2s while pointing)
+			static ULONGLONG s_lastDriveDiag = 0;
+			ULONGLONG nowDiag = GetTickCount64();
+			if (nowDiag - s_lastDriveDiag > 2000) {
+				s_lastDriveDiag = nowDiag;
+				SKSE::log::info("LASER drive uv({:.3f},{:.3f}) target({:.1f},{:.1f}) cursor({:.1f},{:.1f}) err={:.1f} gain={:.2f} chasing={} sz({:.1f},{:.1f}) showCount={}",
+				    g_pTransform->laserU, g_pTransform->laserV, targetX, targetY,
+				    cd.cursorPosX, cd.cursorPosY, errMag, s_gain, s_chasing,
+				    cd.safeZoneX, cd.safeZoneY, cd.showCursorCount);
+			}
+
+			// Trigger edges -> mouse button 0 through the game's own queue
+			uint32_t pressSeq = g_pTransform->laserPressSeq;
+			uint32_t releaseSeq = g_pTransform->laserReleaseSeq;
+			if (pressSeq != s_lastPressSeq) {
+				s_lastPressSeq = pressSeq;
+				s_pressTick = GetTickCount64();
+				s_mouseHeld = true;
+				queue->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 1.0f, 0.0f);
+			} else if (s_mouseHeld && releaseSeq == s_lastReleaseSeq) {
+				// Held: keep feeding value=1 with growing duration (drag support)
+				queue->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 1.0f,
+				    (GetTickCount64() - s_pressTick) / 1000.0f);
+			}
+			if (releaseSeq != s_lastReleaseSeq) {
+				s_lastReleaseSeq = releaseSeq;
+				if (s_mouseHeld) {
+					s_mouseHeld = false;
+					queue->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 0.0f,
+					    (GetTickCount64() - s_pressTick) / 1000.0f);
+				}
+			}
+		} else {
+			s_lastPressSeq = g_pTransform->laserPressSeq;
+			s_lastReleaseSeq = g_pTransform->laserReleaseSeq;
+			if (s_mouseHeld) {
+				s_mouseHeld = false;
+				queue->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 0.0f,
+				    (GetTickCount64() - s_pressTick) / 1000.0f);
+			}
+			s_lastCurX = s_lastCurY = -1.0f;
+			s_lastSentDx = s_lastSentDy = 0.0f;
+		}
+	}
+
+	// Scheduler: posts the pump onto the game thread while menus are active.
+	// Single AddTask per tick (never self-requeueing, so no same-frame loops).
+	void StartLaserPumpScheduler()
+	{
+		if (g_laserPumpRunning.exchange(true))
+			return;
+		std::thread([]() {
+			int rtRefreshTick = 0;
+			while (g_laserPumpRunning.load()) {
+				if (g_pTransform && g_pTransform->active)
+					SKSE::GetTaskInterface()->AddTask(LaserCursorPumpOnce);
+				// ~1/sec: re-capture game render targets in case a render-scale
+				// mod (Community Shaders VR etc.) recreated them
+				if (++rtRefreshTick >= 125) {
+					rtRefreshTick = 0;
+					SKSE::GetTaskInterface()->AddTask(RefreshBridgeRenderTargets);
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(8));
+			}
+		}).detach();
+		SKSE::log::info("Laser cursor pump scheduler started (Scaleform-free path + RT refresh)");
+	}
 
 	// =========================================================================
 	// Virtual keyboard hook — intercepts Start() to show VR keyboard
@@ -2888,6 +3386,9 @@ uint main() : SV_Target { return 255; }
 				SKSE::log::info("MenuOpenCloseEvent sink registered");
 			}
 
+			// Scaleform-free laser cursor pump (plane export + closed-loop mouse)
+			StartLaserPumpScheduler();
+
 			// Spell picker source for the Configurator's gesture actions
 			DumpGestureSpellList();
 
@@ -2937,7 +3438,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	SKSE::log::info("OpenCompositeInput v3.2.0 loaded");
 	SKSE::log::info("  VR keyboard bridge + Scaleform char injection + menu state tracking");
 	SKSE::log::info("  + Render target bridge (MV + depth) for FSR 2/3 integration");
-	SKSE::log::info("  [EXPERIMENTAL laser mouse injection DISABLED — Sovngarde bug]");
+	SKSE::log::info("  + Laser cursor pump v2 (Scaleform-free: uiNode plane + BSInputEventQueue)");
 
 	auto messaging = SKSE::GetMessagingInterface();
 	if (!messaging || !messaging->RegisterListener(OnMessage)) {

@@ -17,6 +17,11 @@ public:
 	// Define the menu quad plane in floor space
 	void SetMenuQuad(XrPosef pose, XrExtent2Df size);
 
+	// Per-hand beam/dot visibility. Hits and trigger edges are still tracked
+	// for hidden hands (so the other hand can claim the pointer by clicking);
+	// only the rendering is suppressed. Both default to visible.
+	void SetRenderHand(int side, bool show) { renderHand[side] = show; }
+
 	// Toggle debug quad visibility and set its opacity (0-100)
 	void SetShowDebugQuad(bool show) { showDebugQuad = show; }
 	void SetDebugQuadOpacity(int percent) { debugOpacityPercent = percent; }
@@ -85,6 +90,10 @@ private:
 	// Per-hand hit state
 	bool hitActive[2] = {};
 	float hitU[2] = {}, hitV[2] = {};
+
+	// Per-hand render visibility (pointer-ownership model: only the hand
+	// that last clicked draws its beam/dot)
+	bool renderHand[2] = { true, true };
 
 	// Trigger tracking
 	bool triggerState[2] = {}, triggerLast[2] = {};

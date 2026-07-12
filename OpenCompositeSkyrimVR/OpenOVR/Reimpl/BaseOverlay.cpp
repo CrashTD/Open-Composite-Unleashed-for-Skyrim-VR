@@ -2,12 +2,11 @@
 #define BASE_IMPL
 #include "BaseCompositor.h"
 #include "BaseOverlay.h"
-// [EXPERIMENTAL — DISABLED] VR laser→menu system. Entire laser pointer subsystem
-// is disabled because the SKSE-side Scaleform injection causes the Sovngarde bug
-// (accessing wrong Scaleform movie permanently corrupts VR rendering).
-// TODO: When re-enabling, extract all laser code into a separate file for proper
-// separation of concerns — it's currently interleaved in BaseOverlay::Submit().
-// #include "../Misc/Keyboard/VRMenuLaser.h"
+// VR laser→menu system v2 (Scaleform-free — see banner in Submit()).
+// TODO: extract all laser code into a separate file for proper separation
+// of concerns — it's currently interleaved in BaseOverlay::Submit().
+#include "../Misc/Keyboard/VRMenuLaser.h"
+#include <memory>
 #include "BaseSystem.h"
 #include "Compositor/compositor.h"
 #include "Drivers/Backend.h"
@@ -16,6 +15,7 @@
 #include "convert.h"
 #include "generated/static_bases.gen.h"
 #include <algorithm>
+#include <cmath>
 #include <direct.h>
 #include <map>
 #include <string>
@@ -44,17 +44,20 @@ bool g_kbLaserConsumesTrigger[2] = { false, false };
 // keyboard reads GetUnmaskedControllerState() so its own depth/pinch sticks still work.
 bool g_kbGrabActive = false;
 
-bool g_menuLaserActive = false; // Kept defined — BaseSystem.cpp extern's it (always false when laser disabled)
+bool g_menuLaserActive = false; // True while the menu laser hits the quad — BaseSystem masks the trigger
 
 // [EXPERIMENTAL — DISABLED] Custom Windows message for laser→Scaleform injection
 // static constexpr UINT WM_OC_LASER = WM_APP + 0x4F44;
 
 // ── Shared memory struct for menu transform (written by SKSE plugin) ──
+// v2 adds the laser cursor bridge: SKSE exports the game's real UI plane
+// (uiNode) and MenuCursor feedback; we write laser UV hits + trigger edges
+// back. MUST match the copy in OpenCompositeInput/src/Main.cpp exactly.
 #ifdef _WIN32
 #pragma pack(push, 1)
 struct OCMenuTransform {
 	static constexpr uint32_t MAGIC = 0x54434D4F; // 'OCMT'
-	static constexpr uint32_t VERSION = 1;
+	static constexpr uint32_t VERSION = 2;
 
 	uint32_t magic;
 	uint32_t version;
@@ -70,7 +73,33 @@ struct OCMenuTransform {
 	bool     hasPerspective;
 	float    perspectiveMatrix[4][4];
 
-	uint8_t  reserved[64];
+	// v2: UI plane ground truth (SKSE -> DLL), OpenXR floor space, Y-up meters.
+	// Quad convention matches VRMenuLaser: +X right, +Y up, +Z toward viewer.
+	uint8_t  uiPlaneValid;
+	float    uiPlanePos[3];
+	float    uiPlaneQuat[4];
+	float    uiPlaneWidth;
+	float    uiPlaneHeight;
+
+	// v2: cursor feedback (SKSE -> DLL)
+	float    cursorPosX;
+	float    cursorPosY;
+	float    cursorRangeX;
+	float    cursorRangeY;
+
+	// v2: laser command (DLL -> SKSE). We are the only writer of these.
+	// u,v in [0,1], Scaleform convention: (0,0) = top-left (VRMenuLaser
+	// GetHitV already returns top-down V).
+	uint8_t  laserActive;
+	float    laserU;
+	float    laserV;
+	uint32_t laserPressSeq;
+	uint32_t laserReleaseSeq;
+	uint32_t laserFrameSeq;
+	uint8_t  laserShowCursor; // 1 = SKSE may show the 2D arrow (diagnostic only;
+	                          // default 0 — the laser dot IS the pointer)
+
+	uint8_t  reserved[15];
 };
 #pragma pack(pop)
 
@@ -103,12 +132,13 @@ static void OpenSharedMemory()
 		return;
 	s_sharedMemTried = true;
 
-	s_hMapFile = OpenFileMappingW(FILE_MAP_READ, FALSE, L"Local\\OpenCompositeMenuTransform");
+	// Read+write: v2 writes laser UV hits and trigger edges back to SKSE
+	s_hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, L"Local\\OpenCompositeMenuTransform");
 	if (!s_hMapFile)
 		return; // SKSE plugin hasn't created it yet, retry later
 
 	s_pTransform = static_cast<OCMenuTransform*>(
-	    MapViewOfFile(s_hMapFile, FILE_MAP_READ, 0, 0, sizeof(OCMenuTransform)));
+	    MapViewOfFile(s_hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(OCMenuTransform)));
 	if (!s_pTransform) {
 		CloseHandle(s_hMapFile);
 		s_hMapFile = nullptr;
@@ -150,31 +180,54 @@ static bool ReadMenuTransform(OCMenuTransform& out)
 //   yOffset    — vertical shift (negative = lower)
 //   xOffset    — horizontal shift (negative = left)
 //
-// [EXPERIMENTAL — DISABLED] Per-menu quad profile system.
-// Each Skyrim menu (Journal, Inventory, Magic, etc.) has a different Scaleform
-// layout, so the VR laser quad needs different size/position per menu. These
-// hardcoded profiles were hand-calibrated in-headset to match each menu's extent.
-//
-// DISABLED because the laser→Scaleform injection in SKSE causes the Sovngarde
-// bug. When the laser system is re-enabled, these profiles will be needed.
-//
-// Calibrated values (for reference / future use):
-//   Journal Menu:  dist=0.86 w=1.16 h=0.75 yOff=-0.14 xOff=0.00
-//   TweenMenu:     dist=0.86 w=0.45 h=0.42 yOff=-0.17 xOff=0.00
-//   InventoryMenu: dist=0.86 w=0.73 h=0.89 yOff=-0.14 xOff=-0.42
-//   MagicMenu:     dist=0.86 w=0.73 h=0.89 yOff=-0.14 xOff=-0.42
-//   FavoritesMenu: dist=0.86 w=0.43 h=0.58 yOff=-0.23 xOff=-0.28
-//   CustomMenu:    dist=0.86 w=1.17 h=0.64 yOff=-0.11 xOff=0.00
-//   MapMenu:       dist=0.86 w=1.16 h=0.75 yOff=-0.14 xOff=0.00
-//   ContainerMenu: dist=0.86 w=0.73 h=0.89 yOff=-0.14 xOff=-0.42
-//   BarterMenu:    dist=0.86 w=0.73 h=0.89 yOff=-0.14 xOff=-0.42
-//   GiftMenu:      dist=0.86 w=0.73 h=0.89 yOff=-0.14 xOff=-0.42
-//   Default:       dist=0.85 w=0.80 h=0.42 yOff=-0.13 xOff=0.00
-//
-// struct MenuQuadProfile { const char* menuName; float distance, widthScale, heightScale, yOffset, xOffset; int opacity; };
-// static constexpr MenuQuadProfile kDefaultProfile = { "(default)", 0.85f, 0.80f, 0.42f, -0.13f, 0.00f, 20 };
-// static constexpr MenuQuadProfile kMenuProfiles[] = { ... };  // 10 menus
-// static bool GetMenuProfile(const char* menuName, ...) { ... }
+// Per-menu quad profiles, hand-calibrated in-headset. v2 uses these only as
+// a FALLBACK when the SKSE plugin isn't exporting the game's real uiNode
+// plane (uiPlaneValid=0) — the ground-truth plane needs no per-menu tuning.
+struct MenuQuadProfile {
+	const char* menuName;
+	float distance, widthScale, heightScale, yOffset, xOffset;
+	int opacity;
+};
+static constexpr MenuQuadProfile kDefaultProfile = { "(default)", 0.85f, 0.80f, 0.42f, -0.13f, 0.00f, 20 };
+static constexpr MenuQuadProfile kMenuProfiles[] = {
+	{ "Journal Menu", 0.86f, 1.16f, 0.75f, -0.14f, 0.00f, 20 },
+	{ "TweenMenu", 0.86f, 0.45f, 0.42f, -0.17f, 0.00f, 20 },
+	{ "InventoryMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
+	{ "MagicMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
+	{ "FavoritesMenu", 0.86f, 0.43f, 0.58f, -0.23f, -0.28f, 20 },
+	{ "CustomMenu", 0.86f, 1.17f, 0.64f, -0.11f, 0.00f, 20 },
+	{ "MapMenu", 0.86f, 1.16f, 0.75f, -0.14f, 0.00f, 20 },
+	{ "ContainerMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
+	{ "BarterMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
+	{ "GiftMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
+};
+
+// Look up the calibrated quad profile for a menu; falls back to the default.
+static bool GetMenuProfile(const char* menuName, float& dist, float& w, float& h,
+    float& yOff, float& xOff, int& opacity)
+{
+	for (const auto& p : kMenuProfiles) {
+		if (strcmp(p.menuName, menuName) == 0) {
+			dist = p.distance;
+			w = p.widthScale;
+			h = p.heightScale;
+			yOff = p.yOffset;
+			xOff = p.xOffset;
+			opacity = p.opacity;
+			return true;
+		}
+	}
+	dist = kDefaultProfile.distance;
+	w = kDefaultProfile.widthScale;
+	h = kDefaultProfile.heightScale;
+	yOff = kDefaultProfile.yOffset;
+	xOff = kDefaultProfile.xOffset;
+	opacity = kDefaultProfile.opacity;
+	return false;
+}
+
+// The menu laser renderer — created when a tracked menu opens, destroyed on close
+static std::unique_ptr<VRMenuLaser> menuLaser;
 #endif // _WIN32
 
 // Reloadable keyboard shortcut settings (updated by file watcher)
@@ -257,7 +310,7 @@ struct ComboBinding {
 	};
 
 	std::vector<BtnReq> buttons;
-	std::string mode;  // "press", "double_tap", "triple_tap", "quadruple_tap", "long_press"
+	std::string mode;  // "press", "double_tap", "triple_tap", "quadruple_tap", "long_press", "hold"
 	int timingMs;
 	int scancode;
 
@@ -267,9 +320,10 @@ struct ComboBinding {
 	bool wasAllPressed;
 	ULONGLONG holdStart;
 	bool firedThisPress;
+	ULONGLONG pendingUpAt; // scheduled key-up for tap-style fires (0 = none)
 
 	ComboBinding() : timingMs(500), scancode(0), tapCount(0),
-		wasAllPressed(false), holdStart(0), firedThisPress(false) {
+		wasAllPressed(false), holdStart(0), firedThisPress(false), pendingUpAt(0) {
 		memset(tapTimes, 0, sizeof(tapTimes));
 	}
 };
@@ -287,6 +341,38 @@ static void SendScancode(int scancode)
 	inputs[1].ki.wScan = (WORD)scancode;
 	inputs[1].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
 	SendInput(2, inputs, sizeof(INPUT));
+}
+
+// Defined in the gesture section below
+static HWND GetGameWindowLocal();
+
+// Combo key delivery — same path the gesture system settled on after field
+// testing: down/up through the SKSE plugin (WM_OC_KB wParam 4=down / 5=up ->
+// BSInputEventQueue keyboard events), which reaches SKSE mod hotkey listeners
+// (SkyrimNet, MCM hotkeys, ...) regardless of window focus. Raw SendInput is
+// only the no-plugin fallback — injected scancodes never reach SKSE listeners
+// when the game window is unfocused, which it usually is in VR.
+static void SendComboKey(int scancode, bool up)
+{
+	constexpr UINT WM_OC_KB_COMBO = WM_APP + 0x4F43; // same channel as keyboard/gestures
+	HWND hwnd = GetGameWindowLocal();
+	if (hwnd) {
+		PostMessageW(hwnd, WM_OC_KB_COMBO, up ? 5 : 4, (LPARAM)scancode);
+	} else {
+		INPUT in = {};
+		in.type = INPUT_KEYBOARD;
+		in.ki.wScan = (WORD)scancode;
+		in.ki.dwFlags = KEYEVENTF_SCANCODE | (up ? KEYEVENTF_KEYUP : 0);
+		SendInput(1, &in, sizeof(INPUT));
+	}
+}
+
+// Tap-style fire: key down now, key up ~60ms later (SKSE listeners need the
+// key visibly held across at least one frame to register it).
+static void FireComboTap(ComboBinding& combo)
+{
+	SendComboKey(combo.scancode, false);
+	combo.pendingUpAt = GetTickCount64() + 60;
 }
 
 static bool ParseComboButton(const std::string& token, ComboBinding::BtnReq& out)
@@ -445,22 +531,40 @@ static void ProcessCombos(BaseSystem* sys, const VRControllerState_t ctrlState[2
 			if (!pressed) { allPressed = false; break; }
 		}
 
+		// Deliver a scheduled key-up from an earlier tap-style fire
+		if (combo.pendingUpAt && GetTickCount64() >= combo.pendingUpAt) {
+			SendComboKey(combo.scancode, true);
+			combo.pendingUpAt = 0;
+		}
+
 		if (combo.mode == "press") {
 			// Modifier combo: fire once when all held, reset when released
 			if (allPressed && !combo.firedThisPress) {
-				SendScancode(combo.scancode);
+				FireComboTap(combo);
 				combo.firedThisPress = true;
 				OOVR_LOGF("Combo fired (press): scancode 0x%02x", combo.scancode);
 			}
 			if (!allPressed)
 				combo.firedThisPress = false;
+		} else if (combo.mode == "hold") {
+			// Push-to-talk style: the key goes DOWN when the combo is pressed
+			// and stays down until the combo is released (SkyrimNet PTT etc.)
+			if (allPressed && !combo.firedThisPress) {
+				SendComboKey(combo.scancode, false);
+				combo.firedThisPress = true;
+				OOVR_LOGF("Combo hold: scancode 0x%02x DOWN", combo.scancode);
+			} else if (!allPressed && combo.firedThisPress) {
+				SendComboKey(combo.scancode, true);
+				combo.firedThisPress = false;
+				OOVR_LOGF("Combo hold: scancode 0x%02x UP", combo.scancode);
+			}
 		} else if (combo.mode == "long_press") {
 			if (allPressed) {
 				if (combo.holdStart == 0)
 					combo.holdStart = GetTickCount64();
 				else if (!combo.firedThisPress &&
 					(GetTickCount64() - combo.holdStart) >= (ULONGLONG)combo.timingMs) {
-					SendScancode(combo.scancode);
+					FireComboTap(combo);
 					combo.firedThisPress = true;
 					OOVR_LOGF("Combo fired (long_press): scancode 0x%02x", combo.scancode);
 				}
@@ -485,7 +589,7 @@ static void ProcessCombos(BaseSystem* sys, const VRControllerState_t ctrlState[2
 					combo.tapTimes[combo.tapCount] = now;
 				combo.tapCount++;
 				if (combo.tapCount >= requiredTaps) {
-					SendScancode(combo.scancode);
+					FireComboTap(combo);
 					combo.tapCount = 0;
 					OOVR_LOGF("Combo fired (%s): scancode 0x%02x", combo.mode.c_str(), combo.scancode);
 				}
@@ -2132,39 +2236,35 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 #endif
 
 // =========================================================================
-// [EXPERIMENTAL — DISABLED] MCM Menu Laser Pointer System
+// MCM Menu Laser Pointer System v2 (Scaleform-free)
 // =========================================================================
-// This entire block (through the matching #endif EXPERIMENTAL) implements
-// a VR laser pointer for Skyrim's Scaleform menus. It is DISABLED because:
+// VR laser pointer for Skyrim's flat menus. Re-enabled 2026-07-10 with the
+// architecture that removes both original failure modes:
 //
-// 1. SOVNGARDE BUG: The SKSE-side Scaleform mouse injection (WM_OC_LASER
-//    → GFxMouseEvent/NotifyMouseState) corrupts VR rendering when it
-//    accidentally accesses StatsMenu's Scaleform movie during Sovngarde's
-//    constellation scene. The corruption is permanent until game restart.
+// 1. SOVNGARDE BUG (fixed by construction): v1 posted WM_OC_LASER to the
+//    SKSE plugin which injected GFxMouseEvent/NotifyMouseState into a menu's
+//    Scaleform movie from the WndProc thread. Out-of-band Scaleform calls
+//    while StatsMenu's constellation scene owned the shared renderer state
+//    permanently corrupted VR rendering. v2 never touches Scaleform on
+//    either side: we write laser UV + trigger edges into shared memory and
+//    the SKSE plugin drives the game's own MenuCursor through
+//    BSInputEventQueue on the game thread.
 //
-// 2. MOUSE ALIGNMENT: Mapping laser UV hits (2D point on 3D plane) to
-//    Scaleform cursor position requires either Scaleform injection (broken)
-//    or SetCursorPos (needs calibration work since VR mirror window doesn't
-//    map 1:1 to headset view).
+// 2. EXPONENTIAL DRIFT (fixed by ground truth): v1 raycast against a
+//    hand-calibrated head-anchored quad that never matched the plane the
+//    game actually renders menus on; the mismatch grew toward the edges.
+//    v2 raycasts against the game's own uiNode plane (exported by SKSE via
+//    shared memory, uiPlaneValid). Head-anchored profiles remain only as a
+//    fallback while the plane export is being validated.
 //
-// Components disabled:
-// - Menu quad settings file watcher (menu_quad_settings.ini)
-// - Per-menu hardcoded quad profiles (see profile table in comments above)
-// - VRMenuLaser object lifecycle (creation, Update(), quad rendering)
-// - In-VR thumbstick quad adjustment mode
-// - WM_OC_LASER message sending to SKSE plugin
-// - Quad visibility toggles (calibration quad, profile quad, Scaleform cursor)
-//
-// The VR keyboard overlay (above this block) is COMPLETELY SEPARATE and
-// remains fully functional. Do not confuse the two systems.
-//
-// TODO: When re-enabling, extract into a separate file for proper separation
-// of concerns. This code should NOT be interleaved in BaseOverlay::Submit().
+// Runtime gate: enable_laser=1 in menu_quad_settings.ini (default OFF).
+// The VR keyboard overlay (above this block) is COMPLETELY SEPARATE.
 // =========================================================================
-#if 0 // [EXPERIMENTAL — DISABLED] Menu laser system
+#if 1 // Menu laser system v2
 	// ── MCM Menu Laser Pointer System ──
 	// Menu quad parameters — overrideable via menu_quad_settings.ini
 	// File is watched every ~1 second (same pattern as keyboard_settings.ini).
+	static bool  s_mqEnableLaser = false; // master gate: enable_laser=1 in ini
 	static float s_mqDist = 0.85f;
 	static float s_mqWidthScale = 0.80f;
 	static float s_mqHeightScale = 0.42f;
@@ -2231,7 +2331,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 								if (sscanf(line, "opacity=%d", &iv) == 1) { s_mqOpacity = iv; continue; }
 							}
 							// These are ALWAYS read from settings.ini (even with profile active)
-							if (sscanf(line, "show_debug=%d", &iv) == 1) s_mqShowDebug = (iv != 0);
+							if (sscanf(line, "enable_laser=%d", &iv) == 1) s_mqEnableLaser = (iv != 0);
+							else if (sscanf(line, "show_debug=%d", &iv) == 1) s_mqShowDebug = (iv != 0);
 							else if (sscanf(line, "head_locked=%d", &iv) == 1) {
 								bool newLock = (iv != 0);
 								if (newLock && !s_mqHeadLocked)
@@ -2272,6 +2373,10 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 		}
 		if (cachedHwnd)
 			menuActive = (intptr_t)GetPropW(cachedHwnd, L"OC_MENU_ACTIVE") != 0;
+
+		// Master gate — laser stays fully dormant unless enable_laser=1
+		if (!s_mqEnableLaser)
+			menuActive = false;
 
 		if (menuActive) {
 			OOVR_LOG_ONCE("MCM menu detected active via OC_MENU_ACTIVE property");
@@ -2411,6 +2516,50 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 
 				XrExtent2Df quadSize = { s_mqWidthScale, s_mqHeightScale };
 
+				// v2 GROUND TRUTH: if the SKSE plugin is exporting the game's
+				// real uiNode plane, use it instead of the head-anchored guess.
+				// This is what kills the off-center drift — the raycast quad IS
+				// the plane the menu is rendered on.
+				//
+				// HARD VALIDATION before anything reaches the compositor: a
+				// non-unit layer quat makes xrEndFrame fail with
+				// XR_ERROR_POSE_INVALID on EVERY frame = frozen display
+				// (happened live 2026-07-10). Reject and fall back instead.
+				{
+					OCMenuTransform mxPlane = {};
+					if (ReadMenuTransform(mxPlane) && mxPlane.version >= 2 && mxPlane.uiPlaneValid &&
+					    mxPlane.uiPlaneWidth > 0.01f && mxPlane.uiPlaneWidth < 20.0f &&
+					    mxPlane.uiPlaneHeight > 0.01f && mxPlane.uiPlaneHeight < 20.0f) {
+						XrVector3f p = { mxPlane.uiPlanePos[0], mxPlane.uiPlanePos[1], mxPlane.uiPlanePos[2] };
+						XrQuaternionf q = { mxPlane.uiPlaneQuat[0], mxPlane.uiPlaneQuat[1],
+							mxPlane.uiPlaneQuat[2], mxPlane.uiPlaneQuat[3] };
+						float qn = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+						bool posSane = std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+						    fabsf(p.x) < 15.0f && p.y > -2.0f && p.y < 8.0f && fabsf(p.z) < 15.0f;
+						bool quatSane = std::isfinite(qn) && fabsf(qn - 1.0f) < 0.05f;
+						if (posSane && quatSane) {
+							// Renormalize anyway — belt and suspenders
+							q.x /= qn; q.y /= qn; q.z /= qn; q.w /= qn;
+							quadPose.position = p;
+							quadPose.orientation = q;
+							quadSize = { mxPlane.uiPlaneWidth, mxPlane.uiPlaneHeight };
+							static bool s_loggedPlaneSource = false;
+							if (!s_loggedPlaneSource) {
+								s_loggedPlaneSource = true;
+								OOVR_LOGF("Menu laser: using game uiNode plane pos(%.3f,%.3f,%.3f) quat(%.3f,%.3f,%.3f,%.3f) size %.3fx%.3fm",
+								    p.x, p.y, p.z, q.x, q.y, q.z, q.w, quadSize.width, quadSize.height);
+							}
+						} else {
+							static int s_rejectLogs = 0;
+							if (s_rejectLogs < 5) {
+								s_rejectLogs++;
+								OOVR_LOGF("Menu laser: REJECTED shared plane pos(%.3f,%.3f,%.3f) |q|=%.3f — using fallback profile quad",
+								    p.x, p.y, p.z, qn);
+							}
+						}
+					}
+				}
+
 				menuLaser->SetMenuQuad(quadPose, quadSize);
 				// Quad visibility depends on mode checkboxes from Calibrator app:
 				// - show_profile_quad=1: pink profile quads (analysis mode)
@@ -2484,11 +2633,27 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				    || (strcmp(s_lastMenuName, "Main Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Mist Menu") == 0);
 
+				// Pointer ownership: the hand that last pulled trigger on the
+				// quad owns the beam (native VR feel — one laser, no 2D cursor).
+				// The other hand still tracks invisibly so it can claim the
+				// pointer with a click. Default owner: right hand.
+				static int s_activeLaserHand = 1;
+				menuLaser->SetRenderHand(0, s_activeLaserHand == 0);
+				menuLaser->SetRenderHand(1, s_activeLaserHand == 1);
+
 				bool kbHit[2] = { g_kbLaserConsumesTrigger[0], g_kbLaserConsumesTrigger[1] };
 				if (!suppressLaser) {
 					const auto& menuLayers = menuLaser->Update(xr_gbl->nextPredictedFrameTime, kbHit);
 					for (auto* l : menuLayers)
 						layerHeaders.push_back(l);
+				}
+
+				// Hand switch: a trigger press while pointing at the quad claims
+				// the pointer (takes effect this frame for input, next frame for
+				// the beam visual — imperceptible).
+				for (int side = 0; side < 2; side++) {
+					if (side != s_activeLaserHand && menuLaser->IsHit(side) && menuLaser->IsTriggerPressed(side))
+						s_activeLaserHand = side;
 				}
 
 				// Set g_menuLaserActive if either hand is hitting the quad (but not for suppressed menus)
@@ -2582,11 +2747,15 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						mqSavePath = mqSavePath.substr(0, mqSavePath.find_last_of("\\/")) + "\\menu_quad_settings.ini";
 						FILE* sf = fopen(mqSavePath.c_str(), "w");
 						if (sf) {
-							fprintf(sf, "[menu_quad]\ndistance=%.2f\nwidth_scale=%.2f\nheight_scale=%.2f\n"
+							// MUST persist every key the watcher parses — a rewrite
+							// that drops enable_laser/show_sf_cursor silently kills
+							// the laser system on the next file reload.
+							fprintf(sf, "[menu_quad]\nenable_laser=%d\ndistance=%.2f\nwidth_scale=%.2f\nheight_scale=%.2f\n"
 							    "y_offset=%.2f\nx_offset=%.2f\nyaw_degrees=%d\npitch_degrees=%d\n"
 							    "roll_degrees=%d\nopacity=%d\nshow_debug=%d\nhead_locked=%d\nthumbstick_adjust=%d\n"
 							    "mouse_offset_x=%.3f\nmouse_offset_y=%.3f\nmouse_scale_x=%.3f\nmouse_scale_y=%.3f\n"
-							    "show_calibration_quad=%d\nshow_profile_quad=%d\n",
+							    "show_calibration_quad=%d\nshow_profile_quad=%d\nshow_sf_cursor=%d\n",
+							    s_mqEnableLaser ? 1 : 0,
 							    s_mqDist, s_mqWidthScale, s_mqHeightScale,
 							    s_mqYOffset, s_mqXOffset,
 							    (int)(s_mqYawOffset * 180.0f / 3.14159265f),
@@ -2594,7 +2763,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							    (int)(s_mqRollOffset * 180.0f / 3.14159265f),
 							    s_mqOpacity, s_mqShowDebug ? 1 : 0, s_mqHeadLocked ? 1 : 0, s_mqThumbstickAdjust ? 1 : 0,
 							    s_mqMouseOffsetX, s_mqMouseOffsetY, s_mqMouseScaleX, s_mqMouseScaleY,
-							    s_mqShowCalibQuad ? 1 : 0, s_mqShowProfileQuad ? 1 : 0);
+							    s_mqShowCalibQuad ? 1 : 0, s_mqShowProfileQuad ? 1 : 0, s_mqShowSfCursor ? 1 : 0);
 							fclose(sf);
 							OOVR_LOGF("Saved quad settings: dist=%.2f w=%.2f h=%.2f yOff=%.2f xOff=%.2f opacity=%d",
 							    s_mqDist, s_mqWidthScale, s_mqHeightScale, s_mqYOffset, s_mqXOffset, s_mqOpacity);
@@ -2602,38 +2771,33 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					}
 				}
 
-				// Send laser UV hits to SKSE plugin as WM_OC_LASER messages.
-				// The plugin injects GFxMouseEvent directly into Scaleform,
-				// bypassing Windows mouse entirely.
-				if (!suppressLaser && cachedHwnd)
-				for (int side = 0; side < 2; side++) {
-					if (!menuLaser->IsHit(side)) continue;
-
-					float u = menuLaser->GetHitU(side);
-					float v = menuLaser->GetHitV(side);
-
-					// Apply calibration offsets
-					float adjU = u * s_mqMouseScaleX + s_mqMouseOffsetX;
-					float adjV = v * s_mqMouseScaleY + s_mqMouseOffsetY;
-
-					// Pack UV into WPARAM: low 16 = u*10000, high 16 = v*10000
-					WORD uPacked = (WORD)(adjU * 10000.0f);
-					WORD vPacked = (WORD)(adjV * 10000.0f);
-					WPARAM packedUV = MAKEWPARAM(uPacked, vPacked);
-
-					// LPARAM encoding: bits 0-7 = action, bit 8 = show_sf_cursor
-					LPARAM cursorBit = s_mqShowSfCursor ? 0x100 : 0;
-
-					// Always send mouse move
-					PostMessage(cachedHwnd, WM_OC_LASER, packedUV, 0 | cursorBit);
-
-					// Send press/release on trigger edges
-					if (menuLaser->IsTriggerPressed(side))
-						PostMessage(cachedHwnd, WM_OC_LASER, packedUV, 1 | cursorBit);
-					if (menuLaser->IsTriggerReleased(side))
-						PostMessage(cachedHwnd, WM_OC_LASER, packedUV, 2 | cursorBit);
-
-					break; // Only one hand controls the mouse at a time
+				// v2: publish laser state to the SKSE plugin via shared memory.
+				// The plugin drives the game's own MenuCursor and mouse button
+				// events through BSInputEventQueue on the game thread. No window
+				// messages, no Scaleform, on either side. Only the owning hand
+				// (last to click) feeds the pointer.
+				if (s_pTransform) {
+					bool wroteHit = false;
+					int side = s_activeLaserHand;
+					if (!suppressLaser && menuLaser->IsHit(side)) {
+						// Calibration trims retained (default identity)
+						float adjU = menuLaser->GetHitU(side) * s_mqMouseScaleX + s_mqMouseOffsetX;
+						float adjV = menuLaser->GetHitV(side) * s_mqMouseScaleY + s_mqMouseOffsetY;
+						adjU = adjU < 0.0f ? 0.0f : (adjU > 1.0f ? 1.0f : adjU);
+						adjV = adjV < 0.0f ? 0.0f : (adjV > 1.0f ? 1.0f : adjV);
+						s_pTransform->laserU = adjU;
+						s_pTransform->laserV = adjV;
+						s_pTransform->laserActive = 1;
+						if (menuLaser->IsTriggerPressed(side))
+							s_pTransform->laserPressSeq++;
+						if (menuLaser->IsTriggerReleased(side))
+							s_pTransform->laserReleaseSeq++;
+						wroteHit = true;
+					}
+					if (!wroteHit)
+						s_pTransform->laserActive = 0;
+					s_pTransform->laserShowCursor = s_mqShowSfCursor ? 1 : 0;
+					s_pTransform->laserFrameSeq++;
 				}
 			}
 		} else {
@@ -2642,10 +2806,12 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				menuLaser.reset();
 			g_menuLaserActive = false;
 			s_profileActive = false; // Allow file watcher to update quad dims again
+			if (s_pTransform && s_pTransform->laserActive)
+				s_pTransform->laserActive = 0; // let SKSE release a held click
 		}
 	}
-#endif // _WIN32 (inside #if 0 block)
-#endif // [EXPERIMENTAL — DISABLED] Menu laser system
+#endif // _WIN32 (menu laser system)
+#endif // Menu laser system v2
 
 	if (!oovr_global_configuration.EnableLayers()) {
 		goto done;
