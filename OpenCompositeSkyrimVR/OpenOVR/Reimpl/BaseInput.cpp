@@ -752,13 +752,32 @@ void BaseInput::BindInputsForSession()
 	}
 	OOVR_FAILED_XR_ABORT(attachRes);
 
-	// Setup hand tracking if supported
+	// Setup hand tracking if supported. Some runtimes (e.g. Pimax on headsets
+	// without the hand-tracking module) advertise XR_EXT_hand_tracking AND
+	// claim supportsHandTracking in the system properties, then fail creation
+	// with XR_ERROR_FEATURE_UNSUPPORTED. That's a runtime bug — treat it as
+	// "no hand tracking" and fall back to controller-estimated skeletal data
+	// instead of aborting the game.
 	if (xr_gbl->handTrackingProperties.supportsHandTracking) {
 		XrHandTrackerCreateInfoEXT createInfo = { XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT };
 		for (int i = 0; i < 2; i++) {
 			createInfo.hand = i == 0 ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
 			createInfo.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
-			OOVR_FAILED_XR_ABORT(xr_ext->xrCreateHandTrackerEXT(xr_session.get(), &createInfo, &handTrackers[i]));
+			XrResult res = xr_ext->xrCreateHandTrackerEXT(xr_session.get(), &createInfo, &handTrackers[i]);
+			if (XR_FAILED(res)) {
+				OOVR_LOGF("Hand tracking unavailable despite runtime claiming support"
+				          " (xrCreateHandTrackerEXT hand %d failed: %d) — continuing without hand tracking",
+				    i, (int)res);
+				if (handTrackers[0] != XR_NULL_HANDLE)
+					xr_ext->xrDestroyHandTrackerEXT(handTrackers[0]);
+				handTrackers[0] = XR_NULL_HANDLE;
+				handTrackers[1] = XR_NULL_HANDLE;
+				// Flip the capability flag so every consumer takes the
+				// controller-estimated skeletal path, exactly as on a runtime
+				// that honestly reports no hand tracking.
+				xr_gbl->handTrackingProperties.supportsHandTracking = XR_FALSE;
+				break;
+			}
 		}
 	}
 }
@@ -1747,7 +1766,15 @@ EVRInputError BaseInput::GetSkeletalBoneData(VRActionHandle_t actionHandle, EVRS
 	std::vector<XrHandJointLocationEXT> jointLocations(locations.jointCount);
 	locations.jointLocations = jointLocations.data();
 
-	OOVR_FAILED_XR_ABORT(xr_ext->xrLocateHandJointsEXT(handTrackers[(int)action->skeletalHand], &locateInfo, &locations));
+	// Non-fatal: a runtime that lied about hand tracking support (or loses it
+	// mid-session) should degrade to "no skeleton", not abort the game.
+	XrResult skelRes = xr_ext->xrLocateHandJointsEXT(handTrackers[(int)action->skeletalHand], &locateInfo, &locations);
+	if (XR_FAILED(skelRes)) {
+		static int s_skelFailLogs = 0;
+		if (s_skelFailLogs++ < 3)
+			OOVR_LOGF("xrLocateHandJointsEXT failed (%d) — returning invalid skeleton", (int)skelRes);
+		return vr::VRInputError_InvalidSkeleton;
+	}
 
 	if (!locations.isActive) {
 		// Leave empty-handed, IDK if this is the right error or not
@@ -1795,7 +1822,15 @@ EVRInputError BaseInput::getRealSkeletalSummary(ITrackedDevice::HandType hand, V
 	std::vector<XrHandJointLocationEXT> jointLocations(locations.jointCount);
 	locations.jointLocations = jointLocations.data();
 
-	OOVR_FAILED_XR_ABORT(xr_ext->xrLocateHandJointsEXT(handTrackers[hand], &locateInfo, &locations));
+	// Non-fatal: degrade to estimated summary (caller falls back) instead of
+	// aborting if the runtime fails joint location.
+	XrResult sumRes = xr_ext->xrLocateHandJointsEXT(handTrackers[hand], &locateInfo, &locations);
+	if (XR_FAILED(sumRes)) {
+		static int s_sumFailLogs = 0;
+		if (s_sumFailLogs++ < 3)
+			OOVR_LOGF("xrLocateHandJointsEXT (summary) failed (%d) — using estimated data", (int)sumRes);
+		return vr::VRInputError_InvalidSkeleton;
+	}
 
 	if (!locations.isActive) {
 		// Leave empty-handed, IDK if this is the right error or not
