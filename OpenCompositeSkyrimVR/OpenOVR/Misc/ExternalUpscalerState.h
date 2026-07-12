@@ -19,6 +19,14 @@ enum OCUExternalUpscalerFlags : uint32_t {
 	OCU_EXTERNAL_UPSCALER_FLAG_FSR3 = 1u << 1,
 	OCU_EXTERNAL_UPSCALER_FLAG_FSR_NATIVE_AA = 1u << 2,
 	OCU_EXTERNAL_UPSCALER_FLAG_DLAA = 1u << 3,
+	// OCU's internal ASW (synthetic frame generation) is enabled. External
+	// render-scale systems (e.g. Community Shaders VR) should treat this as
+	// "ASW may engage at any time": ASW warps the submitted frame using the
+	// game's MV + depth render targets, so recreating those targets at a
+	// different resolution mid-session breaks the warp (flashing).
+	// NOTE for readers: check this flag even when `active` == 0 — ASW can be
+	// on while OCU's own upscalers are off.
+	OCU_EXTERNAL_UPSCALER_FLAG_ASW_ENABLED = 1u << 4,
 };
 
 struct OCUExternalUpscalerState {

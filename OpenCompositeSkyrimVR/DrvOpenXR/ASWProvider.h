@@ -68,6 +68,11 @@ public:
 	/// Get the depth XR swapchain for the warped frame (for XR_KHR_composition_layer_depth).
 	XrSwapchain GetDepthSwapchain() const { return m_depthSwapchain; }
 
+	/// False while the depth cache runs at a different resolution than the eye
+	/// (external render scale). The parallax warp still works (shader samples
+	/// depth by UV); only the XR depth layer must be skipped.
+	bool DepthLayerValid() const { return m_depthLayerValid; }
+
 	/// Get per-eye sub-image rect for the warped output (stereo-combined).
 	XrRect2Di GetOutputRect(int eye) const;
 
@@ -171,6 +176,13 @@ private:
 	bool CreateOutputSwapchain(uint32_t width, uint32_t height);
 	bool CreateDepthSwapchain(uint32_t width, uint32_t height);
 
+	// Adaptive sizing (external render-scale support, e.g. Community Shaders VR):
+	// the color/output path follows the submitted frame size; the depth cache
+	// follows the game's depth target size. They may legitimately differ.
+	void ReleaseStagingTextures();
+	bool ResizeColorPath(uint32_t eyeW, uint32_t eyeH);
+	bool ResizeDepthCache(uint32_t w, uint32_t h);
+
 	// Quaternion math helpers
 	static void QuatInverse(const XrQuaternionf& q, XrQuaternionf& out);
 	static void QuatMultiply(const XrQuaternionf& a, const XrQuaternionf& b, XrQuaternionf& out);
@@ -186,6 +198,10 @@ private:
 	float m_locoYaw = 0.0f; // stick yaw delta (old − new, radians)
 	float m_slotFraction = 0.5f; // warp position within the game frame (0..1)
 	uint32_t m_eyeWidth = 0, m_eyeHeight = 0;
+	// Depth cache dims — differ from eye dims when an external render-scale mod
+	// upscales the submitted frame while depth stays at render resolution.
+	uint32_t m_depthWidth = 0, m_depthHeight = 0;
+	bool m_depthLayerValid = true;
 	ID3D11Device* m_device = nullptr; // kept for obtaining immediate context in XrBackend
 
 	// Compute shader
@@ -220,7 +236,7 @@ private:
 	float m_cachedFar = 10000.0f;
 	bool m_hasCachedFrame = false;
 
-	// Constant buffer layout (must match HLSL, 16-byte aligned = 112 bytes)
+	// Constant buffer layout (must match HLSL, 16-byte aligned = 128 bytes)
 	struct WarpConstants {
 		float poseDeltaMatrix[16]; // 4x4 row-major
 		float resolution[2];
@@ -230,5 +246,7 @@ private:
 		float edgeFadeWidth;       // depth-edge fade threshold (depth ratio units)
 		float nearFadeDepth;       // parallax fades to 0 below this depth (game units); 0 = disabled
 		float debugTint;           // >0.5 = red-tint warp frames (aswDebugMode=10)
+		float depthResolution[2];  // depth grid size (may differ from resolution under external render scale)
+		float pad0[2];
 	};
 };

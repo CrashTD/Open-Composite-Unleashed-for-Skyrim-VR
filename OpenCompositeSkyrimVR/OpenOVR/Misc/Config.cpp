@@ -468,6 +468,8 @@ static void publish_external_upscaler_config(const Config& cfg)
 		flags |= OCU_EXTERNAL_UPSCALER_FLAG_FSR_NATIVE_AA;
 	if (cfg.DlaaEnabled() || (cfg.DlssEnabled() && cfg.DlssPreset() == 4))
 		flags |= OCU_EXTERNAL_UPSCALER_FLAG_DLAA;
+	if (cfg.ASWEnabled())
+		flags |= OCU_EXTERNAL_UPSCALER_FLAG_ASW_ENABLED;
 
 	const float renderScale = active ? std::max(0.1f, std::min(1.0f, cfg.FsrRenderScale())) : 1.0f;
 	const float mipBias = active ? external_upscaler_mip_bias(renderScale) : 0.0f;

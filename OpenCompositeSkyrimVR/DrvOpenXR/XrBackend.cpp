@@ -803,7 +803,7 @@ bool XrBackend::SubmitAswWarpFrame(const XrFrameState& frameState,
 	if (warpOk && g_aswProvider->SubmitWarpedOutput(aswCtx)) {
 		XrCompositionLayerProjectionView warpedViews[2] = {};
 		XrCompositionLayerDepthInfoKHR depthInfo[2] = {};
-		bool hasDepth = (g_aswProvider->GetDepthSwapchain() != XR_NULL_HANDLE);
+		bool hasDepth = (g_aswProvider->GetDepthSwapchain() != XR_NULL_HANDLE) && g_aswProvider->DepthLayerValid();
 
 		for (int eye = 0; eye < 2; eye++) {
 			warpedViews[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
@@ -1555,7 +1555,7 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 
 						// Attach depth info if depth swapchain is available
 						XrCompositionLayerDepthInfoKHR depthInfo[2] = {};
-						bool hasDepth = (g_aswProvider->GetDepthSwapchain() != XR_NULL_HANDLE);
+						bool hasDepth = (g_aswProvider->GetDepthSwapchain() != XR_NULL_HANDLE) && g_aswProvider->DepthLayerValid();
 
 						for (int eye = 0; eye < 2; eye++) {
 							warpedViews[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;

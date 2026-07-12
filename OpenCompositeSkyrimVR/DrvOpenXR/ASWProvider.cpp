@@ -35,6 +35,9 @@ cbuffer WarpParams : register(b0) {
     float edgeFadeWidth;        // depth-edge fade threshold (depth ratio units)
     float nearFadeDepth;        // parallax fades to 0 below this depth (game units); 0 = disabled
     float debugTint;            // >0.5 = red-tint warp frames (aswDebugMode=10)
+    float2 depthResolution;     // depth grid size — may be smaller than resolution
+                                // when an external render-scale mod is active
+    float2 pad0;
 };
 
 // Linearize depth from reversed-Z buffer value
@@ -51,16 +54,19 @@ void CSMain(uint3 tid : SV_DispatchThreadID) {
     // Output pixel UV in the NEW (warped) view
     float2 uv = ((float2)tid.xy + 0.5) / resolution;
 
-    // 1. Read depth from old frame (approximate — depth changes slowly between frames)
-    float d = depthTex[tid.xy];
+    // 1. Read depth from old frame (approximate — depth changes slowly between frames).
+    // Depth may live at a different (smaller) grid than the color/output when an
+    // external render-scale mod is active, so index it through UV, not tid.xy.
+    int2 dmax = int2((int)depthResolution.x - 1, (int)depthResolution.y - 1);
+    int2 dpix = clamp((int2)(uv * depthResolution), int2(0,0), dmax);
+    float d = depthTex[dpix];
     float linearDepth = LinearizeDepth(d, nearZ, farZ);
 
     // 2. Depth-edge detection: fade parallax at discontinuities to prevent silhouette tears
     float minD = linearDepth, maxD = linearDepth;
-    int2 pixel = (int2)tid.xy;
     int2 offsets[4] = { int2(-1,0), int2(1,0), int2(0,-1), int2(0,1) };
     [unroll] for (int i = 0; i < 4; i++) {
-        int2 np = clamp(pixel + offsets[i], int2(0,0), int2((int)resolution.x-1, (int)resolution.y-1));
+        int2 np = clamp(dpix + offsets[i], int2(0,0), dmax);
         float nd = LinearizeDepth(depthTex[np], nearZ, farZ);
         minD = min(minD, nd);
         maxD = max(maxD, nd);
@@ -353,7 +359,112 @@ bool ASWProvider::CreateStagingTextures(ID3D11Device* device)
 		if (FAILED(hr)) { OOVR_LOGF("ASW: CreateUAV output[%d] failed", eye); return false; }
 	}
 
+	m_depthWidth = m_eyeWidth;
+	m_depthHeight = m_eyeHeight;
+	m_depthLayerValid = true;
 	OOVR_LOG("ASW: Staging textures created (2 eyes × 4 textures)");
+	return true;
+}
+
+void ASWProvider::ReleaseStagingTextures()
+{
+	for (int i = 0; i < 2; i++) {
+		if (m_uavOutput[i]) { m_uavOutput[i]->Release(); m_uavOutput[i] = nullptr; }
+		if (m_warpedOutput[i]) { m_warpedOutput[i]->Release(); m_warpedOutput[i] = nullptr; }
+		if (m_srvDepth[i]) { m_srvDepth[i]->Release(); m_srvDepth[i] = nullptr; }
+		if (m_srvMV[i]) { m_srvMV[i]->Release(); m_srvMV[i] = nullptr; }
+		if (m_srvColor[i]) { m_srvColor[i]->Release(); m_srvColor[i] = nullptr; }
+		if (m_cachedDepth[i]) { m_cachedDepth[i]->Release(); m_cachedDepth[i] = nullptr; }
+		if (m_cachedMV[i]) { m_cachedMV[i]->Release(); m_cachedMV[i] = nullptr; }
+		if (m_cachedColor[i]) { m_cachedColor[i]->Release(); m_cachedColor[i] = nullptr; }
+	}
+}
+
+// Adopt a new submitted-frame size (external render-scale mods upscale the
+// game's frame to display res at submit). Recreates the staging textures and
+// both XR swapchains at the new size. Depth is re-fitted afterwards by
+// ResizeDepthCache if the game's depth target differs.
+bool ASWProvider::ResizeColorPath(uint32_t eyeW, uint32_t eyeH)
+{
+	OOVR_LOGF("ASW: adaptive resize color path %ux%u -> %ux%u",
+	    m_eyeWidth, m_eyeHeight, eyeW, eyeH);
+
+	m_hasCachedFrame = false;
+	ReleaseStagingTextures();
+
+	if (m_outputSwapchain != XR_NULL_HANDLE) {
+		xrDestroySwapchain(m_outputSwapchain);
+		m_outputSwapchain = {};
+	}
+	m_outputSwapchainImages.clear();
+	if (m_depthSwapchain != XR_NULL_HANDLE) {
+		xrDestroySwapchain(m_depthSwapchain);
+		m_depthSwapchain = {};
+	}
+	m_depthSwapchainImages.clear();
+
+	m_eyeWidth = eyeW;
+	m_eyeHeight = eyeH;
+
+	if (!CreateStagingTextures(m_device)) {
+		OOVR_LOG("ASW: adaptive resize FAILED (staging) — disabling");
+		m_ready = false;
+		return false;
+	}
+	if (!CreateOutputSwapchain(eyeW * 2, eyeH)) {
+		OOVR_LOG("ASW: adaptive resize FAILED (output swapchain) — disabling");
+		m_ready = false;
+		return false;
+	}
+	if (!CreateDepthSwapchain(eyeW * 2, eyeH)) {
+		// Depth layer is optional — keep going without it
+		OOVR_LOG("ASW: adaptive resize: depth swapchain recreation failed (depth layer disabled)");
+	}
+	return true;
+}
+
+// Re-fit the depth staging cache to the game's depth target size (may be
+// smaller than the eye size under external render scale — the warp shader
+// samples depth by UV, so mixed sizes are fine).
+bool ASWProvider::ResizeDepthCache(uint32_t w, uint32_t h)
+{
+	OOVR_LOGF("ASW: adaptive resize depth cache %ux%u -> %ux%u",
+	    m_depthWidth, m_depthHeight, w, h);
+
+	m_hasCachedFrame = false;
+	for (int i = 0; i < 2; i++) {
+		if (m_srvDepth[i]) { m_srvDepth[i]->Release(); m_srvDepth[i] = nullptr; }
+		if (m_cachedDepth[i]) { m_cachedDepth[i]->Release(); m_cachedDepth[i] = nullptr; }
+	}
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = w;
+	desc.Height = h;
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.Format = DXGI_FORMAT_R32_FLOAT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+	for (int i = 0; i < 2; i++) {
+		HRESULT hr = m_device->CreateTexture2D(&desc, nullptr, &m_cachedDepth[i]);
+		if (FAILED(hr)) {
+			OOVR_LOGF("ASW: depth cache resize FAILED (tex %d)", i);
+			return false;
+		}
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Format = desc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = 1;
+		hr = m_device->CreateShaderResourceView(m_cachedDepth[i], &srvDesc, &m_srvDepth[i]);
+		if (FAILED(hr)) {
+			OOVR_LOGF("ASW: depth cache resize FAILED (srv %d)", i);
+			return false;
+		}
+	}
+	m_depthWidth = w;
+	m_depthHeight = h;
 	return true;
 }
 
@@ -475,6 +586,35 @@ void ASWProvider::CacheFrame(int eye, ID3D11DeviceContext* ctx,
 {
 	if (!m_ready || eye < 0 || eye > 1) return;
 
+	// ── Adaptive sizing ──
+	// External render-scale mods (Community Shaders VR) upscale the submitted
+	// frame to display res while the game's depth target stays at render res,
+	// and both can change size mid-session ("relatch"). Follow the sources:
+	// the color/output path adopts the submitted size, the depth cache adopts
+	// the depth target size, and the warp shader samples depth by UV.
+	if (colorRegion) {
+		uint32_t cw = colorRegion->right - colorRegion->left;
+		uint32_t ch = colorRegion->bottom - colorRegion->top;
+		if (cw && ch && (cw != m_eyeWidth || ch != m_eyeHeight)) {
+			if (eye != 0)
+				return; // resize only on eye 0 so the pair stays consistent
+			if (!ResizeColorPath(cw, ch))
+				return;
+		}
+	}
+	if (depthRegion) {
+		uint32_t dw = depthRegion->right - depthRegion->left;
+		uint32_t dh = depthRegion->bottom - depthRegion->top;
+		if (dw && dh && (dw != m_depthWidth || dh != m_depthHeight)) {
+			if (eye != 0)
+				return;
+			if (!ResizeDepthCache(dw, dh))
+				return;
+		}
+	}
+	// The XR depth layer needs depth at the eye size; the parallax warp does not.
+	m_depthLayerValid = (m_depthWidth == m_eyeWidth && m_depthHeight == m_eyeHeight);
+
 	// Copy color (game eye texture → cached)
 	if (colorTex && colorRegion) {
 		if (!SafeBridgeCopy(ctx, m_cachedColor[eye], 0, 0, 0, 0,
@@ -575,6 +715,8 @@ bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
 	cb.edgeFadeWidth = oovr_global_configuration.ASWEdgeFadeWidth();
 	cb.nearFadeDepth = oovr_global_configuration.ASWNearFadeDepth() * 72.0f; // meters → game units
 	cb.debugTint = (oovr_global_configuration.ASWDebugMode() == 10) ? 1.0f : 0.0f;
+	cb.depthResolution[0] = (float)(m_depthWidth ? m_depthWidth : m_eyeWidth);
+	cb.depthResolution[1] = (float)(m_depthHeight ? m_depthHeight : m_eyeHeight);
 
 	// Update constant buffer
 	D3D11_MAPPED_SUBRESOURCE mapped;
@@ -652,8 +794,10 @@ bool ASWProvider::SubmitWarpedOutput(ID3D11DeviceContext* ctx)
 	XrSwapchainImageReleaseInfo relInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 	xrReleaseSwapchainImage(m_outputSwapchain, &relInfo);
 
-	// Submit depth swapchain (if available)
-	if (m_depthSwapchain != XR_NULL_HANDLE) {
+	// Submit depth swapchain (if available). Skipped when the depth cache runs
+	// at a different resolution than the eye (external render scale) — the
+	// swapchain copy needs matching sizes and stale depth is worse than none.
+	if (m_depthSwapchain != XR_NULL_HANDLE && m_depthLayerValid) {
 		XrSwapchainImageAcquireInfo depthAcquire = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
 		uint32_t depthIdx = 0;
 		XrResult depthRes = xrAcquireSwapchainImage(m_depthSwapchain, &depthAcquire, &depthIdx);

@@ -6506,10 +6506,19 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 	// Copy the texture across
 	Invoke(texture, ptrBounds);
 
+	// External render-scale mismatch (e.g. Community Shaders VR render scale):
+	// set in the ASW cache block below when the game's submitted eye size stops
+	// matching the MV render target eye size. Legacy (parallax-only) ASW handles
+	// this ADAPTIVELY — CacheFrame resizes its color path to the submitted size
+	// and samples depth by UV — so it keeps running. Only the experimental mode
+	// (whose MV-correction paths assume matched resolutions) is paused.
+	static bool s_aswExternalScaleMismatch = false;
+
 	// OCU ASW: pause warping during loading screens and the main menu
 	// (prevents warping stale pre-loading/logo content into a double projection).
 	if (g_aswProvider && s_pBridge) {
-		g_aswProvider->SetPaused(s_pBridge->isLoadingScreen != 0 || s_pBridge->isMainMenu != 0);
+		g_aswProvider->SetPaused(s_pBridge->isLoadingScreen != 0 || s_pBridge->isMainMenu != 0
+		    || (s_aswExternalScaleMismatch && oovr_global_configuration.aswExperimentalMode));
 	}
 
 	// OCU Meta Space Warp: submit MV + depth to runtime via XR_FB_space_warp.
@@ -6606,7 +6615,36 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 			depthTex = nullptr;
 
 		D3D11_TEXTURE2D_DESC mvDesc;
-		if (SafeGetTextureDesc(mvTex, &mvDesc)) {
+		bool mvDescOk = SafeGetTextureDesc(mvTex, &mvDesc);
+
+		// External render-scale guard: compare the game's submitted eye width
+		// against the MV render target eye width. Normally identical (both are
+		// the game's render resolution). A mod like Community Shaders VR render
+		// scale renders reduced-res and upscales at submit, so the submitted
+		// frame is display-res while MV/depth stay render-res — ASW would warp
+		// with mis-scaled motion data. Pause synthetic frames and skip caching
+		// until the sizes agree again (the SKSE bridge re-captures recreated
+		// render targets within ~1s).
+		if (mvDescOk) {
+			D3D11_TEXTURE2D_DESC gameDesc;
+			if (SafeGetTextureDesc((ID3D11Texture2D*)texture->handle, &gameDesc)) {
+				uint32_t gameEyeW = ptrBounds ? gameDesc.Width / 2 : gameDesc.Width;
+				uint32_t mvEyeWChk = mvDesc.Width / 2;
+				bool mismatch = (mvEyeWChk + 16 < gameEyeW) || (gameEyeW + 16 < mvEyeWChk);
+				if (mismatch != s_aswExternalScaleMismatch) {
+					s_aswExternalScaleMismatch = mismatch;
+					OOVR_LOGF("ASW: external render-scale %s (game eye %u px, MV eye %u px)%s",
+					    mismatch ? "MISMATCH detected" : "mismatch cleared", gameEyeW, mvEyeWChk,
+					    mismatch
+					        ? (aswExperimental ? " — experimental ASW paused" : " — adaptive mixed-res warp")
+					        : " — normal path");
+				}
+			}
+		}
+
+		// Legacy parallax ASW proceeds with mixed resolutions (adaptive cache);
+		// only experimental mode skips caching while mismatched.
+		if (mvDescOk && !(s_aswExternalScaleMismatch && aswExperimental)) {
 			uint32_t mvEyeW = mvDesc.Width / 2;
 			int eyeIdx = s_currentEyeIdx;
 
