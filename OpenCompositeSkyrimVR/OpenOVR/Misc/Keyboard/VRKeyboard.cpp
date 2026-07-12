@@ -1803,6 +1803,21 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 					accumX += charW;
 					newPos = i + 1;
 				}
+#ifdef _WIN32
+				// Mirror the caret jump into the game's Scaleform text box.
+				// There is no absolute set-caret injection, but N arrow-key
+				// events land on exactly the same position (the buffer and
+				// the game field hold the same text in buffered modes).
+				if (!sendInputOnly || consoleActive) {
+					int delta = newPos - cursorPos;
+					int steps = delta < 0 ? -delta : delta;
+					if (steps > 256)
+						steps = 256;
+					WORD vkStep = delta < 0 ? VK_LEFT : VK_RIGHT;
+					for (int s = 0; s < steps; s++)
+						PostCharToGame(vkStep, 1);
+				}
+#endif
 				cursorPos = newPos;
 				dirty = true;
 				continue;
@@ -2545,12 +2560,29 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 				}
 			} else if (ch == '\x04') {
 				SendSingleVK(VK_UP, sendInputOnly || consoleActive);
+				// Arrows produce no WM_CHAR and posted WM_KEYDOWN never reaches
+				// DirectInput, so Scaleform text boxes (console, naming, SkyUI
+				// search) only see arrows via the GFxKeyEvent path. Without it
+				// the caret cannot move and console history is unreachable.
+				PostCharToGame(VK_UP, 1);
 			} else if (ch == '\x05') {
 				SendSingleVK(VK_DOWN, sendInputOnly || consoleActive);
+				PostCharToGame(VK_DOWN, 1);
 			} else if (ch == '\x06') {
 				SendSingleVK(VK_LEFT, sendInputOnly || consoleActive);
+				PostCharToGame(VK_LEFT, 1);
+				// Keep the keyboard's own preview caret in step
+				if (cursorPos > 0) {
+					cursorPos--;
+					if (consoleActive) consoleDirty = true;
+				}
 			} else if (ch == '\x07') {
 				SendSingleVK(VK_RIGHT, sendInputOnly || consoleActive);
+				PostCharToGame(VK_RIGHT, 1);
+				if (cursorPos < (int)text.size()) {
+					cursorPos++;
+					if (consoleActive) consoleDirty = true;
+				}
 			} else if (ch >= '\x10' && ch <= '\x1B') {
 				// F1-F12 keys: \x10=F1, \x11=F2, ..., \x1B=F12
 				int fNum = (ch - '\x10') + 1;
@@ -2643,8 +2675,16 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 				if (!minimal)
 					SubmitEvent(VREvent_KeyboardCharInput, 0);
 				SubmitEvent(VREvent_KeyboardDone, 0);
-			} else if (ch == '\x04' || ch == '\x05' || ch == '\x06' || ch == '\x07') {
-				// Arrow keys — no-op in normal mode
+			} else if (ch == '\x06') {
+				// Left arrow — move the buffer caret (edits happen at cursorPos)
+				if (cursorPos > 0)
+					cursorPos--;
+			} else if (ch == '\x07') {
+				// Right arrow
+				if (cursorPos < (int)text.size())
+					cursorPos++;
+			} else if (ch == '\x04' || ch == '\x05') {
+				// Up/Down — no-op in normal mode
 			} else if (ch == '\x0E') {
 				closed = true;
 				SubmitEvent(VREvent_KeyboardClosed, 0);
