@@ -723,6 +723,45 @@ namespace OpenCompositeConfigurator
             ClientSize = new Size(ClientSize.Width, kofiY + 26);
         }
 
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            FitWindowToScreen();
+
+            // Vortex / manual installs: sync the game-root runtime files from
+            // the mod's root payload (install on first run, update on change).
+            // Under MO2 this is strictly read-only - Root Builder owns root
+            // deployment and the mod folder is never touched.
+            string runtimeStatus = RuntimeInstaller.RunStartupCheck(this, GetConfiguratorDir());
+            if (!string.IsNullOrEmpty(runtimeStatus))
+            {
+                _lblStatus.Text = runtimeStatus;
+                _lblVideoStatus.Text = runtimeStatus;
+            }
+        }
+
+        // Keep the entire window, including the support footer at the very bottom,
+        // inside the screen's usable area. Runs after the form is shown and placed,
+        // so it reads the real position and the actual monitor. If the content is
+        // taller than the working area, cap the height and turn on scrolling so the
+        // footer stays reachable; then nudge the window up so its bottom is not lost
+        // behind the taskbar.
+        private void FitWindowToScreen()
+        {
+            Rectangle wa = Screen.FromControl(this).WorkingArea;
+            if (Height > wa.Height)
+            {
+                if (MinimumSize.Height > wa.Height)
+                    MinimumSize = new Size(MinimumSize.Width, wa.Height);
+                AutoScroll = true;
+                Height = wa.Height;
+            }
+            if (Bottom > wa.Bottom)
+                Top = wa.Bottom - Height;
+            if (Top < wa.Top)
+                Top = wa.Top;
+        }
+
         // ═══════════════════════════════════════════════════════════════════════
         // SETTINGS TAB
         // ═══════════════════════════════════════════════════════════════════════

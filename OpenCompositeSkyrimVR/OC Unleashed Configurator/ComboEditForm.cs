@@ -47,6 +47,7 @@ namespace OpenCompositeConfigurator
             string modeStr = Mode switch
             {
                 "press" => "Press",
+                "hold" => "Hold (PTT)",
                 "double_tap" => "Double Tap",
                 "triple_tap" => "Triple Tap",
                 "quadruple_tap" => "Quad Tap",
@@ -99,6 +100,7 @@ namespace OpenCompositeConfigurator
 
         // Mode
         private RadioButton _rdoPress = null!;
+        private RadioButton _rdoHold = null!;
         private RadioButton _rdoDoubleTap = null!;
         private RadioButton _rdoTripleTap = null!;
         private RadioButton _rdoLongPress = null!;
@@ -266,14 +268,16 @@ namespace OpenCompositeConfigurator
             Controls.Add(lblMode);
 
             int modeX = leftMargin + 140;
-            _rdoPress = MakeRadio("Press (hold)", modeX, y, 110);
-            _rdoDoubleTap = MakeRadio("Double Tap", modeX + 115, y, 100);
-            _rdoTripleTap = MakeRadio("Triple Tap", modeX + 220, y, 100);
-            _rdoLongPress = MakeRadio("Long Press", modeX + 325, y, 100);
+            _rdoPress = MakeRadio("Press", modeX, y, 70);
+            _rdoHold = MakeRadio("Hold (PTT)", modeX + 75, y, 95);
+            _rdoDoubleTap = MakeRadio("Double Tap", modeX + 175, y, 100);
+            _rdoTripleTap = MakeRadio("Triple Tap", modeX + 280, y, 95);
+            _rdoLongPress = MakeRadio("Long Press", modeX + 380, y, 100);
             _rdoPress.Checked = true;
-            Controls.AddRange(new Control[] { _rdoPress, _rdoDoubleTap, _rdoTripleTap, _rdoLongPress });
+            Controls.AddRange(new Control[] { _rdoPress, _rdoHold, _rdoDoubleTap, _rdoTripleTap, _rdoLongPress });
 
             _rdoPress.CheckedChanged += (s, e) => UpdateTimingVisibility();
+            _rdoHold.CheckedChanged += (s, e) => UpdateTimingVisibility();
             _rdoDoubleTap.CheckedChanged += (s, e) => UpdateTimingVisibility();
             _rdoTripleTap.CheckedChanged += (s, e) => UpdateTimingVisibility();
             _rdoLongPress.CheckedChanged += (s, e) => UpdateTimingVisibility();
@@ -382,6 +386,7 @@ namespace OpenCompositeConfigurator
             // Set mode
             switch (entry.Mode)
             {
+                case "hold": _rdoHold.Checked = true; break;
                 case "double_tap": _rdoDoubleTap.Checked = true; break;
                 case "triple_tap": _rdoTripleTap.Checked = true; break;
                 case "long_press": _rdoLongPress.Checked = true; break;
@@ -632,7 +637,8 @@ namespace OpenCompositeConfigurator
 
             // Build result
             string mode;
-            if (_rdoDoubleTap.Checked) mode = "double_tap";
+            if (_rdoHold.Checked) mode = "hold";
+            else if (_rdoDoubleTap.Checked) mode = "double_tap";
             else if (_rdoTripleTap.Checked) mode = "triple_tap";
             else if (_rdoLongPress.Checked) mode = "long_press";
             else mode = "press";
