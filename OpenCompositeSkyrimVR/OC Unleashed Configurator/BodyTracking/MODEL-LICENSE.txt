@@ -1,0 +1,4 @@
+﻿pose_model.onnx = MoveNet SinglePose Thunder v4 by Google, Apache License 2.0.
+ONNX conversion from the PINTO model zoo (github.com/PINTO0309/PINTO_model_zoo, 115_MoveNet).
+Input [1,3,256,256] float32, raw 0-255 RGB. Output [1,1,17,3] = COCO-17 y/x/score.
+

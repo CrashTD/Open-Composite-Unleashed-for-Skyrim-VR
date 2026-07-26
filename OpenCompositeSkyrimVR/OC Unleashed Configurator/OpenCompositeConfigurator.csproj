@@ -40,4 +40,19 @@
     <None Include="..\doc\images\**\*.*" Link="Docs\images\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Body Tracking tab: camera capture (webcam + phone MJPEG streams) and
+         ONNX pose inference (DirectML = any DX12 GPU, no CUDA requirement) -->
+    <PackageReference Include="OpenCvSharp4" Version="4.10.0.20241108" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.10.0.20241108" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.20.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MoveNet SinglePose Thunder (Google, Apache-2.0; ONNX conversion from
+         the PINTO model zoo). Consumed by the Body Tracking tab. -->
+    <None Include="BodyTracking\pose_model.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="BodyTracking\MODEL-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

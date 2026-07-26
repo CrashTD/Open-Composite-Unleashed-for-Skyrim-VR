@@ -30,9 +30,11 @@ namespace OpenCompositeConfigurator
         private Button _btnTabSettings = null!;
         private Button _btnTabKeyboard = null!;
         private Button _btnTabVideo = null!;
+        private Button _btnTabHaptics = null!;
         private Panel _tabSettings = null!;
         private Panel _tabKeyboard = null!;
         private Panel _tabVideo = null!;
+        private Panel _tabHaptics = null!;
 
         // Video tab controls
         private CheckBox _chkFsrEnabled = null!;
@@ -156,11 +158,17 @@ namespace OpenCompositeConfigurator
         private CheckBox _chkDisableTrackpad = null!;
         private CheckBox _chkVRIKKnuckles = null!;
         private CheckBox _chkGpuTiming = null!;
+        private CheckBox _chkCombatHapticShield = null!;
+        private CheckBox _chkCombatHapticWeapon = null!;
+        private CheckBox _chkCombatHapticBow = null!;
+        private CheckBox _chkCombatHapticMagic = null!;
+        private NumericUpDown _nudCombatHapticStrength = null!;
 
         // Keyboard display settings
         private NumericUpDown _nudDisplayTilt = null!;
         private NumericUpDown _nudDisplayOpacity = null!;
         private NumericUpDown _nudDisplayScale = null!;
+        private ComboBox _cmbKbTheme = null!;
 
         // Keyboard sound settings
         private CheckBox _chkSoundsEnabled = null!;
@@ -204,6 +212,7 @@ namespace OpenCompositeConfigurator
         // Support footer
         private PictureBox _picKofi = null!;
         private Image? _kofiImage;
+        private readonly List<Control> _footerControls = new();
 
         // Bottom buttons
         private Button _btnSave = null!;
@@ -600,6 +609,38 @@ namespace OpenCompositeConfigurator
             _btnTabVideo.Click += (s, e) => SwitchTab(3);
             Controls.Add(_btnTabVideo);
 
+            _btnTabHaptics = new Button
+            {
+                Text = "Haptics",
+                Location = new Point(leftMargin + 425, y),
+                Size = new Size(90, 30),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 10f),
+                ForeColor = Color.FromArgb(160, 160, 160),
+                BackColor = Color.FromArgb(35, 35, 40),
+                Cursor = Cursors.Hand,
+            };
+            _btnTabHaptics.FlatAppearance.BorderSize = 0;
+            _btnTabHaptics.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 55);
+            _btnTabHaptics.Click += (s, e) => SwitchTab(4);
+            Controls.Add(_btnTabHaptics);
+
+            _btnTabBody = new Button
+            {
+                Text = "Body Tracking",
+                Location = new Point(leftMargin + 520, y),
+                Size = new Size(115, 30),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 10f),
+                ForeColor = Color.FromArgb(160, 160, 160),
+                BackColor = Color.FromArgb(35, 35, 40),
+                Cursor = Cursors.Hand,
+            };
+            _btnTabBody.FlatAppearance.BorderSize = 0;
+            _btnTabBody.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 55);
+            _btnTabBody.Click += (s, e) => SwitchTab(5);
+            Controls.Add(_btnTabBody);
+
             y += 32;
 
             // Panel 1: Settings
@@ -646,18 +687,44 @@ namespace OpenCompositeConfigurator
             };
             Controls.Add(_tabVideo);
 
+            // Panel 5: Haptics
+            _tabHaptics = new Panel
+            {
+                Location = new Point(leftMargin, y),
+                Size = new Size(rightEdge - leftMargin, 800), // resized after content built
+                BackColor = Color.FromArgb(30, 30, 35),
+                AutoScroll = false,
+                Visible = false,
+            };
+            Controls.Add(_tabHaptics);
+
+            // Panel 6: Body Tracking
+            _tabBody = new Panel
+            {
+                Location = new Point(leftMargin, y),
+                Size = new Size(rightEdge - leftMargin, 800), // resized after content built
+                BackColor = Color.FromArgb(30, 30, 35),
+                AutoScroll = false,
+                Visible = false,
+            };
+            Controls.Add(_tabBody);
+
             // Build content for each tab (each auto-sizes its panel)
             BuildSettingsTab();
             BuildKeyboardTab();
             BuildGesturesTab();
             BuildVideoTab();
+            BuildHapticsTab();
+            BuildBodyTrackingTab();
 
             // Sync all tabs to the same height (tallest content)
-            int tallestTab = Math.Max(Math.Max(Math.Max(_tabSettings.Height, _tabKeyboard.Height), _tabGestures.Height), _tabVideo.Height);
+            int tallestTab = Math.Max(Math.Max(Math.Max(Math.Max(Math.Max(_tabSettings.Height, _tabKeyboard.Height), _tabGestures.Height), _tabVideo.Height), _tabHaptics.Height), _tabBody.Height);
             _tabSettings.Size = new Size(_tabSettings.Width, tallestTab);
             _tabKeyboard.Size = new Size(_tabKeyboard.Width, tallestTab);
             _tabGestures.Size = new Size(_tabGestures.Width, tallestTab);
             _tabVideo.Size = new Size(_tabVideo.Width, tallestTab);
+            _tabHaptics.Size = new Size(_tabHaptics.Width, tallestTab);
+            _tabBody.Size = new Size(_tabBody.Width, tallestTab);
 
             // Support footer right after the tabs
             int kofiY = _tabSettings.Location.Y + tallestTab + 4;
@@ -671,6 +738,7 @@ namespace OpenCompositeConfigurator
                 BackColor = Color.FromArgb(60, 60, 65)
             };
             Controls.Add(kofiSep);
+            _footerControls.Add(kofiSep);
             kofiY += 6;
 
             // One line: italic text + bold link + icon
@@ -683,6 +751,7 @@ namespace OpenCompositeConfigurator
                 ForeColor = Color.FromArgb(160, 160, 160)
             };
             Controls.Add(lblKofiMsg);
+            _footerControls.Add(lblKofiMsg);
 
             int linkX = leftMargin + lblKofiMsg.PreferredWidth + 4;
             var lblKofiLink = new LinkLabel
@@ -701,6 +770,7 @@ namespace OpenCompositeConfigurator
                 catch { }
             };
             Controls.Add(lblKofiLink);
+            _footerControls.Add(lblKofiLink);
 
             int iconX = linkX + lblKofiLink.PreferredWidth + 4;
             _picKofi = new PictureBox
@@ -718,6 +788,7 @@ namespace OpenCompositeConfigurator
                 catch { }
             };
             Controls.Add(_picKofi);
+            _footerControls.Add(_picKofi);
 
             // Size form to fit tabs + support footer
             ClientSize = new Size(ClientSize.Width, kofiY + 26);
@@ -743,18 +814,28 @@ namespace OpenCompositeConfigurator
         // Keep the entire window, including the support footer at the very bottom,
         // inside the screen's usable area. Runs after the form is shown and placed,
         // so it reads the real position and the actual monitor. If the content is
-        // taller than the working area, cap the height and turn on scrolling so the
-        // footer stays reachable; then nudge the window up so its bottom is not lost
-        // behind the taskbar.
+        // taller than the working area, shrink the TAB PANELS (they scroll
+        // internally) and pull the footer up so it is always visible — scrolling
+        // the whole form hid the footer below the fold.
         private void FitWindowToScreen()
         {
             Rectangle wa = Screen.FromControl(this).WorkingArea;
-            if (Height > wa.Height)
+            int overflow = Height - wa.Height;
+            if (overflow > 0)
             {
                 if (MinimumSize.Height > wa.Height)
                     MinimumSize = new Size(MinimumSize.Width, wa.Height);
-                AutoScroll = true;
-                Height = wa.Height;
+
+                int newTabH = Math.Max(300, _tabSettings.Height - overflow);
+                int delta = _tabSettings.Height - newTabH;
+                foreach (var tab in new[] { _tabSettings, _tabKeyboard, _tabGestures, _tabVideo, _tabHaptics, _tabBody })
+                {
+                    tab.AutoScroll = true;
+                    tab.Height = newTabH;
+                }
+                foreach (Control c in _footerControls)
+                    c.Top -= delta;
+                Height -= delta;
             }
             if (Bottom > wa.Bottom)
                 Top = wa.Bottom - Height;
@@ -1007,6 +1088,23 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(MakeLabel("%", rx + 363, ry + 3, 20));
             ry += 30;
 
+            // Row 2: Keyboard theme (applies live — the DLL hot-swaps on save)
+            container.Controls.Add(MakeLabel("Theme:", rx, ry + 3, 50));
+            _cmbKbTheme = new ComboBox
+            {
+                Location = new Point(rx + 55, ry),
+                Width = 160,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(50, 50, 55),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5f),
+            };
+            _cmbKbTheme.Items.AddRange(new object[] { "Parchment", "SkyUI Dark", "Dwemer", "Sovngarde" });
+            _cmbKbTheme.SelectedIndex = 0;
+            container.Controls.Add(_cmbKbTheme);
+            ry += 28;
+
             // Row 3: Feedback checkbox
             _chkSoundsEnabled = MakeCheckBox("Keyboard feedback", rx, ry);
             _chkSoundsEnabled.Checked = true;
@@ -1034,15 +1132,7 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(_nudPressVolume);
             container.Controls.Add(MakeLabel("%", rx + 253, ry + 3, 20));
 
-            container.Controls.Add(MakeLabel("Haptic:", rx + 288, ry + 3, 50));
-            _nudKbHapticStrength = new NumericUpDown
-            {
-                Location = new Point(rx + 340, ry), Width = 55,
-                Minimum = 0, Maximum = 100, Increment = 5, Value = 50,
-                BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
-            };
-            container.Controls.Add(_nudKbHapticStrength);
-            container.Controls.Add(MakeLabel("%", rx + 398, ry + 3, 20));
+            // Keyboard haptic strength moved to the dedicated Haptics tab
             ry += 36;
 
             // No reset-position control: the keyboard spawns head-relative and clamped to
@@ -1081,22 +1171,12 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(_nudSuperSample);
 
-            container.Controls.Add(MakeLabel("Haptic Strength:", gc2, y + 3, 120));
-            _nudHapticStrength = new NumericUpDown
-            {
-                Location = new Point(gc2 + 120, y), Width = 75,
-                DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.0m, Maximum = 1.0m, Value = 0.1m,
-                BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
-            };
-            container.Controls.Add(_nudHapticStrength);
+            // Haptic master switch + strength moved to the dedicated Haptics tab
             y += 28;
 
             _chkRenderHands = MakeCheckBox("Render custom hands", gc1, y);
             _chkRenderHands.Checked = true;
             container.Controls.Add(_chkRenderHands);
-            _chkHaptics = MakeCheckBox("Enable haptics", gc2, y);
-            _chkHaptics.Checked = true;
-            container.Controls.Add(_chkHaptics);
             y += 24;
 
             _chkHiddenMesh = MakeCheckBox("Enable hidden mesh fix", gc1, y);
@@ -1251,6 +1331,8 @@ namespace OpenCompositeConfigurator
             };
             _pnlSkyrimOnly.Controls.Add(_nudRightDeadZone);
             sy2 += 28;
+
+            // Combat haptics moved to the dedicated Haptics tab (BuildHapticsTab)
 
             _pnlSkyrimOnly.Size = new Size(rightEdge - leftMargin - 440, Math.Max(sy, sy2));
 
@@ -5680,12 +5762,145 @@ namespace OpenCompositeConfigurator
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // HAPTICS TAB — every rumble setting in one place. Master + strength
+        // used to live in General settings, combat toggles in the Skyrim panel,
+        // and keyboard click strength in the keyboard sound row; centralizing
+        // them unclutters those tabs and gives space for explanations.
+        // ═══════════════════════════════════════════════════════════════════════
+
+        private void BuildHapticsTab()
+        {
+            var container = _tabHaptics;
+            int y = 10;
+            int leftMargin = 6;
+            int rightEdge = container.ClientSize.Width - 20;
+            int c1 = leftMargin + 6;
+            int c2 = leftMargin + 300;
+
+            var lblIntro = new Label
+            {
+                Location = new Point(leftMargin, y),
+                Size = new Size(rightEdge - leftMargin, 24),
+                Text = "Controller rumble settings. The master switch gates everything, including rumble the game itself triggers.",
+                ForeColor = Color.FromArgb(150, 200, 250),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+                BackColor = Color.FromArgb(40, 45, 60),
+                BorderStyle = BorderStyle.FixedSingle,
+                Padding = new Padding(6, 4, 6, 4),
+                AutoSize = false
+            };
+            container.Controls.Add(lblIntro);
+            y += 34;
+
+            // ── GENERAL ──
+            container.Controls.Add(MakeSectionLabel("General", c1, y));
+            y += 26;
+
+            _chkHaptics = MakeCheckBox("Enable haptics (master switch)", c1, y);
+            _chkHaptics.Checked = true;
+            container.Controls.Add(_chkHaptics);
+
+            container.Controls.Add(MakeLabel("Game rumble strength:", c2, y + 3, 150));
+            _nudHapticStrength = new NumericUpDown
+            {
+                Location = new Point(c2 + 150, y), Width = 75,
+                DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.0m, Maximum = 1.0m, Value = 0.1m,
+                BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+            };
+            container.Controls.Add(_nudHapticStrength);
+            y += 26;
+
+            var lblGeneralHint = MakeLabel("Game rumble strength scales pulses the game engine fires (touch feedback, native effects), 0 to 1.", c1, y, rightEdge - c1);
+            lblGeneralHint.ForeColor = Color.FromArgb(140, 140, 140);
+            lblGeneralHint.Font = new Font("Segoe UI", 8.5f);
+            container.Controls.Add(lblGeneralHint);
+            y += 30;
+
+            container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
+            y += 10;
+
+            // ── COMBAT (Skyrim VR, delivered by the OCU SKSE plugin) ──
+            container.Controls.Add(MakeSectionLabel("Combat (Skyrim VR)", c1, y));
+            y += 26;
+
+            _chkCombatHapticShield = MakeCheckBox("Shield / weapon block", c1, y);
+            _chkCombatHapticShield.Checked = true;
+            container.Controls.Add(_chkCombatHapticShield);
+            _chkCombatHapticWeapon = MakeCheckBox("Weapon && fist hits", c2, y);
+            _chkCombatHapticWeapon.Checked = true;
+            container.Controls.Add(_chkCombatHapticWeapon);
+            y += 24;
+
+            _chkCombatHapticBow = MakeCheckBox("Bow release", c1, y);
+            _chkCombatHapticBow.Checked = true;
+            container.Controls.Add(_chkCombatHapticBow);
+            _chkCombatHapticMagic = MakeCheckBox("Magic casting", c2, y);
+            _chkCombatHapticMagic.Checked = true;
+            container.Controls.Add(_chkCombatHapticMagic);
+            y += 26;
+
+            container.Controls.Add(MakeLabel("Combat strength:", c1, y + 3, 110));
+            _nudCombatHapticStrength = new NumericUpDown
+            {
+                Location = new Point(c1 + 110, y), Width = 55,
+                Minimum = 0, Maximum = 100, Value = 80,
+                BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+            };
+            container.Controls.Add(_nudCombatHapticStrength);
+            container.Controls.Add(MakeLabel("(0-100)", c1 + 172, y + 3, 55));
+            y += 26;
+
+            var lblCombatHint = new Label
+            {
+                Location = new Point(c1, y),
+                Size = new Size(rightEdge - c1, 60),
+                Text = "Blocks thump the blocking hand; landed weapon and fist hits pulse the attacking hand (fists only while actually swinging). "
+                     + "Bow release gives a light snap in both hands. Magic gives one pulse when a spell fires and a soft continuous rumble while "
+                     + "streaming concentration spells like Flames. Blocks are strongest, then weapon hits, spells, fists, bow, stream hum. "
+                     + "Weapon-clash mods (PLANCK etc.) do their own rumble and are unaffected.",
+                ForeColor = Color.FromArgb(140, 140, 140),
+                Font = new Font("Segoe UI", 8.5f),
+                AutoSize = false
+            };
+            container.Controls.Add(lblCombatHint);
+            y += 64;
+
+            container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
+            y += 10;
+
+            // ── VR KEYBOARD ──
+            container.Controls.Add(MakeSectionLabel("VR Keyboard", c1, y));
+            y += 26;
+
+            container.Controls.Add(MakeLabel("Key click strength:", c1, y + 3, 120));
+            _nudKbHapticStrength = new NumericUpDown
+            {
+                Location = new Point(c1 + 120, y), Width = 55,
+                Minimum = 0, Maximum = 100, Increment = 5, Value = 50,
+                BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+            };
+            container.Controls.Add(_nudKbHapticStrength);
+            container.Controls.Add(MakeLabel("%", c1 + 178, y + 3, 20));
+            y += 26;
+
+            var lblKbHint = MakeLabel("Tick felt when the laser presses a key on the in-game VR keyboard.", c1, y, rightEdge - c1);
+            lblKbHint.ForeColor = Color.FromArgb(140, 140, 140);
+            lblKbHint.Font = new Font("Segoe UI", 8.5f);
+            container.Controls.Add(lblKbHint);
+            y += 34;
+
+            container.Size = new Size(container.Width, y + 10);
+        }
+
         private void SwitchTab(int index)
         {
             _tabSettings.Visible = (index == 0);
             _tabKeyboard.Visible = (index == 1);
             _tabGestures.Visible = (index == 2);
             _tabVideo.Visible = (index == 3);
+            _tabHaptics.Visible = (index == 4);
+            _tabBody.Visible = (index == 5);
 
             // Update button styles
             _btnTabSettings.Font = new Font("Segoe UI", 10f, index == 0 ? FontStyle.Bold : FontStyle.Regular);
@@ -5703,6 +5918,14 @@ namespace OpenCompositeConfigurator
             _btnTabVideo.Font = new Font("Segoe UI", 10f, index == 3 ? FontStyle.Bold : FontStyle.Regular);
             _btnTabVideo.ForeColor = index == 3 ? Color.White : Color.FromArgb(160, 160, 160);
             _btnTabVideo.BackColor = index == 3 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
+
+            _btnTabHaptics.Font = new Font("Segoe UI", 10f, index == 4 ? FontStyle.Bold : FontStyle.Regular);
+            _btnTabHaptics.ForeColor = index == 4 ? Color.White : Color.FromArgb(160, 160, 160);
+            _btnTabHaptics.BackColor = index == 4 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
+
+            _btnTabBody.Font = new Font("Segoe UI", 10f, index == 5 ? FontStyle.Bold : FontStyle.Regular);
+            _btnTabBody.ForeColor = index == 5 ? Color.White : Color.FromArgb(160, 160, 160);
+            _btnTabBody.BackColor = index == 5 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -6090,6 +6313,7 @@ namespace OpenCompositeConfigurator
                 _nudDisplayTilt.Value = 22.5m;
                 _nudDisplayOpacity.Value = 30m;
                 _nudDisplayScale.Value = 100m;
+                _cmbKbTheme.SelectedIndex = 0;
                 _chkSoundsEnabled.Checked = true;
                 _nudSoundVolume.Value = 50m;
                 _nudPressVolume.Value = 50m;
@@ -6099,6 +6323,11 @@ namespace OpenCompositeConfigurator
                 _chkRenderHands.Checked = true;
                 _chkHaptics.Checked = true;
                 _nudHapticStrength.Value = 0.10m;
+                _chkCombatHapticShield.Checked = true;
+                _chkCombatHapticWeapon.Checked = true;
+                _chkCombatHapticBow.Checked = true;
+                _chkCombatHapticMagic.Checked = true;
+                _nudCombatHapticStrength.Value = 80m;
                 _chkHiddenMesh.Checked = true;
                 _chkInvertShaders.Checked = false;
                 _chkDx10.Checked = false;
@@ -6346,6 +6575,11 @@ namespace OpenCompositeConfigurator
             if (int.TryParse(_ini.Get("keyboard", "displayScale", "100"), out int dsc))
                 _nudDisplayScale.Value = Math.Clamp(dsc, 50, 150);
 
+            _cmbKbTheme.SelectedIndex = _ini.Get("keyboard", "theme", "parchment").ToLowerInvariant() switch
+            {
+                "skyui" => 1, "dwemer" => 2, "sovngarde" => 3, _ => 0
+            };
+
             _chkSoundsEnabled.Checked = ParseBool(_ini.Get("keyboard", "soundsEnabled", "true"));
             if (int.TryParse(_ini.Get("keyboard", "soundVolume", "50"), out int svol))
                 _nudSoundVolume.Value = Math.Clamp(svol, 0, 100);
@@ -6411,6 +6645,13 @@ namespace OpenCompositeConfigurator
             }
             UpdateDeletePresetEnabled();
             _chkGpuTiming.Checked = ParseBool(_ini.Get("", "enableGpuTiming", "true"));
+            _chkCombatHapticShield.Checked = ParseBool(_ini.Get("", "combatHapticShield", "true"));
+            _chkCombatHapticWeapon.Checked = ParseBool(_ini.Get("", "combatHapticWeapon", "true"));
+            _chkCombatHapticBow.Checked = ParseBool(_ini.Get("", "combatHapticBow", "true"));
+            _chkCombatHapticMagic.Checked = ParseBool(_ini.Get("", "combatHapticMagic", "true"));
+            _chkNetTrackersEnabled.Checked = ParseBool(_ini.Get("", "networkTrackersEnabled", "false"));
+            if (int.TryParse(_ini.Get("", "combatHapticStrength", "80"), out int chs))
+                _nudCombatHapticStrength.Value = Math.Clamp(chs, 0, 100);
             if (TryParseIniFloat(_ini.Get("", "leftDeadZoneSize", "0.0"), out float ldz))
                 _nudLeftDeadZone.Value = (decimal)Math.Clamp(ldz, 0f, 1f);
             if (TryParseIniFloat(_ini.Get("", "rightDeadZoneSize", "0.0"), out float rdz))
@@ -6679,6 +6920,10 @@ namespace OpenCompositeConfigurator
             _ini.Set("keyboard", "displayTilt", _nudDisplayTilt.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("keyboard", "displayOpacity", ((int)_nudDisplayOpacity.Value).ToString());
             _ini.Set("keyboard", "displayScale", ((int)_nudDisplayScale.Value).ToString());
+            _ini.Set("keyboard", "theme", _cmbKbTheme.SelectedIndex switch
+            {
+                1 => "skyui", 2 => "dwemer", 3 => "sovngarde", _ => "parchment"
+            });
             _ini.Set("keyboard", "soundsEnabled", _chkSoundsEnabled.Checked ? "true" : "false");
             _ini.Set("keyboard", "soundVolume", ((int)_nudSoundVolume.Value).ToString());
             _ini.Set("keyboard", "pressVolume", ((int)_nudPressVolume.Value).ToString());
@@ -6715,6 +6960,12 @@ namespace OpenCompositeConfigurator
                 _ini.Set("", "disableTrackPad", _chkDisableTrackpad.Checked ? "true" : "false");
                 _ini.Set("", "enableVRIKKnucklesTrackPadSupport", _chkVRIKKnuckles.Checked ? "true" : "false");
                 _ini.Set("", "enableGpuTiming", _chkGpuTiming.Checked ? "true" : "false");
+                _ini.Set("", "combatHapticShield", _chkCombatHapticShield.Checked ? "true" : "false");
+                _ini.Set("", "combatHapticWeapon", _chkCombatHapticWeapon.Checked ? "true" : "false");
+                _ini.Set("", "combatHapticBow", _chkCombatHapticBow.Checked ? "true" : "false");
+                _ini.Set("", "combatHapticMagic", _chkCombatHapticMagic.Checked ? "true" : "false");
+                _ini.Set("", "networkTrackersEnabled", _chkNetTrackersEnabled.Checked ? "true" : "false");
+                _ini.Set("", "combatHapticStrength", ((int)_nudCombatHapticStrength.Value).ToString());
                 _ini.Set("", "leftDeadZoneSize", _nudLeftDeadZone.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
                 _ini.Set("", "rightDeadZoneSize", _nudRightDeadZone.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
 
