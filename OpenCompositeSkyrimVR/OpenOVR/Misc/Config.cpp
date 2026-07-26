@@ -264,6 +264,14 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, rightXPosition);
 		CFGOPT(float, rightYPosition);
 		CFGOPT(float, rightZPosition);
+		CFGOPT(float, renderModelRotX);
+		CFGOPT(float, renderModelRotY);
+		CFGOPT(float, renderModelRotZ);
+		CFGOPT(float, renderModelOffX);
+		CFGOPT(float, renderModelOffY);
+		CFGOPT(float, renderModelOffZ);
+		CFGOPT(float, renderModelScale);
+		CFGOPT(bool, renderModelAdjust);
 		CFGOPT(float, leftDeadZoneSize);
 		CFGOPT(float, leftDeadZoneXSize);
 		CFGOPT(float, leftDeadZoneYSize);
@@ -318,6 +326,15 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, blueSkyDefenderLambda);
 		CFGOPT(float, blueSkyDefenderEpsilon);
 		CFGOPT(bool, motionVectorsEnabled);
+		CFGOPT(bool, bodyTrackersEnabled);
+		CFGOPT(string, bodyTrackerRoles);
+		CFGOPT(bool, networkTrackersEnabled);
+		CFGOPT(int, networkTrackerPort);
+		CFGOPT(bool, combatHapticShield);
+		CFGOPT(bool, combatHapticWeapon);
+		CFGOPT(bool, combatHapticBow);
+		CFGOPT(bool, combatHapticMagic);
+		CFGOPT(int, combatHapticStrength);
 		CFGOPT(float, motionVectorScale);
 		CFGOPT(bool, actorMV);
 		CFGOPT(bool, aswEnabled);
@@ -401,6 +418,7 @@ int Config::ini_handler(void* user, const char* pSection,
 		if (name == "hoverVolume") { cfg->kbHoverVolume = parse_int(value, name, lineno); return true; }
 		if (name == "pressVolume") { cfg->kbPressVolume = parse_int(value, name, lineno); return true; }
 		if (name == "hapticStrength") { cfg->kbHapticStrength = parse_int(value, name, lineno); return true; }
+		if (name == "theme") { cfg->kbTheme = parse_string(value, name, lineno); return true; }
 	}
 
 	if (section == "configurator") {
@@ -445,19 +463,28 @@ static void publish_external_upscaler_config(const Config& cfg)
 {
 	const bool fsrTemporalActive = cfg.FsrEnabled()
 	    && (cfg.FsrRenderScale() < 0.999f || cfg.FsrNativeAA());
-	const bool dlssTemporalActive = cfg.DlssEnabled()
-	    && !cfg.FsrEnabled()
-	    && (cfg.FsrRenderScale() < 0.999f || cfg.DlssPreset() == 4);
+	// DLSS is always temporal when enabled; its render scale comes from the
+	// DLSS preset/override, NOT fsrRenderScale (which previously gated this
+	// and produced active=0 / wrong scale for DLSS users — CS consumes the
+	// published renderScale for its own mip bias, so truth matters here)
+	const bool dlssTemporalActive = cfg.DlssEnabled() && !cfg.FsrEnabled();
 	const bool dlaaPostActive = cfg.DlaaEnabled();
 	const bool active = fsrTemporalActive || dlssTemporalActive || dlaaPostActive;
 
 	OCUExternalUpscalerMethod method = OCU_EXTERNAL_UPSCALER_NONE;
-	if (fsrTemporalActive)
+	float methodRenderScale = 1.0f;
+	if (fsrTemporalActive) {
 		method = cfg.FsrNativeAA() ? OCU_EXTERNAL_UPSCALER_FSR_NATIVE_AA : OCU_EXTERNAL_UPSCALER_FSR3;
-	else if (dlssTemporalActive)
+		methodRenderScale = cfg.FsrNativeAA() ? 1.0f : cfg.FsrRenderScale();
+	} else if (dlssTemporalActive) {
 		method = (cfg.DlssPreset() == 4) ? OCU_EXTERNAL_UPSCALER_DLAA : OCU_EXTERNAL_UPSCALER_DLSS;
-	else if (dlaaPostActive)
+		methodRenderScale = cfg.DlssRenderScaleOverride() > 0.0f
+		    ? cfg.DlssRenderScaleOverride()
+		    : dlss_preset_render_scale(cfg.DlssPreset());
+	} else if (dlaaPostActive) {
 		method = OCU_EXTERNAL_UPSCALER_DLAA;
+		methodRenderScale = 1.0f; // DLAA renders at native resolution
+	}
 
 	uint32_t flags = 0;
 	if (cfg.DlssEnabled())
@@ -471,7 +498,7 @@ static void publish_external_upscaler_config(const Config& cfg)
 	if (cfg.ASWEnabled())
 		flags |= OCU_EXTERNAL_UPSCALER_FLAG_ASW_ENABLED;
 
-	const float renderScale = active ? std::max(0.1f, std::min(1.0f, cfg.FsrRenderScale())) : 1.0f;
+	const float renderScale = active ? std::max(0.1f, std::min(1.0f, methodRenderScale)) : 1.0f;
 	const float mipBias = active ? external_upscaler_mip_bias(renderScale) : 0.0f;
 	PublishExternalUpscalerState(
 	    active,

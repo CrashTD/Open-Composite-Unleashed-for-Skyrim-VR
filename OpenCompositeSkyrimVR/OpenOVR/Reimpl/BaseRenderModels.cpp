@@ -13,7 +13,10 @@
 #include "Misc/Input/InteractionProfile.h"
 
 #include "Misc/lodepng.h"
+#include "Misc/xrutil.h"
 
+#include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -170,9 +173,407 @@ static OOVR_RenderModel_Vertex_t split_face(
 // NOTE: Quest 3 controller code archived to:
 // OpenOVR/Misc/ARCHIVE_Quest3Controllers.cpp.disabled
 
+// =========================================================================
+// STEAMVR RENDER MODEL PASSTHROUGH (2026-07-25)
+// =========================================================================
+// The built-in models are a generic hand mesh with a 1x1 flat-colour texture
+// (the "gray hands"). When SteamVR is installed, serve Valve's real controller
+// models + colour textures straight off the user's disk instead — loaded at
+// runtime, never redistributed. Any model name the game requests that exists
+// in SteamVR's rendermodels folder gets served; unknown names fall back to
+// the built-in hands.
+
+static std::map<int32_t, std::string> s_svrTexPaths; // textureId -> png path
+static std::map<std::string, int32_t> s_svrTexIds; // png path -> textureId (dedupe)
+static int32_t s_svrNextTexId = 1000;
+
+static bool SvrFileExists(const std::string& p)
+{
+	DWORD a = GetFileAttributesA(p.c_str());
+	return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// This build's lodepng has LODEPNG_COMPILE_DISK off — read the file ourselves
+// and use the in-memory decode overload.
+static unsigned SvrDecodePng(const std::string& path, std::vector<unsigned char>& out, unsigned& w, unsigned& h)
+{
+	std::ifstream f(path, std::ios::binary);
+	if (!f)
+		return 78; // lodepng error 78 = failed to open file
+	std::vector<unsigned char> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	if (raw.empty())
+		return 78;
+	return lodepng::decode(out, w, h, raw);
+}
+
+// Resolve <SteamVR>\resources\rendermodels once. Order: openvrpaths.vrpath
+// (authoritative — written by SteamVR itself), then Steam registry.
+static const std::string& SvrRenderModelsDir()
+{
+	static bool resolved = false;
+	static std::string dir;
+	if (resolved)
+		return dir;
+	resolved = true;
+
+	auto tryRuntime = [&](std::string runtime) -> bool {
+		if (runtime.empty())
+			return false;
+		std::string cand = runtime + "\\resources\\rendermodels";
+		DWORD a = GetFileAttributesA(cand.c_str());
+		if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
+			dir = cand;
+			OOVR_LOGF("RenderModels: SteamVR rendermodels found at %s", dir.c_str());
+			return true;
+		}
+		return false;
+	};
+
+	// 1. openvrpaths.vrpath — %LOCALAPPDATA%\openvr\openvrpaths.vrpath,
+	//    tiny JSON with a "runtime": ["<SteamVR dir>"] array.
+	char localAppData[MAX_PATH] = {};
+	if (GetEnvironmentVariableA("LOCALAPPDATA", localAppData, MAX_PATH) > 0) {
+		std::ifstream vf(std::string(localAppData) + "\\openvr\\openvrpaths.vrpath");
+		if (vf) {
+			std::string json((std::istreambuf_iterator<char>(vf)), std::istreambuf_iterator<char>());
+			size_t rt = json.find("\"runtime\"");
+			if (rt != std::string::npos) {
+				size_t q1 = json.find('"', json.find('[', rt) + 1);
+				size_t q2 = (q1 != std::string::npos) ? json.find('"', q1 + 1) : std::string::npos;
+				if (q1 != std::string::npos && q2 != std::string::npos) {
+					std::string path = json.substr(q1 + 1, q2 - q1 - 1);
+					// Unescape JSON: "\\" -> "\", "\/" -> "/"
+					std::string un;
+					for (size_t i = 0; i < path.size(); i++) {
+						if (path[i] == '\\' && i + 1 < path.size() && (path[i + 1] == '\\' || path[i + 1] == '/')) {
+							un += path[i + 1];
+							i++;
+						} else {
+							un += path[i];
+						}
+					}
+					if (tryRuntime(un))
+						return dir;
+				}
+			}
+		}
+	}
+
+	// 2. Steam registry -> <Steam>\steamapps\common\SteamVR
+	auto tryReg = [&](HKEY root, const char* key, const char* value) -> bool {
+		char buf[MAX_PATH] = {};
+		DWORD len = sizeof(buf);
+		if (RegGetValueA(root, key, value, RRF_RT_REG_SZ, nullptr, buf, &len) == ERROR_SUCCESS && buf[0]) {
+			std::string steam(buf);
+			for (auto& c : steam)
+				if (c == '/')
+					c = '\\';
+			return tryRuntime(steam + "\\steamapps\\common\\SteamVR");
+		}
+		return false;
+	};
+	if (tryReg(HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath"))
+		return dir;
+	if (tryReg(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Valve\\Steam", "InstallPath"))
+		return dir;
+
+	OOVR_LOG("RenderModels: no SteamVR install found — using built-in hand models");
+	return dir; // empty = not found
+}
+
+// Valve's rendermodel OBJs use "v/vt" faces (no normals, one slash) — the
+// strict split_face above aborts on them ("Bad face spec"). Parse all four
+// spec styles: v, v/vt, v//vn, v/vt/vn. Missing fields come back as -1.
+static bool SvrParseFaceRef(const string& s, int& vert, int& uv, int& norm)
+{
+	vert = uv = norm = -1;
+	size_t slash1 = s.find('/');
+	size_t slash2 = (slash1 == string::npos) ? string::npos : s.find('/', slash1 + 1);
+	try {
+		if (slash1 == string::npos) {
+			vert = stoi(s) - 1; // "v"
+		} else if (slash2 == string::npos) {
+			vert = stoi(s.substr(0, slash1)) - 1; // "v/vt"
+			uv = stoi(s.substr(slash1 + 1)) - 1;
+		} else {
+			vert = stoi(s.substr(0, slash1)) - 1; // "v/vt/vn" or "v//vn"
+			if (slash2 > slash1 + 1)
+				uv = stoi(s.substr(slash1 + 1, slash2 - slash1 - 1)) - 1;
+			norm = stoi(s.substr(slash2 + 1)) - 1;
+		}
+	} catch (...) {
+		return false;
+	}
+	return vert >= 0;
+}
+
+static OOVR_RenderModel_Vertex_t SvrBuildVertex(int vert, int uv, int norm,
+    const std::vector<vr::HmdVector3_t>& verts,
+    const std::vector<vr::HmdVector2_t>& uvs,
+    const std::vector<vr::HmdVector3_t>& normals)
+{
+	OOVR_RenderModel_Vertex_t out = { 0 };
+	if (vert >= 0 && vert < (int)verts.size())
+		out.vPosition = verts[vert];
+	if (uv >= 0 && uv < (int)uvs.size()) {
+		out.rfTextureCoord[0] = uvs[uv].v[0];
+		out.rfTextureCoord[1] = uvs[uv].v[1];
+	}
+	if (norm >= 0 && norm < (int)normals.size())
+		out.vNormal = normals[norm];
+	return out;
+}
+
+// Load <rendermodels>\<name>\<name>.obj + its diffuse texture. Returns false
+// if SteamVR or the specific model is absent (caller falls back to hands).
+static bool TryLoadSteamVrModel(const string& rawName, RenderModel_t** renderModel)
+{
+	const std::string& rmDir = SvrRenderModelsDir();
+	if (rmDir.empty())
+		return false;
+
+	// Strip any "{driver}" prefix: "{indexcontroller}valve_..." -> "valve_..."
+	string base = rawName;
+	if (!base.empty() && base[0] == '{') {
+		size_t close = base.find('}');
+		if (close == string::npos)
+			return false;
+		base = base.substr(close + 1);
+	}
+	if (base.empty() || base.find("..") != string::npos || base.find('\\') != string::npos || base.find('/') != string::npos)
+		return false; // no path tricks through render model names
+
+	// Quest generation correction: the Touch interaction profile makes OCU
+	// advertise quest2 for EVERY Quest generation, but SteamVR ships distinct
+	// models. Pick by the runtime's real system name (VD reports the actual
+	// headset). Quest 3's "Touch Plus" controllers = SteamVR's "quest_plus".
+	if (base.rfind("oculus_quest2_controller_", 0) == 0 && xr_gbl) {
+		std::string side = base.substr(sizeof("oculus_quest2_controller_") - 1); // "left"/"right"
+		std::string sys = xr_gbl->systemProperties.systemName;
+		for (auto& ch : sys)
+			ch = (char)tolower((unsigned char)ch);
+		std::string sub;
+		if (sys.find("quest 3") != std::string::npos || sys.find("quest3") != std::string::npos)
+			sub = "oculus_quest_plus_controller_" + side;
+		else if (sys.find("quest pro") != std::string::npos)
+			sub = "oculus_quest_pro_controller_" + side;
+		if (!sub.empty() && SvrFileExists(rmDir + "\\" + sub + "\\" + sub + ".obj")) {
+			OOVR_LOGF("RenderModels: system '%s' — substituting %s for %s",
+			    xr_gbl->systemProperties.systemName, sub.c_str(), base.c_str());
+			base = sub;
+		}
+	}
+
+	std::string dir = rmDir + "\\" + base;
+	std::string objPath = dir + "\\" + base + ".obj";
+	if (!SvrFileExists(objPath))
+		return false;
+
+	std::ifstream res(objPath);
+	if (!res)
+		return false;
+
+	std::vector<vr::HmdVector3_t> verts;
+	std::vector<vr::HmdVector2_t> uvs;
+	std::vector<vr::HmdVector3_t> normals;
+	std::vector<OOVR_RenderModel_Vertex_t> vertexData;
+
+	// Valve's rendermodels are authored in meters — no unit scale needed.
+	while (!res.eof()) {
+		string op;
+		res >> op;
+		if (op == "v") {
+			vec3 v;
+			res >> v.x >> v.y >> v.z;
+			verts.push_back(G2S_v3f(v));
+		} else if (op == "vt") {
+			float x, y;
+			res >> x >> y;
+			// OBJ UVs are bottom-left origin, D3D samples top-left — flip V
+			// or the diffuse atlas reads upside down (giant misplaced decals,
+			// 2026-07-25 first-launch screenshot).
+			uvs.push_back(vr::HmdVector2_t{ x, 1.0f - y });
+		} else if (op == "vn") {
+			vec3 v;
+			res >> v.x >> v.y >> v.z;
+			normals.push_back(G2S_v3f(v));
+		} else if (op == "f") {
+			string a, b, c, d;
+			res >> a >> b >> c;
+			std::streampos pos = res.tellg();
+			bool isQuad = false;
+			if (res >> d) {
+				// A 4th face token starts with a digit (ops never do)
+				if (!d.empty() && (isdigit((unsigned char)d[0]) || d[0] == '-'))
+					isQuad = true;
+				else
+					res.seekg(pos);
+			}
+			int av, au, an, bv, bu, bn, cv, cu, cn;
+			if (!SvrParseFaceRef(a, av, au, an) || !SvrParseFaceRef(b, bv, bu, bn) || !SvrParseFaceRef(c, cv, cu, cn)) {
+				OOVR_LOGF("RenderModels: unparseable face in %s ('%s' '%s' '%s') — falling back", objPath.c_str(), a.c_str(), b.c_str(), c.c_str());
+				return false;
+			}
+			vertexData.push_back(SvrBuildVertex(av, au, an, verts, uvs, normals));
+			vertexData.push_back(SvrBuildVertex(bv, bu, bn, verts, uvs, normals));
+			vertexData.push_back(SvrBuildVertex(cv, cu, cn, verts, uvs, normals));
+			if (isQuad) {
+				int dv, du, dn;
+				if (!SvrParseFaceRef(d, dv, du, dn))
+					return false;
+				vertexData.push_back(SvrBuildVertex(av, au, an, verts, uvs, normals));
+				vertexData.push_back(SvrBuildVertex(cv, cu, cn, verts, uvs, normals));
+				vertexData.push_back(SvrBuildVertex(dv, du, dn, verts, uvs, normals));
+			}
+		} else {
+			// Skip the rest of any unhandled line (mtllib/usemtl/o/s/#...)
+			string skip;
+			std::getline(res, skip);
+		}
+	}
+
+	if (vertexData.empty())
+		return false;
+
+	// Align to OCU's exposed controller pose. Empirically dialed 2026-07-25
+	// across three headset rounds: no-transform = floats off the grip;
+	// invHT·rotY(180) = lined up but upside down; invHT·rotX(180) = facing
+	// backwards; user's "flip the bottoms 180 toward me" from there composes
+	// to IDENTITY — Valve's models are already authored in the right frame,
+	// they only need the inverse hand transform (unlike the built-in hand
+	// meshes, which carry their own authoring corrections).
+	//
+	// Residual trim (round 4 report: both controllers lean into each other
+	// and sit low vs Meta's own render — a mirrored per-hand error) is user-
+	// tunable via opencomposite.ini: renderModelRotX/Y/Z (degrees) and
+	// renderModelOffX/Y/Z (meters). Values are RIGHT-hand; the left hand
+	// mirrors automatically (x-offset, yaw and roll negated).
+	{
+		bool leftHand = base.find("left") != string::npos;
+		float mirror = leftHand ? -1.0f : 1.0f;
+		constexpr float d2r = 3.14159265f / 180.0f;
+		mat4 trim(1.0f);
+		trim = glm::translate(trim, vec3(
+		    oovr_global_configuration.RenderModelOffX() * mirror,
+		    oovr_global_configuration.RenderModelOffY(),
+		    oovr_global_configuration.RenderModelOffZ()));
+		trim *= mat4(glm::rotate(oovr_global_configuration.RenderModelRotY() * mirror * d2r, vec3(0, 1, 0)));
+		trim *= mat4(glm::rotate(oovr_global_configuration.RenderModelRotX() * d2r, vec3(1, 0, 0)));
+		trim *= mat4(glm::rotate(oovr_global_configuration.RenderModelRotZ() * mirror * d2r, vec3(0, 0, 1)));
+		float rmScale = oovr_global_configuration.RenderModelScale();
+		if (rmScale > 0.1f && rmScale < 10.0f && rmScale != 1.0f)
+			trim *= mat4(glm::scale(glm::mat4(1.0f), vec3(rmScale)));
+		// Trim applies in DEVICE space (left of the hand transform): X=right,
+		// Y=up, Z=toward the user. This makes the ini knobs intuitive and lets
+		// the superposition-measured correction paste in directly (2026-07-25
+		// measurement: ghost pitched -18° / 3.6cm low → RotX=18, OffY=0.036).
+		mat4 transform = trim * glm::inverse(BaseCompositor::GetHandTransform());
+		quat rotOnly = quat(transform);
+		for (auto& v : vertexData) {
+			vec4 p(v.vPosition.v[0], v.vPosition.v[1], v.vPosition.v[2], 1.0f);
+			p = transform * p;
+			v.vPosition.v[0] = p.x;
+			v.vPosition.v[1] = p.y;
+			v.vPosition.v[2] = p.z;
+			if (v.vNormal.v[0] != 0.0f || v.vNormal.v[1] != 0.0f || v.vNormal.v[2] != 0.0f) {
+				vec3 n(v.vNormal.v[0], v.vNormal.v[1], v.vNormal.v[2]);
+				n = rotOnly * n;
+				v.vNormal.v[0] = n.x;
+				v.vNormal.v[1] = n.y;
+				v.vNormal.v[2] = n.z;
+			}
+		}
+	}
+
+	// Valve's OBJs carry no normals — derive flat per-face normals so the
+	// model lights correctly instead of rendering black. (Runs AFTER the
+	// pose transform so computed normals match the final geometry.)
+	for (size_t i = 0; i + 2 < vertexData.size(); i += 3) {
+		auto& n0 = vertexData[i].vNormal;
+		if (n0.v[0] != 0.0f || n0.v[1] != 0.0f || n0.v[2] != 0.0f)
+			continue; // file had a real normal
+		const auto& p0 = vertexData[i].vPosition;
+		const auto& p1 = vertexData[i + 1].vPosition;
+		const auto& p2 = vertexData[i + 2].vPosition;
+		vec3 e1(p1.v[0] - p0.v[0], p1.v[1] - p0.v[1], p1.v[2] - p0.v[2]);
+		vec3 e2(p2.v[0] - p0.v[0], p2.v[1] - p0.v[1], p2.v[2] - p0.v[2]);
+		vec3 n = glm::cross(e1, e2);
+		float len = glm::length(n);
+		if (len > 1e-12f)
+			n /= len;
+		for (int k = 0; k < 3; k++) {
+			vertexData[i + k].vNormal.v[0] = n.x;
+			vertexData[i + k].vNormal.v[1] = n.y;
+			vertexData[i + k].vNormal.v[2] = n.z;
+		}
+	}
+
+	// Diffuse texture: prefer the .mtl's map_Kd, fall back to <name>_diff.png
+	std::string texPath;
+	{
+		std::ifstream mtl(dir + "\\" + base + ".mtl");
+		if (mtl) {
+			string tok;
+			while (mtl >> tok) {
+				if (tok == "map_Kd") {
+					string texName;
+					std::getline(mtl, texName);
+					// trim leading spaces / trailing CR
+					size_t s = texName.find_first_not_of(" \t");
+					size_t e = texName.find_last_not_of(" \t\r");
+					if (s != string::npos)
+						texName = texName.substr(s, e - s + 1);
+					if (!texName.empty() && SvrFileExists(dir + "\\" + texName)) {
+						texPath = dir + "\\" + texName;
+						break;
+					}
+				}
+			}
+		}
+		if (texPath.empty() && SvrFileExists(dir + "\\" + base + "_diff.png"))
+			texPath = dir + "\\" + base + "_diff.png";
+	}
+
+	*renderModel = new RenderModel_t();
+	RenderModel_t& rm = **renderModel;
+	rm.unVertexCount = (uint32_t)vertexData.size();
+	OOVR_RenderModel_Vertex_t* vertexData_arr = new OOVR_RenderModel_Vertex_t[rm.unVertexCount];
+	rm.rVertexData = vertexData_arr;
+	for (uint32_t i = 0; i < rm.unVertexCount; i++)
+		vertexData_arr[i] = vertexData[i];
+
+	uint16_t* indexData = new uint16_t[rm.unVertexCount];
+	for (uint16_t i = 0; i < rm.unVertexCount; i++)
+		indexData[i] = i;
+	rm.rIndexData = indexData;
+	rm.unTriangleCount = rm.unVertexCount / 3;
+
+	rm.diffuseTextureId = -1;
+	if (!texPath.empty()) {
+		auto known = s_svrTexIds.find(texPath);
+		int32_t id;
+		if (known != s_svrTexIds.end()) {
+			id = known->second;
+		} else {
+			id = s_svrNextTexId++;
+			s_svrTexIds[texPath] = id;
+			s_svrTexPaths[id] = texPath;
+		}
+		rm.diffuseTextureId = id;
+	}
+
+	OOVR_LOGF("RenderModels: serving SteamVR model '%s' (%u verts, tex=%s)",
+	    base.c_str(), rm.unVertexCount, texPath.empty() ? "none" : texPath.c_str());
+	return true;
+}
+
 EVRRenderModelError BaseRenderModels::LoadRenderModel_Async(const char* pchRenderModelName, RenderModel_t** renderModel)
 {
 	string name = pchRenderModelName;
+
+	// Real SteamVR models first — colour controllers instead of gray hands
+	if (TryLoadSteamVrModel(name, renderModel))
+		return VRRenderModelError_None;
 	int rid;
 	float sided;
 	bool isQuest3 = false; // Quest 3 support archived — see ARCHIVE_Quest3Controllers.cpp.disabled
@@ -199,10 +600,17 @@ EVRRenderModelError BaseRenderModels::LoadRenderModel_Async(const char* pchRende
 	} else if (name == "oculusHmdRenderModel") {
 		// no model for the HMD
 		return VRRenderModelError_NotSupported;
+	} else if (name.find("left") != string::npos || name.find("Left") != string::npos) {
+		// Unknown name with no SteamVR model on disk — fall back to hands
+		// instead of aborting (real installs request all sorts of names).
+		rid = RES_O_HAND_LEFT;
+		sided = 1;
+	} else if (name.find("right") != string::npos || name.find("Right") != string::npos) {
+		rid = RES_O_HAND_RIGHT;
+		sided = -1;
 	} else {
-		string err = "Unknown render model name: " + string(pchRenderModelName);
-		OOVR_ABORT(err.c_str());
-		return VRRenderModelError_None;
+		OOVR_LOGF("Unknown render model name (no SteamVR model available): %s", pchRenderModelName);
+		return VRRenderModelError_NotSupported;
 	}
 
 	std::istringstream res = std::istringstream(loadResource(rid));
@@ -320,6 +728,31 @@ EVRRenderModelError BaseRenderModels::LoadTexture_Async(TextureID_t textureId, R
 {
 	OOVR_LOGF("LoadTexture_Async called with textureId=%d", textureId);
 
+	// SteamVR passthrough textures — the real diffuse PNG off the user's disk
+	{
+		auto it = s_svrTexPaths.find(textureId);
+		if (it != s_svrTexPaths.end()) {
+			std::vector<unsigned char> png;
+			unsigned w = 0, h = 0;
+			unsigned err = SvrDecodePng(it->second, png, w, h);
+			if (err == 0 && w > 0 && h > 0 && w <= 0xFFFF && h <= 0xFFFF) {
+				*texture = new RenderModel_TextureMap_t();
+				RenderModel_TextureMap_t& stx = **texture;
+				stx.unWidth = (uint16_t)w;
+				stx.unHeight = (uint16_t)h;
+				uint8_t* data = new uint8_t[png.size()];
+				memcpy(data, png.data(), png.size());
+				stx.rubTextureMapData = data;
+				stx.format = VRRenderModelTextureFormat_RGBA8_SRGB;
+				stx.unMipLevels = 1;
+				OOVR_LOGF("RenderModels: served SteamVR texture %d (%ux%u)", textureId, w, h);
+				return VRRenderModelError_None;
+			}
+			OOVR_LOGF("RenderModels: lodepng decode failed (%u) for %s — flat colour fallback",
+			    err, it->second.c_str());
+		}
+	}
+
 	*texture = new RenderModel_TextureMap_t();
 	RenderModel_TextureMap_t& tx = **texture;
 
@@ -374,6 +807,50 @@ EVRRenderModelError BaseRenderModels::LoadIntoTextureD3D11_Async(TextureID_t tex
 	output->GetDesc(&desc);
 
 	OOVR_LOGF("D3D11 dest texture: %ux%u, format=%u, mips=%u", desc.Width, desc.Height, desc.Format, desc.MipLevels);
+
+	// SteamVR passthrough: decode the real diffuse PNG and upload every mip
+	// (nearest-neighbour rescale per level; swizzle for BGRA destinations).
+	{
+		auto it = s_svrTexPaths.find(textureId);
+		if (it != s_svrTexPaths.end()) {
+			std::vector<unsigned char> png;
+			unsigned w = 0, h = 0;
+			if (SvrDecodePng(it->second, png, w, h) == 0 && w > 0 && h > 0) {
+				bool bgra = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
+				    || desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
+				    || desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+
+				std::vector<uint8_t> level;
+				for (UINT mip = 0; mip < desc.MipLevels; mip++) {
+					UINT mw = desc.Width >> mip, mh = desc.Height >> mip;
+					if (mw == 0) mw = 1;
+					if (mh == 0) mh = 1;
+					level.resize((size_t)mw * mh * 4);
+					for (UINT y = 0; y < mh; y++) {
+						unsigned sy = (unsigned)((uint64_t)y * h / mh);
+						for (UINT x = 0; x < mw; x++) {
+							unsigned sx = (unsigned)((uint64_t)x * w / mw);
+							const unsigned char* s = &png[((size_t)sy * w + sx) * 4];
+							uint8_t* dpx = &level[((size_t)y * mw + x) * 4];
+							if (bgra) {
+								dpx[0] = s[2]; dpx[1] = s[1]; dpx[2] = s[0]; dpx[3] = s[3];
+							} else {
+								dpx[0] = s[0]; dpx[1] = s[1]; dpx[2] = s[2]; dpx[3] = s[3];
+							}
+						}
+					}
+					context->UpdateSubresource(output, D3D11CalcSubresource(mip, 0, desc.MipLevels),
+					    nullptr, level.data(), mw * 4, 0);
+				}
+				context->Release();
+				device->Release();
+				OOVR_LOGF("RenderModels: uploaded SteamVR texture %d (%ux%u -> %ux%u, %u mips%s)",
+				    textureId, w, h, desc.Width, desc.Height, desc.MipLevels, bgra ? ", BGRA" : "");
+				return VRRenderModelError_None;
+			}
+			OOVR_LOGF("RenderModels: D3D11 decode failed for %s — flat colour fallback", it->second.c_str());
+		}
+	}
 
 	int px_count = desc.Width * desc.Height;
 
@@ -462,18 +939,9 @@ uint32_t BaseRenderModels::GetComponentName(const char* pchRenderModelName, uint
 {
 
 	string name = pchRenderModelName;
-
-	if (name != "renderLeftHand"
-	    && name != "renderRightHand"
-	    && name != "oculusHmdRenderModel"
-	    && name != "oculus_quest2_controller_left"
-	    && name != "oculus_quest2_controller_right"
-	    && name != "{indexcontroller}valve_controller_knu_1_0_left"
-	    && name != "{indexcontroller}valve_controller_knu_1_0_right") {
-		string err = "Unknown render model name: " + string(pchRenderModelName);
-		OOVR_ABORT(err.c_str());
-		return VRRenderModelError_None;
-	}
+	// Any name is acceptable here — SteamVR-passthrough models (2026-07-25)
+	// mean the set of valid names is whatever exists in the user's
+	// rendermodels folder, so the old allowlist abort is gone.
 
 	// Only the first component exists
 	if (unComponentIndex != 0) {

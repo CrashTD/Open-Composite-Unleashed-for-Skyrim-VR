@@ -52,6 +52,14 @@ public:
 	float RightXPosition() const { return rightXPosition; }
 	float RightYPosition() const { return rightYPosition; }
 	float RightZPosition() const { return rightZPosition; }
+	float RenderModelRotX() const { return renderModelRotX; }
+	float RenderModelRotY() const { return renderModelRotY; }
+	float RenderModelRotZ() const { return renderModelRotZ; }
+	float RenderModelOffX() const { return renderModelOffX; }
+	float RenderModelOffY() const { return renderModelOffY; }
+	float RenderModelOffZ() const { return renderModelOffZ; }
+	float RenderModelScale() const { return renderModelScale; }
+	bool RenderModelAdjust() const { return renderModelAdjust; }
 	float LeftDeadZoneSize() const { return leftDeadZoneSize; }
 	float LeftDeadZoneXSize() const { return leftDeadZoneXSize; }
 	float LeftDeadZoneYSize() const { return leftDeadZoneYSize; }
@@ -90,6 +98,16 @@ public:
 	int KbHoverVolume() const { return kbHoverVolume; }
 	int KbPressVolume() const { return kbPressVolume; }
 	int KbHapticStrength() const { return kbHapticStrength; }
+	const std::string& KbTheme() const { return kbTheme; }
+	bool BodyTrackersEnabled() const { return bodyTrackersEnabled; }
+	const std::string& BodyTrackerRoles() const { return bodyTrackerRoles; }
+	bool NetworkTrackersEnabled() const { return networkTrackersEnabled; }
+	int NetworkTrackerPort() const { return networkTrackerPort; }
+	bool CombatHapticShield() const { return combatHapticShield; }
+	bool CombatHapticWeapon() const { return combatHapticWeapon; }
+	bool CombatHapticBow() const { return combatHapticBow; }
+	bool CombatHapticMagic() const { return combatHapticMagic; }
+	int CombatHapticStrength() const { return combatHapticStrength; }
 
 	float PosSmoothMinCutoff() { return posSmoothMinCutoff; }
 	float RotSmoothMinCutoff() { return rotSmoothMinCutoff; }
@@ -221,6 +239,9 @@ public:
 	bool aswForceLegacy = false;     // Deprecated: Alpha legacy ASW is now the default when aswExperimentalMode=false
 	bool aswExperimentalMode = false; // true = experimental ASW: single-pass parallax + game MV residual correction + depth-based FP mask + frame-N disocclusion fallback
 
+	// Keyboard theme — public for hot-reload from the keyboard's ini file watcher
+	std::string kbTheme = "parchment"; // parchment | skyui | dwemer | sovngarde
+
 private:
 	static int ini_handler(
 	    void* user, const char* section,
@@ -283,6 +304,18 @@ private:
 	float rightXPosition = 0.0f;
 	float rightYPosition = 0.0f;
 	float rightZPosition = 0.0f;
+
+	// SteamVR-passthrough render model trim: RIGHT-hand values in degrees /
+	// meters; the left hand mirrors automatically (x-offset, yaw, roll negated)
+	float renderModelRotX = 0.0f;
+	float renderModelRotY = 0.0f;
+	float renderModelRotZ = 0.0f;
+	float renderModelOffX = 0.0f;
+	float renderModelOffY = 0.0f;
+	float renderModelOffZ = 0.0f;
+	float renderModelScale = 1.0f; // uniform; Valve models are true 1:1
+	bool renderModelAdjust = false; // live stick-driven pose trim (calibration mode)
+
 
 	float leftDeadZoneSize = 0.0f;
 	float leftDeadZoneXSize = 0.0f;
@@ -423,6 +456,25 @@ private:
 	int kbHoverVolume = 50;      // 0-100%
 	int kbPressVolume = 50;      // 0-100%
 	int kbHapticStrength = 50;   // 0-100%
+
+	// Body trackers (waist + feet) from XR_HTCX_vive_tracker_interaction
+	bool bodyTrackersEnabled = true;
+	std::string bodyTrackerRoles = "waist,left_foot,right_foot"; // comma list from BodyTrackerRoles.h, or "all"
+
+	// Network trackers: VRChat-style OSC feed (SlimeVR "OSC Trackers" output,
+	// Standable, phone IMU apps) exposed as up to 8 extra generic trackers.
+	// Off by default: opening a UDP port should be a user choice.
+	bool networkTrackersEnabled = false;
+	int networkTrackerPort = 9000; // the de-facto default OSC tracker port
+
+	// Combat haptics: the SKSE plugin reports game hit events through the
+	// OCU_CombatHaptic export; these gate which ones vibrate the controller.
+	// Master kill switch is the existing haptics=; strength follows hapticStrength=.
+	bool combatHapticShield = true; // your shield/weapon blocks a hit -> blocking hand
+	bool combatHapticWeapon = true; // your weapon (or mid-swing fist) connects -> attacking hand
+	bool combatHapticBow = true; // arrow release -> light snap in both hands
+	bool combatHapticMagic = true; // spell release pulse / concentration stream rumble
+	int combatHapticStrength = 80; // 0-100 like kbHapticStrength, hotter default: combat should thump
 };
 
 extern Config oovr_global_configuration;
