@@ -6715,6 +6715,7 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 			ID3D11Texture2D* colorSrc = (ID3D11Texture2D*)texture->handle;
 			D3D11_TEXTURE2D_DESC colorDesc;
 			D3D11_BOX colorRegion = {};
+			const bool colorFlipV = ptrBounds && ptrBounds->vMin > ptrBounds->vMax;
 
 #ifdef OC_HAS_FSR3
 			// Warp-source selection, gated on motion vectors:
@@ -6726,6 +6727,7 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 			//    (warp-of-warp) that only occurs when FSR3 temporal MVs are active.
 			if (!g_aswProvider->HasWarpUpscaleCallback()
 			    && !oovr_global_configuration.MotionVectorsEnabled()
+			    && !colorFlipV
 			    && s_fsr3Upscaler && s_fsr3Upscaler->IsReady()
 			    && oovr_global_configuration.FsrEnabled()) {
 				ID3D11Texture2D* fsr3Out = s_fsr3Upscaler->GetOutputDX11(eyeIdx);
@@ -6955,6 +6957,7 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 			} else {
 				g_aswProvider->CacheFrame(eyeIdx, context,
 				    colorSrc, &colorRegion,
+				    colorFlipV,
 				    mvTex, &mvRegion,
 				    aswDepthSrc, &depthRegion,
 				    layer.pose, layer.fov,
