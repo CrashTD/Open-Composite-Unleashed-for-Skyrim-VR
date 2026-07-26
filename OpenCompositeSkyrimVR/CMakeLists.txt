@@ -206,6 +206,9 @@ add_library(DrvOpenXR STATIC
 	DrvOpenXR/XrHMD.h
 
 	DrvOpenXR/XrController.cpp
+	DrvOpenXR/XrGenericTracker.cpp
+	DrvOpenXR/XrNetworkTracker.cpp
+	DrvOpenXR/XrNetworkTracker.h
 	DrvOpenXR/XrController.h
 
 	DrvOpenXR/ASWProvider.cpp
@@ -282,11 +285,12 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/debug_helper.cpp
 	OpenOVR/Misc/ExternalUpscalerState.cpp
 	OpenOVR/Misc/ExternalUpscalerState.h
-	OpenOVR/Misc/Haptics.cpp
 	OpenOVR/Misc/MipBiasHook.cpp
 	OpenOVR/Misc/MipBiasHook.h
 	OpenOVR/Misc/OVRPerfHook.cpp
 	OpenOVR/Misc/OVRPerfHook.h
+	OpenOVR/Misc/NetworkTrackers.cpp
+	OpenOVR/Misc/NetworkTrackers.h
 	OpenOVR/Misc/xrutil.cpp
 	OpenOVR/Misc/xrmoreutils.cpp
 	OpenOVR/Misc/OneEuroFilterRotation.cpp
@@ -357,7 +361,6 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/smooth_input.h
 	OpenOVR/Misc/Config.h
 	OpenOVR/Misc/debug_helper.h
-	OpenOVR/Misc/Haptics.h
 	OpenOVR/Misc/ini.h
 	OpenOVR/Misc/json/json-forwards.h
 	OpenOVR/Misc/Keyboard/KeyboardLayout.h
@@ -401,6 +404,8 @@ add_library(OCCore STATIC
 	OpenVRHeaders/custom_interfaces/IVRClientCore_002.h
 	OpenVRHeaders/custom_interfaces/IVRClientCore_003.h
 	OpenVRHeaders/custom_interfaces/IVRCompositor_017.h
+	OpenVRHeaders/custom_interfaces/IVRCompositor_028.h
+	OpenVRHeaders/custom_interfaces/IVROverlay_027.h
 	OpenVRHeaders/custom_interfaces/IVRSystem_023.h
 	OpenVRHeaders/custom_interfaces/IVRMailbox_001.h
 	OpenVRHeaders/custom_interfaces/IVRInputInternal_002.h

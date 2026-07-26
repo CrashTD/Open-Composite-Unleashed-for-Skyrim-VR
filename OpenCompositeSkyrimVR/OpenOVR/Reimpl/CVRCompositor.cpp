@@ -19,6 +19,9 @@ GEN_INTERFACE("Compositor", "024")
 // 025 is skipped, as per above
 GEN_INTERFACE("Compositor", "026")
 GEN_INTERFACE("Compositor", "027")
+// 028 (OpenVR SDK 2.5.1, requested by CommonLibVR 4.x plugins) added SubmitWithArrayIndex;
+// header lives in custom_interfaces
+GEN_INTERFACE("Compositor", "028", CUSTOM)
 
 #include "generated/GVRCompositor.gen.h"
 

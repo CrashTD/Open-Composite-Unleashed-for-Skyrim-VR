@@ -20,6 +20,9 @@ GEN_INTERFACE("Overlay", "022")
 GEN_INTERFACE("Overlay", "024")
 GEN_INTERFACE("Overlay", "025")
 GEN_INTERFACE("Overlay", "026")
+// 027 (OpenVR SDK 2.5.1, requested by CommonLibVR 4.x plugins) removed the two
+// TransformOverlayRelative methods; header lives in custom_interfaces
+GEN_INTERFACE("Overlay", "027", CUSTOM)
 
 #include "generated/GVROverlay.gen.h"
 

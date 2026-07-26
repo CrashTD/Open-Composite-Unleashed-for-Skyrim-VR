@@ -182,6 +182,10 @@ public:
 	 */
 	virtual ovr_enum_t Submit(vr::EVREye eEye, const vr::Texture_t* pTexture, const vr::VRTextureBounds_t* pBounds, vr::EVRSubmitFlags nSubmitFlags = vr::Submit_Default);
 
+	/** Added in IVRCompositor_028: Submit one slice of a texture array. Non-zero slices are
+	 * not supported by any client in this ecosystem; treated as slice 0 with a one-shot warning. */
+	virtual ovr_enum_t SubmitWithArrayIndex(vr::EVREye eEye, const vr::Texture_t* pTexture, uint32_t unTextureArrayIndex, const vr::VRTextureBounds_t* pBounds, vr::EVRSubmitFlags nSubmitFlags = vr::Submit_Default);
+
 	/** Clears the frame that was sent with the last call to Submit. This will cause the
 	 * compositor to show the grid until Submit is called again. */
 	virtual void ClearLastSubmittedFrame();

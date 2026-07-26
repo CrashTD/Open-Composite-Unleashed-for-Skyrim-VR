@@ -348,6 +348,25 @@ ovr_enum_t BaseCompositor::Submit(EVREye eye, const Texture_t* texture, const VR
 	return VRCompositorError_None;
 }
 
+ovr_enum_t BaseCompositor::SubmitWithArrayIndex(vr::EVREye eye, const vr::Texture_t* texture, uint32_t textureArrayIndex,
+    const vr::VRTextureBounds_t* bounds, vr::EVRSubmitFlags submitFlags)
+{
+	// Added in IVRCompositor_028 (OpenVR SDK 2.5.1): submit one slice of a texture array.
+	// Skyrim VR and every known SKSE-era client render to plain (non-array) textures and the
+	// game itself owns frame submission, so a non-zero slice should never appear in practice.
+	// If one ever does, log it once and fall through - a slightly wrong image beats a dead app.
+	if (textureArrayIndex != 0) {
+		static bool warnedNonZeroIndex = false;
+		if (!warnedNonZeroIndex) {
+			warnedNonZeroIndex = true;
+			OOVR_LOGF("WARNING: SubmitWithArrayIndex called with unsupported array index %u - treating as slice 0",
+			    textureArrayIndex);
+		}
+	}
+
+	return Submit(eye, texture, bounds, submitFlags);
+}
+
 void BaseCompositor::ClearLastSubmittedFrame()
 {
 	// At this point we should show the loading screen and show Guardian, and undo this when the
