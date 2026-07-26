@@ -34,6 +34,12 @@
 #define RES_O_FFX_FSR1 14
 #define RES_T_HLSL 261
 
+// Keyboard theme backgrounds
+#define RES_O_BG_SKYUI 15
+#define RES_O_BG_DWEMER 16
+#define RES_O_BG_SOVNGARDE 17
+#define RES_O_SPACEBAR_DWEMER 18
+
 // Resource list, used on Linux
 // clang-format off
 #define RES_LIST_LINUX(f) \
@@ -43,7 +49,11 @@
 	f(RES_O_FNT_MEDIEVAL) \
 	f(RES_O_FNT_PARCHMENT) \
 	f(RES_O_BG_PARCHMENT) \
+	f(RES_O_BG_SKYUI) \
+	f(RES_O_BG_DWEMER) \
+	f(RES_O_BG_SOVNGARDE) \
 	f(RES_O_SPACEBAR) \
+	f(RES_O_SPACEBAR_DWEMER) \
 	f(RES_O_SND_HOVER) \
 	f(RES_O_SND_PRESS) \
 	f(RES_O_KB_EN_GB) \

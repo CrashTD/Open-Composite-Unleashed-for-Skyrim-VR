@@ -14,6 +14,7 @@
 
 #include "resources.h"
 
+#include "BeamTexture.h"
 #include "Misc/Config.h"
 #include "Misc/LaserCalibration.h"
 #include "Misc/lodepng.h"
@@ -47,6 +48,173 @@ static std::vector<unsigned char> s_spaceBarImage;
 static unsigned int s_spaceBarWidth = 0;
 static unsigned int s_spaceBarHeight = 0;
 static bool s_spaceBarLoaded = false;
+
+// ── Selectable keyboard themes ──
+// Each theme = background PNG + font atlas + palette. Selected by `theme=` in [keyboard].
+// Colors are RGBA. Blit() hard-writes pixels (no blending), so labelOutline stamps the
+// glyph at 8 offsets in outline[] before the ink pass — a crisp halo, not a soft glow.
+struct KbThemeDef {
+	const char* name;
+	int bgRes;   // RES_O_BG_*
+	int fontRes; // RES_O_FNT_*
+	bool opacityInkFlip; // flip ink to white when bg opacity <= 5% (parchment behavior)
+	bool labelOutline;   // stamp outline[] behind key labels
+	uint8_t outline[4];
+	uint8_t ink[4];          // key label / margin control ink
+	uint8_t inkHi[4];        // label on active shift/caps key
+	uint8_t inkSel[4];       // label on hovered/selected key
+	uint8_t keyBorder[4];    // 1px key border
+	uint8_t keyFillHi[4];    // active shift/caps key fill
+	uint8_t keyFillSel[4];   // hovered/selected key fill
+	uint8_t btnBorder[4];    // MODE/LOCK button border
+	uint8_t btnFillIdle[4];
+	uint8_t btnFillHover[4];
+	uint8_t btnFillActive[4];
+	uint8_t btnInkIdle[4];
+	uint8_t btnInkHover[4];
+	uint8_t btnInkActive[4];
+	uint8_t hoverPlate[4];   // backplate behind hovered margin arrows
+	uint8_t arrowHover[4];   // margin arrow hover color
+	uint8_t textBarBorder[4];
+	uint8_t consoleBg[4];
+	uint8_t consoleBorder[4];
+	uint8_t consoleInk[4];
+	bool tintSpacebar; // recolor the spacebar scribble to ink[] (for dark backgrounds)
+	int spacebarRes;   // RES_O_SPACEBAR* image for the space key
+	// Pixel nudges aligning drawn controls with background art (draw + hit-test)
+	int modeBtnOffX, modeBtnOffY;
+	int lockBtnOffX, lockBtnOffY;
+};
+
+static const KbThemeDef K_THEMES[] = {
+	{
+	    // Faithful to the original hardcoded parchment palette
+	    .name = "parchment",
+	    .bgRes = RES_O_BG_PARCHMENT,
+	    .fontRes = RES_O_FNT_PARCHMENT,
+	    .opacityInkFlip = true,
+	    .labelOutline = false,
+	    .outline = { 0, 0, 0, 0 },
+	    .ink = { 0, 0, 0, 255 },
+	    .inkHi = { 200, 180, 140, 255 },
+	    .inkSel = { 220, 200, 160, 255 },
+	    .keyBorder = { 80, 55, 25, 40 },
+	    .keyFillHi = { 120, 80, 20, 80 },
+	    .keyFillSel = { 60, 35, 10, 100 },
+	    .btnBorder = { 80, 55, 25, 60 },
+	    .btnFillIdle = { 60, 40, 20, 30 },
+	    .btnFillHover = { 40, 25, 10, 110 },
+	    .btnFillActive = { 100, 70, 20, 80 },
+	    .btnInkIdle = { 60, 35, 10, 255 },
+	    .btnInkHover = { 25, 13, 2, 255 },
+	    .btnInkActive = { 25, 13, 2, 255 },
+	    .hoverPlate = { 40, 25, 10, 80 },
+	    .arrowHover = { 40, 40, 40, 255 },
+	    .textBarBorder = { 80, 55, 25, 100 },
+	    .consoleBg = { 220, 195, 160, 200 },
+	    .consoleBorder = { 60, 40, 20, 220 },
+	    .consoleInk = { 30, 15, 5, 255 },
+	    .tintSpacebar = false,
+	    .spacebarRes = RES_O_SPACEBAR,
+	},
+	{
+	    // SkyUI — translucent black panel, clean font, white ink, pale-blue selection
+	    .name = "skyui",
+	    .bgRes = RES_O_BG_SKYUI,
+	    .fontRes = RES_O_FNT_UBUNTU,
+	    .opacityInkFlip = false,
+	    .labelOutline = false,
+	    .outline = { 0, 0, 0, 0 },
+	    .ink = { 235, 235, 235, 255 },
+	    .inkHi = { 255, 255, 255, 255 },
+	    .inkSel = { 255, 255, 255, 255 },
+	    .keyBorder = { 255, 255, 255, 30 },
+	    .keyFillHi = { 130, 195, 255, 70 },
+	    .keyFillSel = { 255, 255, 255, 48 },
+	    .btnBorder = { 255, 255, 255, 60 },
+	    .btnFillIdle = { 255, 255, 255, 18 },
+	    .btnFillHover = { 255, 255, 255, 55 },
+	    .btnFillActive = { 130, 195, 255, 90 },
+	    .btnInkIdle = { 235, 235, 235, 255 },
+	    .btnInkHover = { 255, 255, 255, 255 },
+	    .btnInkActive = { 255, 255, 255, 255 },
+	    .hoverPlate = { 255, 255, 255, 40 },
+	    .arrowHover = { 255, 255, 255, 255 },
+	    .textBarBorder = { 255, 255, 255, 70 },
+	    .consoleBg = { 12, 12, 12, 215 },
+	    .consoleBorder = { 255, 255, 255, 80 },
+	    .consoleInk = { 235, 235, 235, 255 },
+	    .tintSpacebar = true,
+	    .spacebarRes = RES_O_SPACEBAR,
+	},
+	{
+	    // Dwemer — bronze frame art, pale glowing-cyan letters with dark-teal outline
+	    .name = "dwemer",
+	    .bgRes = RES_O_BG_DWEMER,
+	    .fontRes = RES_O_FNT_MEDIEVAL,
+	    .opacityInkFlip = false,
+	    .labelOutline = true,
+	    .outline = { 12, 45, 38, 255 },
+	    .ink = { 210, 255, 240, 255 },
+	    .inkHi = { 255, 255, 255, 255 },
+	    .inkSel = { 255, 255, 255, 255 },
+	    .keyBorder = { 190, 140, 70, 90 },
+	    .keyFillHi = { 190, 140, 70, 90 },
+	    .keyFillSel = { 120, 255, 220, 45 },
+	    .btnBorder = { 190, 140, 70, 0 },
+	    .btnFillIdle = { 60, 45, 25, 0 },
+	    .btnFillHover = { 190, 140, 70, 80 },
+	    .btnFillActive = { 190, 140, 70, 120 },
+	    .btnInkIdle = { 210, 255, 240, 255 },
+	    .btnInkHover = { 30, 22, 12, 255 },
+	    .btnInkActive = { 30, 22, 12, 255 },
+	    .hoverPlate = { 190, 140, 70, 70 },
+	    .arrowHover = { 255, 255, 255, 255 },
+	    .textBarBorder = { 190, 140, 70, 0 },
+	    .consoleBg = { 38, 30, 20, 225 },
+	    .consoleBorder = { 190, 140, 70, 220 },
+	    .consoleInk = { 210, 255, 240, 255 },
+	    .tintSpacebar = false,
+	    .spacebarRes = RES_O_SPACEBAR_DWEMER,
+	    .modeBtnOffX = 8,
+	    .modeBtnOffY = 6,
+	    .lockBtnOffX = -18,
+	    .lockBtnOffY = 2,
+	},
+	{
+	    // Sovngarde — night-sky art, always-white letters with dark outline for readability
+	    .name = "sovngarde",
+	    .bgRes = RES_O_BG_SOVNGARDE,
+	    .fontRes = RES_O_FNT_MEDIEVAL,
+	    .opacityInkFlip = false,
+	    .labelOutline = true,
+	    .outline = { 5, 8, 20, 255 },
+	    .ink = { 255, 255, 255, 255 },
+	    .inkHi = { 255, 255, 255, 255 },
+	    .inkSel = { 255, 255, 255, 255 },
+	    .keyBorder = { 255, 255, 255, 35 },
+	    .keyFillHi = { 255, 255, 255, 65 },
+	    .keyFillSel = { 255, 255, 255, 50 },
+	    .btnBorder = { 255, 255, 255, 70 },
+	    .btnFillIdle = { 255, 255, 255, 20 },
+	    .btnFillHover = { 255, 255, 255, 60 },
+	    .btnFillActive = { 255, 255, 255, 95 },
+	    .btnInkIdle = { 255, 255, 255, 255 },
+	    .btnInkHover = { 15, 18, 35, 255 },
+	    .btnInkActive = { 15, 18, 35, 255 },
+	    .hoverPlate = { 255, 255, 255, 45 },
+	    .arrowHover = { 210, 220, 255, 255 },
+	    .textBarBorder = { 255, 255, 255, 75 },
+	    .consoleBg = { 10, 14, 30, 215 },
+	    .consoleBorder = { 255, 255, 255, 85 },
+	    .consoleInk = { 255, 255, 255, 255 },
+	    .tintSpacebar = true,
+	    .spacebarRes = RES_O_SPACEBAR,
+	},
+};
+
+// Expands a theme RGBA array into fillArea's (r, g, b, a) argument list
+#define KBT4(f) T.f[0], T.f[1], T.f[2], T.f[3]
 
 // Get the directory where the DLL lives (for config file and sounds)
 static std::wstring GetOCDllDirectory()
@@ -339,6 +507,8 @@ static bool ReloadKeyboardSettings()
 				newPosD = val;
 			if (sscanf(line, "positionRight=%f", &val) == 1)
 				newPosR = val;
+			if (sscanf(line, "theme=%31s", sval) == 1)
+				oovr_global_configuration.kbTheme = sval; // picked up by Update()'s theme check
 		}
 
 		// Hot-reload ASW tuning values (in default section of ini)
@@ -1123,24 +1293,18 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		layer.pose.orientation = buildTiltedOrientation(0.0f, s_tiltDegrees);
 	}
 
-	font = make_unique<SudoFontMeta>(loadResource(RES_O_FNT_PARCHMENT, RES_T_FNTMETA), loadResource(RES_O_FNT_PARCHMENT, RES_T_PNG));
+	LoadThemeAssets(); // font + background from the selected theme
 	layout = make_unique<KeyboardLayout>(loadResource(RES_O_KB_EN_GB, RES_T_KBLAYOUT));
 
-	// Load parchment background texture
-	{
-		auto bgData = loadResource(RES_O_BG_PARCHMENT, RES_T_PNG);
-		lodepng::decode(parchmentBg, parchmentW, parchmentH, (const uint8_t*)bgData.data(), bgData.size(), LCT_RGBA, 8);
-		OOVR_LOGF("Parchment bg loaded: %ux%u (%zu bytes)", parchmentW, parchmentH, parchmentBg.size());
-	}
-
-	// Create laser beam swapchains — tiny solid-color textures, one per hand.
+	// Create laser beam swapchains — tapered VD-style beams (2026-07-25),
+	// shared generator with the menu laser (BeamTexture.h).
 	for (int i = 0; i < 2; i++) {
 		XrSwapchainCreateInfo laserSci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		laserSci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		laserSci.format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 		laserSci.sampleCount = 1;
-		laserSci.width = 4;
-		laserSci.height = 4;
+		laserSci.width = beamtex::kW;
+		laserSci.height = beamtex::kH;
 		laserSci.faceCount = 1;
 		laserSci.arraySize = 1;
 		laserSci.mipCount = 1;
@@ -1153,22 +1317,20 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(laserChain[i], laserImgCount, &laserImgCount,
 		    (XrSwapchainImageBaseHeader*)laserImgs.data()));
 
-		// Warm white beam — semi-transparent
-		uint8_t cr = 255, cg = 240, cb = 220, ca = 180;
-		uint32_t packed = cr | (cg << 8) | (cb << 16) | (ca << 24);
-		uint32_t colorPixels[16];
-		for (int j = 0; j < 16; j++) colorPixels[j] = packed;
+		// Warm white beam — tapered + tip-faded
+		std::vector<uint32_t> colorPixels;
+		beamtex::Fill(colorPixels, 255, 240, 220, 200);
 
 		D3D11_TEXTURE2D_DESC ltd = {};
-		ltd.Width = 4;
-		ltd.Height = 4;
+		ltd.Width = beamtex::kW;
+		ltd.Height = beamtex::kH;
 		ltd.MipLevels = 1;
 		ltd.ArraySize = 1;
 		ltd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 		ltd.SampleDesc = { 1, 0 };
 		ltd.Usage = D3D11_USAGE_DEFAULT;
 
-		D3D11_SUBRESOURCE_DATA linit = { colorPixels, sizeof(uint32_t) * 4, sizeof(uint32_t) * 16 };
+		D3D11_SUBRESOURCE_DATA linit = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
 		CComPtr<ID3D11Texture2D> ltex;
 		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&ltd, &linit, &ltex));
 
@@ -1190,7 +1352,7 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		laserLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 		laserLayer[i].subImage.swapchain = laserChain[i];
 		laserLayer[i].subImage.imageRect.offset = { 0, 0 };
-		laserLayer[i].subImage.imageRect.extent = { 4, 4 };
+		laserLayer[i].subImage.imageRect.extent = { beamtex::kW, beamtex::kH };
 		laserLayer[i].subImage.imageArrayIndex = 0;
 	}
 
@@ -1509,6 +1671,13 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 	if (now - lastSettingsCheck > 1000) { // check every 1000ms (1 second)
 		lastSettingsCheck = now;
 		LoadKeyboardSettings(); // Reloads all keyboard settings from INI
+	}
+
+	// Theme changed (configurator save or manual ini edit) — swap font/bg/palette live
+	if (oovr_global_configuration.KbTheme() != loadedThemeName) {
+		LoadThemeAssets();
+		dirty = true;
+		consoleDirty = true;
 	}
 #endif
 
@@ -2260,20 +2429,24 @@ int VRKeyboard::HitTestLaser(int side)
 		int btnGap = 4;
 		int btnStripY = textBarY - btnH - btnGap;
 
-		if (texY >= btnStripY && texY < btnStripY + btnH) {
-			int modeBtnX = marginH;
-			int modeBtnRight = marginH + CONSOLE_BTN_WIDTH;
-			int lockBtnW = TOGGLE_BTN_WIDTH;
-			int lockBtnX = (int)texWidth - marginH - lockBtnW;
+		// Per-button rects, including per-theme art nudges (must match Refresh)
+		int modeBtnX = marginH + theme->modeBtnOffX;
+		int modeBtnY = btnStripY + theme->modeBtnOffY;
+		int lockBtnW = TOGGLE_BTN_WIDTH;
+		int lockBtnX = (int)texWidth - marginH - lockBtnW + theme->lockBtnOffX;
+		int lockBtnY = btnStripY + theme->lockBtnOffY;
 
-			if (texX >= modeBtnX && texX < modeBtnRight) {
-				laserOnConsole[side] = true;
-				return -5; // mode button hit
-			}
-			if (texX >= lockBtnX && texX < (int)texWidth - marginH) {
-				laserOnToggle[side] = true;
-				return -3; // toggle button hit
-			}
+		if (texX >= modeBtnX && texX < modeBtnX + CONSOLE_BTN_WIDTH
+		    && texY >= modeBtnY && texY < modeBtnY + btnH) {
+			laserOnConsole[side] = true;
+			return -5; // mode button hit
+		}
+		if (texX >= lockBtnX && texX < lockBtnX + lockBtnW
+		    && texY >= lockBtnY && texY < lockBtnY + btnH) {
+			laserOnToggle[side] = true;
+			return -3; // toggle button hit
+		}
+		if (texY >= btnStripY && texY < btnStripY + btnH) {
 			// Everything else in the button strip is MOVE drag
 			laserOnGrabBar[side] = true;
 			return -2; // drag area
@@ -2759,6 +2932,46 @@ struct pix_t {
 
 static_assert(sizeof(pix_t) == 4, "padded pix_t");
 
+void VRKeyboard::LoadThemeAssets()
+{
+	const std::string& want = oovr_global_configuration.KbTheme();
+
+	theme = &K_THEMES[0];
+	for (const KbThemeDef& t : K_THEMES) {
+		if (want == t.name) {
+			theme = &t;
+			break;
+		}
+	}
+	if (want != theme->name)
+		OOVR_LOGF("Keyboard theme '%s' unknown, falling back to '%s'", want.c_str(), theme->name);
+
+	font = std::make_unique<SudoFontMeta>(loadResource(theme->fontRes, RES_T_FNTMETA), loadResource(theme->fontRes, RES_T_PNG));
+
+	parchmentBg.clear();
+	parchmentW = parchmentH = 0;
+	auto bgData = loadResource(theme->bgRes, RES_T_PNG);
+	lodepng::decode(parchmentBg, parchmentW, parchmentH, (const uint8_t*)bgData.data(), bgData.size(), LCT_RGBA, 8);
+	OOVR_LOGF("Keyboard theme '%s' loaded: bg %ux%u", theme->name, parchmentW, parchmentH);
+
+	// Per-theme space bar image (overrides the default loaded at startup)
+	{
+		auto sbData = loadResource(theme->spacebarRes, RES_T_PNG);
+		s_spaceBarImage.clear();
+		s_spaceBarWidth = s_spaceBarHeight = 0;
+		unsigned err = lodepng::decode(s_spaceBarImage, s_spaceBarWidth, s_spaceBarHeight,
+		    (const uint8_t*)sbData.data(), sbData.size(), LCT_RGBA, 8);
+		if (err) {
+			OOVR_LOGF("Theme spacebar decode failed: %s", lodepng_error_text(err));
+			s_spaceBarImage.clear();
+			s_spaceBarWidth = s_spaceBarHeight = 0;
+		}
+	}
+
+	// Track the raw config string so an unknown name doesn't reload every frame
+	loadedThemeName = want;
+}
+
 void VRKeyboard::Refresh()
 {
 	D3D11_TEXTURE2D_DESC desc;
@@ -2804,6 +3017,9 @@ void VRKeyboard::Refresh()
 	}
 
 	int padding = 6;          // Gap between keys
+
+	const KbThemeDef& T = *theme;
+	auto tp = [](const uint8_t c[4]) { return pix_t{ c[0], c[1], c[2], c[3] }; };
 
 	// fillArea blends a semi-transparent dark overlay on top of the parchment
 	auto fillArea = [pixels, &desc](int x, int y, int w, int h, int r, int g, int b, int a = 160) {
@@ -2894,51 +3110,53 @@ void VRKeyboard::Refresh()
 		bool modeHover = (laserOnConsole[0] || laserOnConsole[1]);
 		bool lockHover = (laserOnToggle[0] || laserOnToggle[1]);
 
-		// Button positions aligned with text bar (marginH to desc.Width - marginH)
-		int modeBtnX = marginH;
+		// Button positions aligned with text bar, plus per-theme art nudges
+		int modeBtnX = marginH + T.modeBtnOffX;
+		int modeBtnY = btnY + T.modeBtnOffY;
 		int modeBtnW = CONSOLE_BTN_WIDTH;
 		int lockBtnW = TOGGLE_BTN_WIDTH;
-		int lockBtnX = (int)desc.Width - marginH - lockBtnW;
+		int lockBtnX = (int)desc.Width - marginH - lockBtnW + T.lockBtnOffX;
+		int lockBtnY = btnY + T.lockBtnOffY;
 
 		// ── MODE toggle button (left) ──
 		const wchar_t* modeLabel = sendInputOnly ? L"PC MODE" : L"VR MODE";
-		fillArea(modeBtnX, btnY, modeBtnW, btnH, 80, 55, 25, 60); // subtle border
+		fillArea(modeBtnX, modeBtnY, modeBtnW, btnH, KBT4(btnBorder)); // subtle border
 		if (modeHover) {
-			fillArea(modeBtnX + 1, btnY + 1, modeBtnW - 2, btnH - 2, 40, 25, 10, 120);
+			fillArea(modeBtnX + 1, modeBtnY + 1, modeBtnW - 2, btnH - 2, KBT4(btnFillHover));
 		} else if (sendInputOnly) {
-			fillArea(modeBtnX + 1, btnY + 1, modeBtnW - 2, btnH - 2, 100, 70, 20, 80);
+			fillArea(modeBtnX + 1, modeBtnY + 1, modeBtnW - 2, btnH - 2, KBT4(btnFillActive));
 		} else {
-			fillArea(modeBtnX + 1, btnY + 1, modeBtnW - 2, btnH - 2, 60, 40, 20, 30);
+			fillArea(modeBtnX + 1, modeBtnY + 1, modeBtnW - 2, btnH - 2, KBT4(btnFillIdle));
 		}
-		bool lowOpacity = (s_opacityPercent <= 5);
+		bool lowOpacity = T.opacityInkFlip && (s_opacityPercent <= 5);
 		pix_t modeColour = lowOpacity
 		    ? pix_t{ 255, 255, 255, 255 }
 		    : modeHover
-		        ? pix_t{ 20, 10, 0, 255 }
+		        ? tp(T.btnInkHover)
 		        : sendInputOnly
-		            ? pix_t{ 30, 15, 5, 255 }
-		            : pix_t{ 60, 35, 10, 255 };
+		            ? tp(T.btnInkActive)
+		            : tp(T.btnInkIdle);
 		int modeTextW = font->Width(modeLabel);
-		print(modeBtnX + (modeBtnW - modeTextW) / 2, btnY + textYOff, modeColour, modeLabel, false);
+		print(modeBtnX + (modeBtnW - modeTextW) / 2, modeBtnY + textYOff, modeColour, modeLabel, false);
 
 		// ── LOCK button (right) ──
-		fillArea(lockBtnX, btnY, lockBtnW, btnH, 80, 55, 25, 60); // subtle border
+		fillArea(lockBtnX, lockBtnY, lockBtnW, btnH, KBT4(btnBorder)); // subtle border
 		if (headLocked) {
-			fillArea(lockBtnX + 1, btnY + 1, lockBtnW - 2, btnH - 2, 100, 70, 20, 80);
+			fillArea(lockBtnX + 1, lockBtnY + 1, lockBtnW - 2, btnH - 2, KBT4(btnFillActive));
 		} else if (lockHover) {
-			fillArea(lockBtnX + 1, btnY + 1, lockBtnW - 2, btnH - 2, 40, 25, 10, 100);
+			fillArea(lockBtnX + 1, lockBtnY + 1, lockBtnW - 2, btnH - 2, KBT4(btnFillHover));
 		} else {
-			fillArea(lockBtnX + 1, btnY + 1, lockBtnW - 2, btnH - 2, 60, 40, 20, 30);
+			fillArea(lockBtnX + 1, lockBtnY + 1, lockBtnW - 2, btnH - 2, KBT4(btnFillIdle));
 		}
 		pix_t lockColour = lowOpacity
 		    ? pix_t{ 255, 255, 255, 255 }
 		    : headLocked
-		        ? pix_t{ 20, 10, 0, 255 }
+		        ? tp(T.btnInkActive)
 		        : lockHover
-		            ? pix_t{ 40, 25, 10, 255 }
-		            : pix_t{ 0, 0, 0, 255 };
+		            ? tp(T.btnInkHover)
+		            : tp(T.ink);
 		int lockTextW = font->Width(L"LOCK");
-		print(lockBtnX + (lockBtnW - lockTextW) / 2, btnY + textYOff, lockColour, L"LOCK", false);
+		print(lockBtnX + (lockBtnW - lockTextW) / 2, lockBtnY + textYOff, lockColour, L"LOCK", false);
 	}
 
 	int kbWidth = layout->GetWidth();
@@ -2955,38 +3173,38 @@ void VRKeyboard::Refresh()
 		bool highlighted = (key.ch == '\x01' && caseMode == ECaseMode::SHIFT)
 		    || (key.ch == '\x02' && caseMode == ECaseMode::LOCK);
 
-		bool whiteInk = (s_opacityPercent <= 5); // White text at low opacity for visibility
+		bool whiteInk = T.opacityInkFlip && (s_opacityPercent <= 5); // White text at low opacity for visibility
 
 		// Very subtle 1px faint border around every key
-		fillArea(x, y, width, 1, 80, 55, 25, 40);            // top edge
-		fillArea(x, y + height - 1, width, 1, 80, 55, 25, 40); // bottom edge
-		fillArea(x, y, 1, height, 80, 55, 25, 40);            // left edge
-		fillArea(x + width - 1, y, 1, height, 80, 55, 25, 40); // right edge
+		fillArea(x, y, width, 1, KBT4(keyBorder));            // top edge
+		fillArea(x, y + height - 1, width, 1, KBT4(keyBorder)); // bottom edge
+		fillArea(x, y, 1, height, KBT4(keyBorder));            // left edge
+		fillArea(x + width - 1, y, 1, height, KBT4(keyBorder)); // right edge
 
-		// Key interior — mostly parchment showing through
+		// Key interior — mostly background showing through
 		if (highlighted) {
-			// Active shift/caps — warm highlight tint
-			fillArea(x + 1, y + 1, width - 2, height - 2, 120, 80, 20, 80);
+			// Active shift/caps — highlight tint
+			fillArea(x + 1, y + 1, width - 2, height - 2, KBT4(keyFillHi));
 		}
-		// Normal keys: no fill — pure parchment background
+		// Normal keys: no fill — pure theme background
 
 		// Controller selection highlights
 		bool leftSel = (selected[vr::Eye_Left] == key.id);
 		bool rightSel = (selected[vr::Eye_Right] == key.id);
 
 		if (leftSel || rightSel) {
-			// Darker highlight for selected key — visible against parchment
-			fillArea(x + 1, y + 1, width - 2, height - 2, 60, 35, 10, 100);
+			// Highlight for selected key — visible against the background
+			fillArea(x + 1, y + 1, width - 2, height - 2, KBT4(keyFillSel));
 		}
 
-		// Text color — BLACK ink on parchment, WHITE when opacity is 1%
+		// Label ink — theme colors; parchment flips to white at very low opacity
 		pix_t targetColour;
 		if (highlighted) {
-			targetColour = { 200, 180, 140, 255 }; // Light text on dark highlighted key
+			targetColour = tp(T.inkHi);
 		} else if (leftSel || rightSel) {
-			targetColour = { 220, 200, 160, 255 }; // Light text on dark selected key
+			targetColour = tp(T.inkSel);
 		} else {
-			targetColour = whiteInk ? pix_t{ 255, 255, 255, 255 } : pix_t{ 0, 0, 0, 255 };
+			targetColour = whiteInk ? pix_t{ 255, 255, 255, 255 } : tp(T.ink);
 		}
 
 		// Check if this is the space bar - draw the space bar image
@@ -3025,9 +3243,11 @@ void VRKeyboard::Refresh()
 							int px = drawX + dx;
 							int py = drawY + dy;
 							if (px >= 0 && px < (int)desc.Width && py >= 0 && py < (int)desc.Height) {
-								// Use actual image colors, but swap to white at low opacity
-								if (whiteInk) {
-									// Invert: black scribble becomes white
+								if (T.tintSpacebar) {
+									// Dark themes: recolor the black scribble to the theme ink
+									pixels[px + py * desc.Width] = targetColour;
+								} else if (whiteInk) {
+									// Invert: black scribble becomes white at low opacity
 									pixels[px + py * desc.Width] = { (uint8_t)(255 - r), (uint8_t)(255 - g), (uint8_t)(255 - b), 255 };
 								} else {
 									// Use original image colors
@@ -3117,6 +3337,10 @@ void VRKeyboard::Refresh()
 				yOffset = -2; // Pop up when hovering
 			}
 
+			// Outline stamp offsets (Blit hard-writes, so this reads as a crisp halo)
+			static const int OUTL_X[] = { -2, 2, 0, 0, -1, 1, -1, 1 };
+			static const int OUTL_Y[] = { 0, 0, -2, 2, -1, -1, 1, 1 };
+
 			// For single-character keys, center the character in the key box
 			// For multi-character labels (shift, caps, etc.), use baseline-aligned text
 			if (label.length() == 1) {
@@ -3125,6 +3349,13 @@ void VRKeyboard::Refresh()
 					pix_t shadowCol = { 0, 0, 0, 80 }; // Subtle shadow
 					SudoFontMeta::pix_t sc = { shadowCol.r, shadowCol.g, shadowCol.b, shadowCol.a };
 					font->BlitCentered(label[0], x, y + 2, width, height, desc.Width, sc, (SudoFontMeta::pix_t*)pixels);
+				}
+
+				// Theme outline behind the glyph for readability on busy backgrounds
+				if (T.labelOutline) {
+					SudoFontMeta::pix_t oc = { T.outline[0], T.outline[1], T.outline[2], T.outline[3] };
+					for (int oi = 0; oi < 8; oi++)
+						font->BlitCentered(label[0], x + OUTL_X[oi], y + yOffset + OUTL_Y[oi], width, height, desc.Width, oc, (SudoFontMeta::pix_t*)pixels);
 				}
 
 				// Draw main character with vertical offset
@@ -3138,6 +3369,12 @@ void VRKeyboard::Refresh()
 				if (isHovered) {
 					pix_t shadowCol = { 0, 0, 0, 80 };
 					print(x + (width - textWidth) / 2, y + padding + 2, shadowCol, label, false);
+				}
+
+				if (T.labelOutline) {
+					pix_t oc = tp(T.outline);
+					for (int oi = 0; oi < 8; oi++)
+						print(x + (width - textWidth) / 2 + OUTL_X[oi], y + padding + yOffset + OUTL_Y[oi], oc, label, false);
 				}
 
 				// Draw main text with offset
@@ -3170,10 +3407,10 @@ void VRKeyboard::Refresh()
 	}*/
 
 	// ── Arrow control shared rendering ──
-	// BLACK by default, WHITE when opacity is 1% (for visibility on dark backgrounds)
-	bool useWhiteInk = (s_opacityPercent <= 5);
-	pix_t inkCol = useWhiteInk ? pix_t{ 255, 255, 255, 255 } : pix_t{ 0, 0, 0, 255 };
-	pix_t hoverCol = useWhiteInk ? pix_t{ 200, 200, 200, 255 } : pix_t{ 40, 40, 40, 255 };
+	// Theme ink; parchment flips to white at very low opacity for visibility
+	bool useWhiteInk = T.opacityInkFlip && (s_opacityPercent <= 5);
+	pix_t inkCol = useWhiteInk ? pix_t{ 255, 255, 255, 255 } : tp(T.ink);
+	pix_t hoverCol = useWhiteInk ? pix_t{ 200, 200, 200, 255 } : tp(T.arrowHover);
 	int arrowH = 18; // triangle height (compact)
 	int arrowW = 22; // triangle base width (compact)
 	int fontH = (int)font->GetLineHeight();
@@ -3209,7 +3446,7 @@ void VRKeyboard::Refresh()
 
 		drawTriangle(centerX, opacTopY, arrowH, arrowW, true, opacUpHover ? hoverCol : inkCol);
 		if (opacUpHover)
-			fillArea(centerX - arrowW / 2 - 3, opacTopY - 3, arrowW + 6, arrowH + 6, 40, 25, 10, 80);
+			fillArea(centerX - arrowW / 2 - 3, opacTopY - 3, arrowW + 6, arrowH + 6, KBT4(hoverPlate));
 
 		int opacLabelY = opacTopY + arrowH + 4;
 		wchar_t opacBuf[32];
@@ -3225,7 +3462,7 @@ void VRKeyboard::Refresh()
 		int opacDownY = opacValY + fontH + 4;
 		drawTriangle(centerX, opacDownY, arrowH, arrowW, false, opacDownHover ? hoverCol : inkCol);
 		if (opacDownHover)
-			fillArea(centerX - arrowW / 2 - 3, opacDownY - 3, arrowW + 6, arrowH + 6, 40, 25, 10, 80);
+			fillArea(centerX - arrowW / 2 - 3, opacDownY - 3, arrowW + 6, arrowH + 6, KBT4(hoverPlate));
 
 		// ── TILT section ── (below opacity, double separation)
 		int tiltTopY = opacDownY + arrowH + 100;
@@ -3235,7 +3472,7 @@ void VRKeyboard::Refresh()
 
 		drawTriangle(centerX, tiltTopY, arrowH, arrowW, true, tiltUpHover ? hoverCol : inkCol);
 		if (tiltUpHover)
-			fillArea(centerX - arrowW / 2 - 3, tiltTopY - 3, arrowW + 6, arrowH + 6, 40, 25, 10, 80);
+			fillArea(centerX - arrowW / 2 - 3, tiltTopY - 3, arrowW + 6, arrowH + 6, KBT4(hoverPlate));
 
 		int tiltLabelY = tiltTopY + arrowH + 4;
 		wchar_t tiltBuf[32];
@@ -3251,7 +3488,7 @@ void VRKeyboard::Refresh()
 		int tiltDownY = tiltValY + fontH + 4;
 		drawTriangle(centerX, tiltDownY, arrowH, arrowW, false, tiltDownHover ? hoverCol : inkCol);
 		if (tiltDownHover)
-			fillArea(centerX - arrowW / 2 - 3, tiltDownY - 3, arrowW + 6, arrowH + 6, 40, 25, 10, 80);
+			fillArea(centerX - arrowW / 2 - 3, tiltDownY - 3, arrowW + 6, arrowH + 6, KBT4(hoverPlate));
 	}
 
 	// ── Size control in LEFT margin ── (moved to right a bit)
@@ -3270,7 +3507,7 @@ void VRKeyboard::Refresh()
 
 		drawTriangle(centerX, sizeTopY, arrowH, arrowW, true, sizeUpHover ? hoverCol : inkCol);
 		if (sizeUpHover)
-			fillArea(centerX - arrowW / 2 - 3, sizeTopY - 3, arrowW + 6, arrowH + 6, 40, 25, 10, 80);
+			fillArea(centerX - arrowW / 2 - 3, sizeTopY - 3, arrowW + 6, arrowH + 6, KBT4(hoverPlate));
 
 		int sizeLabelY = sizeTopY + arrowH + 4;
 		wchar_t sizeBuf[32];
@@ -3286,7 +3523,7 @@ void VRKeyboard::Refresh()
 		int sizeDownY = sizeValY + fontH + 4;
 		drawTriangle(centerX, sizeDownY, arrowH, arrowW, false, sizeDownHover ? hoverCol : inkCol);
 		if (sizeDownHover)
-			fillArea(centerX - arrowW / 2 - 3, sizeDownY - 3, arrowW + 6, arrowH + 6, 40, 25, 10, 80);
+			fillArea(centerX - arrowW / 2 - 3, sizeDownY - 3, arrowW + 6, arrowH + 6, KBT4(hoverPlate));
 	}
 
 	if (!minimal) {
@@ -3294,15 +3531,14 @@ void VRKeyboard::Refresh()
 		int textBarY = GRAB_BAR_HEIGHT + marginTop;
 		int textBarW = (int)desc.Width - 2 * marginH;
 		// Faint 1px border
-		fillArea(marginH, textBarY, textBarW, 1, 80, 55, 25, 100);
-		fillArea(marginH, textBarY + keySize - 1, textBarW, 1, 80, 55, 25, 100);
-		fillArea(marginH, textBarY, 1, keySize, 80, 55, 25, 100);
-		fillArea(marginH + textBarW - 1, textBarY, 1, keySize, 80, 55, 25, 100);
+		fillArea(marginH, textBarY, textBarW, 1, KBT4(textBarBorder));
+		fillArea(marginH, textBarY + keySize - 1, textBarW, 1, KBT4(textBarBorder));
+		fillArea(marginH, textBarY, 1, keySize, KBT4(textBarBorder));
+		fillArea(marginH + textBarW - 1, textBarY, 1, keySize, KBT4(textBarBorder));
 
 		if (!sendInputOnly) {
 			// Show typed text with blinking cursor (game-opened keyboard only)
-			// BLACK ink, WHITE when opacity is 1%
-			pix_t targetColour = useWhiteInk ? pix_t{ 255, 255, 255, 255 } : pix_t{ 0, 0, 0, 255 };
+			pix_t targetColour = useWhiteInk ? pix_t{ 255, 255, 255, 255 } : tp(T.ink);
 			print(marginH + BORD + 6, textBarY + BORD + 4, targetColour, text);
 
 			// Blinking text cursor
@@ -3313,10 +3549,7 @@ void VRKeyboard::Refresh()
 					cursorX += font->Width(text[i]);
 				int cursorY = textBarY + BORD + 2;
 				int cursorH = keySize - BORD * 2 - 4;
-				if (useWhiteInk)
-					fillArea(cursorX, cursorY, 2, cursorH, 255, 255, 255, 255);
-				else
-					fillArea(cursorX, cursorY, 2, cursorH, 0, 0, 0, 255);
+				fillArea(cursorX, cursorY, 2, cursorH, targetColour.r, targetColour.g, targetColour.b, 255);
 			}
 		}
 	}
@@ -3407,11 +3640,14 @@ void VRKeyboard::RefreshConsole()
 	const int BORD = 2;
 	const int PAD = 8;
 
-	// Fill background — parchment-like warm tan, semi-transparent
+	const KbThemeDef& T = *theme;
+	auto tp = [](const uint8_t c[4]) { return pix_t{ c[0], c[1], c[2], c[3] }; };
+
+	// Fill background — theme console panel color, semi-transparent
 	for (UINT y = 0; y < desc.Height; y++) {
 		for (UINT x = 0; x < desc.Width; x++) {
 			pix_t& p = pixels[x + y * desc.Width];
-			p.r = 220; p.g = 195; p.b = 160; p.a = 200;
+			p.r = T.consoleBg[0]; p.g = T.consoleBg[1]; p.b = T.consoleBg[2]; p.a = T.consoleBg[3];
 		}
 	}
 
@@ -3442,18 +3678,18 @@ void VRKeyboard::RefreshConsole()
 		}
 	};
 
-	// Dark brown border (matches parchment keyboard frame)
-	fillArea(0, 0, desc.Width, BORD, 60, 40, 20, 220);                    // top
-	fillArea(0, desc.Height - BORD, desc.Width, BORD, 60, 40, 20, 220);   // bottom
-	fillArea(0, 0, BORD, desc.Height, 60, 40, 20, 220);                   // left
-	fillArea(desc.Width - BORD, 0, BORD, desc.Height, 60, 40, 20, 220);   // right
+	// Theme border (matches keyboard frame)
+	fillArea(0, 0, desc.Width, BORD, KBT4(consoleBorder));                    // top
+	fillArea(0, desc.Height - BORD, desc.Width, BORD, KBT4(consoleBorder));   // bottom
+	fillArea(0, 0, BORD, desc.Height, KBT4(consoleBorder));                   // left
+	fillArea(desc.Width - BORD, 0, BORD, desc.Height, KBT4(consoleBorder));   // right
 
 	// Title bar — "INPUT" centered, doubled height so text fits cleanly
 	int titleH = 60;
-	fillArea(BORD, BORD, desc.Width - BORD * 2, titleH, 80, 55, 25, 100);  // subtle darker strip
-	fillArea(BORD, BORD + titleH, desc.Width - BORD * 2, 2, 60, 40, 20, 220); // dark separator
+	fillArea(BORD, BORD, desc.Width - BORD * 2, titleH, KBT4(textBarBorder));  // subtle strip
+	fillArea(BORD, BORD + titleH, desc.Width - BORD * 2, 2, KBT4(consoleBorder)); // separator
 
-	pix_t titleColour = { 30, 15, 5, 255 }; // black ink
+	pix_t titleColour = tp(T.consoleInk);
 	int titleTextW = font->Width(L"INPUT");
 	int fontH = (int)font->GetLineHeight();
 	int titleTextY = BORD + (titleH - fontH) / 2;
@@ -3463,7 +3699,7 @@ void VRKeyboard::RefreshConsole()
 	int contentTop = BORD + titleH + 2;
 	int contentH = (int)desc.Height - contentTop - BORD;
 	int inputY = contentTop + (contentH - fontH) / 2;
-	pix_t textColour = { 30, 15, 5, 255 }; // black ink
+	pix_t textColour = tp(T.consoleInk);
 
 	printLine(PAD + BORD, inputY, textColour, text);
 
@@ -3473,7 +3709,7 @@ void VRKeyboard::RefreshConsole()
 		int cursorX = PAD + BORD;
 		for (size_t i = 0; i < text.size(); i++)
 			cursorX += font->Width(text[i]);
-		fillArea(cursorX, inputY, 2, fontH, 30, 15, 5, 255);
+		fillArea(cursorX, inputY, 2, fontH, KBT4(consoleInk));
 	}
 
 	// Copy to console swapchain

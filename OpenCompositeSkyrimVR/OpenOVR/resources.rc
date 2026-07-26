@@ -15,8 +15,12 @@ RES_O_FNT_PARCHMENT	RES_T_FNTMETA	"../assets/ParchmentMF-30.sfn"
 RES_O_FNT_PARCHMENT	RES_T_PNG	"../assets/ParchmentMF-30-texture.png"
 
 RES_O_BG_PARCHMENT	RES_T_PNG	"../assets/parchment-bg.png"
+RES_O_BG_SKYUI		RES_T_PNG	"../assets/skyui-bg.png"
+RES_O_BG_DWEMER		RES_T_PNG	"../assets/dwemer-bg.png"
+RES_O_BG_SOVNGARDE	RES_T_PNG	"../assets/sovngarde-bg.png"
 
 RES_O_SPACEBAR		RES_T_PNG	"Misc/Keyboard/SpaceBar.png"
+RES_O_SPACEBAR_DWEMER	RES_T_PNG	"../assets/dwemer-spacebar.png"
 
 RES_O_SND_HOVER		RES_T_WAV	"Sounds/low click.wav"
 RES_O_SND_PRESS		RES_T_WAV	"Sounds/Select key.wav"

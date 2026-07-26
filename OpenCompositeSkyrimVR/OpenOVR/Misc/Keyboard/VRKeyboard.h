@@ -15,6 +15,8 @@
 #include "KeyboardLayout.h"
 #include "SudoFontMeta.h"
 
+struct KbThemeDef; // Selectable keyboard theme (palette + font + background), table in VRKeyboard.cpp
+
 class VRKeyboard {
 public:
 	typedef std::function<void(vr::VREvent_t)> eventDispatch_t;
@@ -81,7 +83,11 @@ private:
 	std::unique_ptr<SudoFontMeta> font;
 	std::unique_ptr<KeyboardLayout> layout;
 
-	// Parchment background texture (pre-scaled to texWidth x texHeight, RGBA)
+	// Active theme (font + background + palette); reloaded when the ini theme changes
+	const KbThemeDef* theme = nullptr;
+	std::string loadedThemeName;
+
+	// Theme background texture (pre-scaled to texWidth x texHeight, RGBA)
 	std::vector<uint8_t> parchmentBg;
 	unsigned int parchmentW = 0, parchmentH = 0;
 
@@ -149,6 +155,7 @@ private:
 	static constexpr uint32_t consoleTexHeight = 120;
 	XrCompositionLayerQuad consoleLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
 
+	void LoadThemeAssets();
 	void Refresh();
 	void RefreshConsole();
 
