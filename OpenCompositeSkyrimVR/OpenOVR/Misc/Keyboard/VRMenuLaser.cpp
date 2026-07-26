@@ -2,12 +2,14 @@
 
 #include "VRMenuLaser.h"
 
+#include <algorithm>
 #include <d3d11.h>
 #include <cmath>
 
 #include "Reimpl/BaseInput.h"
 #include "Reimpl/BaseSystem.h"
 #include "Misc/LaserCalibration.h"
+#include "BeamTexture.h"
 #include "generated/static_bases.gen.h"
 
 #ifdef _WIN32
@@ -21,6 +23,37 @@ static inline float ml_dot(const XrVector3f& a, const XrVector3f& b)
 	return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
+namespace {
+	// The calibration surface is deliberately 16:9 because it is submitted on
+	// the same OpenXR quad used for the game's in-world UI. A high-resolution
+	// texture keeps the cell IDs readable in-headset; the old 16x16 solid fill
+	// could prove the plane existed, but not whether U/V were flipped, scaled,
+	// or offset relative to Scaleform's cursor space.
+	// 2026-07-25: doubled resolution + 20x20 divisions (user request: 4x the
+	// reference points once the quad became visible). Labels are now 4 digits:
+	// column pair then row pair — "0007" = col 00, row 07. Fill is fully
+	// transparent; only lines + labels render (the solid green obstructed the
+	// menu behind it).
+	constexpr int kDebugGridWidth = 2048;
+	constexpr int kDebugGridHeight = 1152;
+	constexpr int kDebugGridDivisions = 20;
+
+	// Five-bit-wide, seven-row digits. Cell labels are colcol/rowrow: 0000 is
+	// top-left, 1900 is top-right, 0019 is bottom-left, 1919 is bottom-right.
+	constexpr uint8_t kDigitGlyphs[10][7] = {
+		{ 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E }, // 0
+		{ 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E }, // 1
+		{ 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F }, // 2
+		{ 0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E }, // 3
+		{ 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 }, // 4
+		{ 0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E }, // 5
+		{ 0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E }, // 6
+		{ 0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 }, // 7
+		{ 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E }, // 8
+		{ 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E }  // 9
+	};
+}
+
 // ── VRMenuLaser implementation ──
 
 VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
@@ -28,14 +61,15 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 {
 	dev->GetImmediateContext(&ctx);
 
-	// Create beam swapchains — identical to VRKeyboard laser swapchains
+	// Create beam swapchains — tapered VD-style beam (2026-07-25), shared
+	// generator with the VR keyboard's laser (BeamTexture.h).
 	for (int i = 0; i < 2; i++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		sci.format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 		sci.sampleCount = 1;
-		sci.width = 4;
-		sci.height = 4;
+		sci.width = beamtex::kW;
+		sci.height = beamtex::kH;
 		sci.faceCount = 1;
 		sci.arraySize = 1;
 		sci.mipCount = 1;
@@ -48,23 +82,20 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[i], imgCount, &imgCount,
 		    (XrSwapchainImageBaseHeader*)imgs.data()));
 
-		// Warm white beam — RGB(255,240,220) alpha 180
-		uint8_t cr = 255, cg = 240, cb = 220, ca = 180;
-		uint32_t packed = cr | (cg << 8) | (cb << 16) | (ca << 24);
-		uint32_t colorPixels[16];
-		for (int j = 0; j < 16; j++)
-			colorPixels[j] = packed;
+		// Warm white beam — RGB(255,240,220), tapered + tip-faded
+		std::vector<uint32_t> colorPixels;
+		beamtex::Fill(colorPixels, 255, 240, 220, 200);
 
 		D3D11_TEXTURE2D_DESC td = {};
-		td.Width = 4;
-		td.Height = 4;
+		td.Width = beamtex::kW;
+		td.Height = beamtex::kH;
 		td.MipLevels = 1;
 		td.ArraySize = 1;
 		td.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 		td.SampleDesc = { 1, 0 };
 		td.Usage = D3D11_USAGE_DEFAULT;
 
-		D3D11_SUBRESOURCE_DATA init = { colorPixels, sizeof(uint32_t) * 4, sizeof(uint32_t) * 16 };
+		D3D11_SUBRESOURCE_DATA init = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
 		CComPtr<ID3D11Texture2D> tex;
 		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
 
@@ -85,7 +116,7 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		beamLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 		beamLayer[i].subImage.swapchain = beamChain[i];
 		beamLayer[i].subImage.imageRect.offset = { 0, 0 };
-		beamLayer[i].subImage.imageRect.extent = { 4, 4 };
+		beamLayer[i].subImage.imageRect.extent = { beamtex::kW, beamtex::kH };
 		beamLayer[i].subImage.imageArrayIndex = 0;
 	}
 
@@ -163,8 +194,8 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		sci.format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		sci.sampleCount = 1;
-		sci.width = 16;
-		sci.height = 16;
+		sci.width = kDebugGridWidth;
+		sci.height = kDebugGridHeight;
 		sci.faceCount = 1;
 		sci.arraySize = 1;
 		sci.mipCount = 1;
@@ -187,7 +218,7 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		debugQuadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 		debugQuadLayer.subImage.swapchain = debugQuadChain;
 		debugQuadLayer.subImage.imageRect.offset = { 0, 0 };
-		debugQuadLayer.subImage.imageRect.extent = { 16, 16 };
+		debugQuadLayer.subImage.imageRect.extent = { kDebugGridWidth, kDebugGridHeight };
 		debugQuadLayer.subImage.imageArrayIndex = 0;
 	}
 }
@@ -218,37 +249,112 @@ void VRMenuLaser::RebakeDebugQuadTexture(int opacityPercent)
 	// SRGB→UNORM fix already solved the "too bright" problem, so no need for
 	// aggressive curves. Just straight linear mapping.
 	float alphaF = opacityPercent / 100.0f;
-	uint8_t fillAlpha = (uint8_t)(alphaF * 255.0f);
-	float borderAF = std::min(1.0f, alphaF + 0.05f); // border slightly more visible
-	uint8_t borderAlpha = (uint8_t)(borderAF * 255.0f);
-	// Fill color from SetDebugQuadColor, premultiplied: RGB scaled by alpha
-	uint8_t fR = (uint8_t)(debugColorR * alphaF), fG = (uint8_t)(debugColorG * alphaF), fB = (uint8_t)(debugColorB * alphaF);
-	// Border: 40% brighter than fill, clamped to 255
+	// 2026-07-25: fill is fully transparent — lines and labels only. The solid
+	// color fill obstructed the menu once the quad actually became visible.
+	// Grid: 40% brighter than the configured color, clamped to 255
 	int bri = (int)(debugColorR * 1.4f); if (bri > 255) bri = 255;
 	int bgi = (int)(debugColorG * 1.4f); if (bgi > 255) bgi = 255;
 	int bbi = (int)(debugColorB * 1.4f); if (bbi > 255) bbi = 255;
-	uint8_t bR = (uint8_t)(bri * borderAF), bG = (uint8_t)(bgi * borderAF), bB = (uint8_t)(bbi * borderAF);
-	uint32_t fillColor = fR | (fG << 8) | (fB << 16) | ((uint32_t)fillAlpha << 24);
-	uint32_t borderColor = bR | (bG << 8) | (bB << 16) | ((uint32_t)borderAlpha << 24);
+	uint32_t fillColor = 0; // premultiplied transparent black
 
-	uint32_t pixels[16 * 16];
-	for (int py = 0; py < 16; py++) {
-		for (int px = 0; px < 16; px++) {
-			bool isBorder = (px == 0 || px == 15 || py == 0 || py == 15);
-			pixels[py * 16 + px] = isBorder ? borderColor : fillColor;
+	std::vector<uint32_t> pixels(kDebugGridWidth * kDebugGridHeight, fillColor);
+	auto setPixel = [&](int x, int y, uint32_t color) {
+		if (x >= 0 && x < kDebugGridWidth && y >= 0 && y < kDebugGridHeight)
+			pixels[y * kDebugGridWidth + x] = color;
+	};
+	auto premultipliedColor = [](uint8_t r, uint8_t g, uint8_t b, float a) {
+		a = std::clamp(a, 0.0f, 1.0f);
+		return (uint32_t)(r * a) |
+		       ((uint32_t)(g * a) << 8) |
+		       ((uint32_t)(b * a) << 16) |
+		       ((uint32_t)(a * 255.0f) << 24);
+	};
+
+	const float gridAF = std::min(1.0f, alphaF + 0.25f);
+	const float majorAF = std::min(1.0f, alphaF + 0.50f);
+	const float labelAF = std::min(1.0f, alphaF + 0.65f);
+	const uint32_t gridColor = premultipliedColor(
+	    (uint8_t)bri, (uint8_t)bgi, (uint8_t)bbi, gridAF);
+	const uint32_t majorColor = premultipliedColor(255, 255, 255, majorAF);
+	const uint32_t labelColor = premultipliedColor(255, 255, 255, labelAF);
+	const uint32_t topEdgeColor = premultipliedColor(255, 70, 50, majorAF);
+	const uint32_t leftEdgeColor = premultipliedColor(60, 150, 255, majorAF);
+
+	auto drawVertical = [&](int x, int thickness, uint32_t color) {
+		for (int dx = -(thickness / 2); dx <= thickness / 2; ++dx)
+			for (int y = 0; y < kDebugGridHeight; ++y)
+				setPixel(x + dx, y, color);
+	};
+	auto drawHorizontal = [&](int y, int thickness, uint32_t color) {
+		for (int dy = -(thickness / 2); dy <= thickness / 2; ++dy)
+			for (int x = 0; x < kDebugGridWidth; ++x)
+				setPixel(x, y + dy, color);
+	};
+
+	// Ten-by-ten UV grid. The 50% axes and outer border are heavier.
+	for (int i = 0; i <= kDebugGridDivisions; ++i) {
+		int x = (int)lroundf((float)i * (kDebugGridWidth - 1) / kDebugGridDivisions);
+		int y = (int)lroundf((float)i * (kDebugGridHeight - 1) / kDebugGridDivisions);
+		bool major = (i == 0 || i == kDebugGridDivisions / 2 || i == kDebugGridDivisions);
+		drawVertical(x, major ? 3 : 1, major ? majorColor : gridColor);
+		drawHorizontal(y, major ? 3 : 1, major ? majorColor : gridColor);
+	}
+
+	// Direction keys make a flipped export immediately obvious in-headset:
+	// red is V=0/top, blue is U=0/left.
+	drawHorizontal(1, 3, topEdgeColor);
+	drawVertical(1, 3, leftEdgeColor);
+
+	auto drawDigit = [&](int digit, int originX, int originY, int scale) {
+		for (int gy = 0; gy < 7; ++gy) {
+			uint8_t row = kDigitGlyphs[digit][gy];
+			for (int gx = 0; gx < 5; ++gx) {
+				if ((row & (1u << (4 - gx))) == 0)
+					continue;
+				for (int sy = 0; sy < scale; ++sy)
+					for (int sx = 0; sx < scale; ++sx)
+						setPixel(originX + gx * scale + sx, originY + gy * scale + sy, labelColor);
+			}
+		}
+	};
+
+	// Label every cell with its zero-based address: column pair, then row pair
+	// ("0107" = col 01, row 07). This lets a tester say "laser dot is in 0107,
+	// game cursor is in 0209" without guessing pixels.
+	const int cellW = kDebugGridWidth / kDebugGridDivisions;
+	const int cellH = kDebugGridHeight / kDebugGridDivisions;
+	constexpr int glyphScale = 3;
+	constexpr int glyphWidth = 5 * glyphScale;
+	constexpr int glyphGap = 1 * glyphScale;
+	constexpr int pairGap = 3 * glyphScale; // wider gap between col pair and row pair
+	constexpr int labelWidth = glyphWidth * 4 + glyphGap * 2 + pairGap;
+	constexpr int labelHeight = 7 * glyphScale;
+	for (int cellY = 0; cellY < kDebugGridDivisions; ++cellY) {
+		for (int cellX = 0; cellX < kDebugGridDivisions; ++cellX) {
+			int x0 = cellX * cellW + (cellW - labelWidth) / 2;
+			int y0 = cellY * cellH + (cellH - labelHeight) / 2;
+			int x = x0;
+			drawDigit(cellX / 10, x, y0, glyphScale); x += glyphWidth + glyphGap;
+			drawDigit(cellX % 10, x, y0, glyphScale); x += glyphWidth + pairGap;
+			drawDigit(cellY / 10, x, y0, glyphScale); x += glyphWidth + glyphGap;
+			drawDigit(cellY % 10, x, y0, glyphScale);
 		}
 	}
 
 	D3D11_TEXTURE2D_DESC td = {};
-	td.Width = 16;
-	td.Height = 16;
+	td.Width = kDebugGridWidth;
+	td.Height = kDebugGridHeight;
 	td.MipLevels = 1;
 	td.ArraySize = 1;
 	td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // linear — matches swapchain
 	td.SampleDesc = { 1, 0 };
 	td.Usage = D3D11_USAGE_DEFAULT;
 
-	D3D11_SUBRESOURCE_DATA init = { pixels, sizeof(uint32_t) * 16, sizeof(uint32_t) * 16 * 16 };
+	D3D11_SUBRESOURCE_DATA init = {
+		pixels.data(),
+		sizeof(uint32_t) * kDebugGridWidth,
+		sizeof(uint32_t) * kDebugGridWidth * kDebugGridHeight
+	};
 	CComPtr<ID3D11Texture2D> tex;
 	HRESULT hr = dev->CreateTexture2D(&td, &init, &tex);
 	if (FAILED(hr)) return;
@@ -403,7 +509,7 @@ void VRMenuLaser::UpdateBeam(int side, const XrVector3f& origin, const XrVector3
 	};
 
 	beamLayer[side].pose.position = mid;
-	beamLayer[side].size.width = 0.003f; // 3mm thin
+	beamLayer[side].size.width = 0.003f; // 3mm — texture fades it to a point at the tip
 	beamLayer[side].size.height = beamLen;
 	beamLayer[side].pose.orientation = BeamOrientation(dir, mid, headPos);
 }

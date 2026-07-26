@@ -37,6 +37,15 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <RE/M/MagicSystem.h>
 #include <RE/S/SpellItem.h>
 #include <RE/T/TESDataHandler.h>    // spell list dump + form resolution
+#include <RE/A/AIProcess.h>              // combat haptics: current attack data (hand)
+#include <RE/B/BGSAttackData.h>          // combat haptics: IsLeftAttack
+#include <RE/H/HighProcessData.h>        // combat haptics: attackData holder
+#include <RE/S/ScriptEventSourceHolder.h> // combat haptics: TESHitEvent source
+#include <RE/T/TESForm.h>                // combat haptics: LookupByID
+#include <RE/T/TESHitEvent.h>            // combat haptics: hit event struct
+#include <RE/T/TESObjectWEAP.h>          // combat haptics: weapon type checks
+#include <RE/B/BSAnimationGraphEvent.h>  // combat haptics: arrow release
+#include <RE/T/TESSpellCastEvent.h>      // combat haptics: spell release pulse
 #include <RE/U/UI.h>
 #include <RE/U/UIMessageQueue.h>    // console show/hide via UI queue
 #include <SKSE/SKSE.h>
@@ -681,6 +690,7 @@ namespace
 	// Bethesda's UI holds a lock during MenuOpenCloseEvent dispatch).
 	std::set<std::string> g_activeTrackedMenus;
 	bool g_consoleOpen = false;  // Track console separately for WM_CHAR suppression
+	bool g_statsMenuOpen = false; // StatsMenu opens ON TOP of TweenMenu — laser must go dormant
 
 	// Update shared memory with the active menu's 3D transform data
 	void UpdateMenuTransform()
@@ -692,7 +702,11 @@ namespace
 		if (!ui)
 			return;
 
-		bool anyActive = !g_activeTrackedMenus.empty();
+		// StatsMenu on top forces "no menu" for the laser export — the DLL must
+		// not keep a quad alive in the Sovngarde constellation view. WASD
+		// blocking (active flag below) still sees the pause, so that behavior
+		// is unchanged.
+		bool anyActive = !g_activeTrackedMenus.empty() && !g_statsMenuOpen;
 		bool gamePaused = ui->GameIsPaused();
 
 		// Begin write (odd counter = writing)
@@ -773,6 +787,16 @@ namespace
 					g_activeTrackedMenus.erase(std::string(name));
 
 				// Update shared memory whenever tracked menus change
+				UpdateMenuTransform();
+			}
+
+			// StatsMenu (level-up constellation) opens ON TOP of TweenMenu, which
+			// stays open underneath — so menuName stayed 'TweenMenu' and the DLL
+			// kept a stale fallback quad floating in Sovngarde (2026-07-25
+			// screenshot). Treat StatsMenu-open as "no menu" for the laser: clear
+			// the export while it's up, restore from the tracked set on close.
+			if (name == "StatsMenu") {
+				g_statsMenuOpen = a_event->opening;
 				UpdateMenuTransform();
 			}
 
@@ -1130,13 +1154,13 @@ namespace
 			// highlight, and clicks "Accept" the stale focused item instead of
 			// the pointed-at one). The arrow renders exactly under the laser
 			// dot on the menu plane.
-			bool wantArrow = true;
-			if (wantArrow && !s_cursorShown) {
+			// Re-assert visibility whenever the engine knocks it back down —
+			// 2026-07-25 session data: a single latched SetCursorVisibility(true)
+			// left showCursorCount at 0 for the entire session (something in the
+			// VR menu path re-hides it), so latch-once is not enough.
+			if (mc->GetRuntimeData().showCursorCount <= 0) {
 				mc->SetCursorVisibility(true);
 				s_cursorShown = true;
-			} else if (!wantArrow && s_cursorShown) {
-				mc->SetCursorVisibility(false);
-				s_cursorShown = false;
 			}
 
 			float rangeX = (cd.screenWidthX > 0.0f) ? cd.screenWidthX : 1280.0f;
@@ -1149,78 +1173,81 @@ namespace
 			// laserU/V are already Scaleform top-left convention
 			float targetX = szX + g_pTransform->laserU * (rangeX - 2.0f * szX);
 			float targetY = szY + g_pTransform->laserV * (rangeY - 2.0f * szY);
+			// DIRECT CURSOR DRIVE (2026-07-25). The closed-loop mouse-delta
+			// approach is dead: session data showed the game discarding the
+			// synthetic AddMouseMoveEvent stream entirely (cursorPosX pinned at
+			// 0 for minutes, err never converging, gain saturated). Write the
+			// cursor position directly instead — this is the value the engine
+			// feeds into Scaleform hover each frame, and it also can't "jut off
+			// crazy": the cursor IS the laser target every tick, no feedback
+			// loop to go unstable.
 			float errX = targetX - cd.cursorPosX;
 			float errY = targetY - cd.cursorPosY;
+			float errMag = sqrtf(errX * errX + errY * errY); // pre-write, for diagnostics
+			cd.cursorPosX = targetX;
+			cd.cursorPosY = targetY;
 
-			// Adapt gain: estimate how much the cursor actually moved per unit
-			// of injected delta (the game applies its own sensitivity scale).
-			if (s_lastCurX >= 0.0f && (fabsf(s_lastSentDx) > 2.0f || fabsf(s_lastSentDy) > 2.0f)) {
-				float movedX = cd.cursorPosX - s_lastCurX;
-				float movedY = cd.cursorPosY - s_lastCurY;
-				float sentMag = sqrtf(s_lastSentDx * s_lastSentDx + s_lastSentDy * s_lastSentDy);
-				float movedMag = sqrtf(movedX * movedX + movedY * movedY);
-				if (sentMag > 2.0f && movedMag > 0.1f) {
-					float k = movedMag / sentMag;
-					k = std::clamp(k, 0.05f, 20.0f);
-					float targetGain = std::clamp(0.6f / k, 0.05f, 4.0f);
-					s_gain = s_gain * 0.8f + targetGain * 0.2f;
+			// SCALEFORM MOUSE EVENTS (2026-07-25): writing MenuCursor position
+			// proved insufficient — our writes held the pen (they blocked the
+			// right-hand pointer's highlighting), but hover never followed the
+			// written positions: the engine's hover pipeline consumes real GFx
+			// mouse EVENTS, not the cursor struct. Dispatch kMouseMove (and
+			// kMouseDown/kMouseUp on trigger, below) into the top tracked
+			// menu's movie — the same channel the VR keyboard's GFxCharEvent
+			// injection has used safely for months. Game thread, tracked menus
+			// only, never StatsMenu, no MovieDef access = no Sovngarde risk.
+			RE::GPtr<RE::GFxMovieView> laserMovie;
+			if (auto uiSing = RE::UI::GetSingleton()) {
+				for (auto& nm : g_activeTrackedMenus) {
+					laserMovie = uiSing->GetMovieView(nm);
+					if (laserMovie)
+						break;
 				}
 			}
-			s_lastCurX = cd.cursorPosX;
-			s_lastCurY = cd.cursorPosY;
-
-			// Chase hysteresis: stream mouse moves only while genuinely off
-			// target, and go COMPLETELY quiet once converged. A continuous
-			// mouse stream fights the wand inputs for the game's input-device
-			// mode (kills hover, swallows the next button press = the
-			// "have to exit twice" symptom).
-			static bool s_chasing = false;
-			float errMag = sqrtf(errX * errX + errY * errY);
-			if (!s_chasing && errMag > 6.0f)
-				s_chasing = true;
-			else if (s_chasing && errMag < 2.5f)
-				s_chasing = false;
-
-			int dx = 0, dy = 0;
-			if (s_chasing) {
-				dx = (int)lroundf(errX * s_gain);
-				dy = (int)lroundf(errY * s_gain);
-				if (dx != 0 || dy != 0)
-					queue->AddMouseMoveEvent(dx, dy);
+			if (laserMovie) {
+				RE::GFxMouseEvent mv(RE::GFxEvent::EventType::kMouseMove, 0, targetX, targetY);
+				laserMovie->HandleEvent(mv);
 			}
-			s_lastSentDx = (float)dx;
-			s_lastSentDy = (float)dy;
 
-			// Throttled drive diagnostics (every 2s while pointing)
+			// Throttled drive diagnostics (every 2s while pointing).
+			// err here = how far the cursor had drifted from target since the
+			// last write; anything beyond a few px means the engine is moving
+			// the cursor behind our back.
 			static ULONGLONG s_lastDriveDiag = 0;
 			ULONGLONG nowDiag = GetTickCount64();
 			if (nowDiag - s_lastDriveDiag > 2000) {
 				s_lastDriveDiag = nowDiag;
-				SKSE::log::info("LASER drive uv({:.3f},{:.3f}) target({:.1f},{:.1f}) cursor({:.1f},{:.1f}) err={:.1f} gain={:.2f} chasing={} sz({:.1f},{:.1f}) showCount={}",
+				SKSE::log::info("LASER drive-direct uv({:.3f},{:.3f}) target({:.1f},{:.1f}) drift={:.1f} sz({:.1f},{:.1f}) showCount={}",
 				    g_pTransform->laserU, g_pTransform->laserV, targetX, targetY,
-				    cd.cursorPosX, cd.cursorPosY, errMag, s_gain, s_chasing,
-				    cd.safeZoneX, cd.safeZoneY, cd.showCursorCount);
+				    errMag, cd.safeZoneX, cd.safeZoneY, cd.showCursorCount);
 			}
 
-			// Trigger edges -> mouse button 0 through the game's own queue
+			// Trigger edges -> real Scaleform mouse button events at the laser
+			// position (Scaleform tracks held state from down/up itself, so no
+			// per-tick "held" repeat is needed; the old BSInputEventQueue kMouse
+			// button was only ever an "accept what's hovered" — with true hover
+			// from the kMouseMove stream, GFx clicks are the real thing).
 			uint32_t pressSeq = g_pTransform->laserPressSeq;
 			uint32_t releaseSeq = g_pTransform->laserReleaseSeq;
 			if (pressSeq != s_lastPressSeq) {
 				s_lastPressSeq = pressSeq;
 				s_pressTick = GetTickCount64();
 				s_mouseHeld = true;
-				queue->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 1.0f, 0.0f);
-			} else if (s_mouseHeld && releaseSeq == s_lastReleaseSeq) {
-				// Held: keep feeding value=1 with growing duration (drag support)
-				queue->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 1.0f,
-				    (GetTickCount64() - s_pressTick) / 1000.0f);
+				if (laserMovie) {
+					RE::GFxMouseEvent dn(RE::GFxEvent::EventType::kMouseDown, 0, targetX, targetY);
+					laserMovie->HandleEvent(dn);
+					SKSE::log::info("LASER gfx-click DOWN at ({:.1f},{:.1f})", targetX, targetY);
+				}
 			}
 			if (releaseSeq != s_lastReleaseSeq) {
 				s_lastReleaseSeq = releaseSeq;
 				if (s_mouseHeld) {
 					s_mouseHeld = false;
-					queue->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 0.0f,
-					    (GetTickCount64() - s_pressTick) / 1000.0f);
+					if (laserMovie) {
+						RE::GFxMouseEvent up(RE::GFxEvent::EventType::kMouseUp, 0, targetX, targetY);
+						laserMovie->HandleEvent(up);
+						SKSE::log::info("LASER gfx-click UP at ({:.1f},{:.1f})", targetX, targetY);
+					}
 				}
 			}
 		} else {
@@ -3365,6 +3392,229 @@ uint main() : SV_Target { return 255; }
 		SKSE::log::info("Gesture spell list: dumped {} spells/powers to {}", count, path.string());
 	}
 
+	// =========================================================================
+	// Combat haptics: engine hit events -> controller rumble via OCU DLL
+	//
+	// The DLL (openvr_api.dll) exports OCU_CombatHaptic(hand, kind, micros) and
+	// owns all config gating (opencomposite.ini combatHapticShield/Weapon/
+	// Strength), so this side only classifies events. Physics-collision mods
+	// (PLANCK-style weapon clash) fire OpenVR haptics themselves and already
+	// rumble through OCU's normal path; this covers what the ENGINE reports:
+	//   - a hit you BLOCKED (shield or weapon) -> thump the blocking hand
+	//   - your bash connecting                 -> the bashing hand
+	//   - your melee weapon connecting         -> the attacking hand
+	//   - your fist connecting                 -> only while actually swinging
+	// =========================================================================
+	namespace CombatHaptics
+	{
+		using HapticFn = void(__cdecl*)(int hand, int kind, unsigned int durationMicros);
+		HapticFn g_hapticFn = nullptr;
+
+		void ResolveExport()
+		{
+			if (HMODULE mod = GetModuleHandleA("openvr_api.dll"))
+				g_hapticFn = reinterpret_cast<HapticFn>(GetProcAddress(mod, "OCU_CombatHaptic"));
+			SKSE::log::info("Combat haptics: OCU_CombatHaptic {}",
+				g_hapticFn ? "resolved" : "not found (stock openvr_api.dll?) — feature inactive");
+		}
+
+		// 0=left 1=right, -1 unknown. Prefers the engine's current attack data
+		// (knows which hand swung, even dual-wielding twins); falls back to
+		// matching the hit's source form against equipped gear.
+		int AttackingHand(RE::PlayerCharacter* player, RE::FormID source)
+		{
+			if (auto* proc = player->GetActorRuntimeData().currentProcess) {
+				if (proc->high && proc->high->attackData)
+					return proc->high->attackData->IsLeftAttack() ? 0 : 1;
+			}
+			auto* right = player->GetEquippedObject(false);
+			auto* left = player->GetEquippedObject(true);
+			if (right && right->GetFormID() == source)
+				return 1;
+			if (left && left->GetFormID() == source)
+				return 0;
+			return -1;
+		}
+
+		class HitSink : public RE::BSTEventSink<RE::TESHitEvent>
+		{
+		public:
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent* ev,
+				RE::BSTEventSource<RE::TESHitEvent>*) override
+			{
+				if (!ev || !g_hapticFn)
+					return RE::BSEventNotifyControl::kContinue;
+				auto* player = RE::PlayerCharacter::GetSingleton();
+				if (!player)
+					return RE::BSEventNotifyControl::kContinue;
+
+				const bool targetIsPlayer = ev->target && ev->target.get() == player;
+				const bool causeIsPlayer = ev->cause && ev->cause.get() == player;
+
+				// Incoming hit you blocked (shield or weapon parry/clash)
+				if (targetIsPlayer && ev->flags.any(RE::TESHitEvent::Flag::kHitBlocked)) {
+					auto* left = player->GetEquippedObject(true);
+					bool leftShield = left && left->IsArmor(); // shields equip to the left hand
+					g_hapticFn(leftShield ? 0 : 1, 0, 120000);
+					return RE::BSEventNotifyControl::kContinue;
+				}
+
+				if (!causeIsPlayer || targetIsPlayer)
+					return RE::BSEventNotifyControl::kContinue;
+
+				// Your bash landing (shield bash or weapon bash)
+				if (ev->flags.any(RE::TESHitEvent::Flag::kBashAttack)) {
+					auto* left = player->GetEquippedObject(true);
+					bool leftShield = left && left->IsArmor();
+					int hand = leftShield ? 0 : AttackingHand(player, ev->source);
+					g_hapticFn(hand < 0 ? 1 : hand, 1, 100000);
+					return RE::BSEventNotifyControl::kContinue;
+				}
+
+				// Your melee connecting. Projectile hits (arrows, spells) have a
+				// projectile form — no impact reaches the hand, skip them.
+				if (ev->projectile != 0)
+					return RE::BSEventNotifyControl::kContinue;
+
+				auto* src = RE::TESForm::LookupByID(ev->source);
+				// As<> has link errors in this CommonLib — form-type check instead
+				auto* weap = (src && src->GetFormType() == RE::FormType::Weapon)
+					? static_cast<RE::TESObjectWEAP*>(src)
+					: nullptr;
+				if (!weap || weap->IsBow() || weap->IsCrossbow())
+					return RE::BSEventNotifyControl::kContinue;
+
+				if (weap->IsHandToHandMelee()) {
+					// Bare fists: only while genuinely mid-swing, so an idle
+					// empty hand brushing something never buzzes.
+					auto* state = player->AsActorState();
+					if (!state || state->GetAttackState() == RE::ATTACK_STATE_ENUM::kNone)
+						return RE::BSEventNotifyControl::kContinue;
+					int hand = AttackingHand(player, ev->source);
+					g_hapticFn(hand < 0 ? 1 : hand, 2, 45000);
+					return RE::BSEventNotifyControl::kContinue;
+				}
+
+				int hand = AttackingHand(player, ev->source);
+				g_hapticFn(hand < 0 ? 1 : hand, 1, 80000);
+				return RE::BSEventNotifyControl::kContinue;
+			}
+		};
+
+		// Fire-and-forget spell release (Incinerate etc.) -> pulse the casting
+		// hand, both on a dual cast. Concentration spells are skipped here;
+		// the stream pump below gives them a continuous low rumble instead.
+		class SpellSink : public RE::BSTEventSink<RE::TESSpellCastEvent>
+		{
+		public:
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent* ev,
+				RE::BSTEventSource<RE::TESSpellCastEvent>*) override
+			{
+				if (!ev || !g_hapticFn)
+					return RE::BSEventNotifyControl::kContinue;
+				auto* player = RE::PlayerCharacter::GetSingleton();
+				if (!player || !ev->object || ev->object.get() != player)
+					return RE::BSEventNotifyControl::kContinue;
+
+				auto* form = RE::TESForm::LookupByID(ev->spell);
+				auto* spell = (form && form->GetFormType() == RE::FormType::Spell)
+					? static_cast<RE::SpellItem*>(form)
+					: nullptr;
+				if (!spell || spell->data.castingType == RE::MagicSystem::CastingType::kConcentration)
+					return RE::BSEventNotifyControl::kContinue;
+
+				auto* left = player->GetEquippedObject(true);
+				auto* right = player->GetEquippedObject(false);
+				bool l = left && left->GetFormID() == ev->spell;
+				bool r = right && right->GetFormID() == ev->spell;
+				if (!l && !r)
+					return RE::BSEventNotifyControl::kContinue; // shout/scroll: not a hand cast
+				if (l)
+					g_hapticFn(0, 4, 70000);
+				if (r)
+					g_hapticFn(1, 4, 70000);
+				return RE::BSEventNotifyControl::kContinue;
+			}
+		};
+
+		// Arrow release: the behavior graph fires "arrowRelease" the moment
+		// the string lets go. Light snap in BOTH hands (bow arm feels the
+		// limbs, draw hand the string).
+		class AnimSink : public RE::BSTEventSink<RE::BSAnimationGraphEvent>
+		{
+		public:
+			RE::BSEventNotifyControl ProcessEvent(const RE::BSAnimationGraphEvent* ev,
+				RE::BSTEventSource<RE::BSAnimationGraphEvent>*) override
+			{
+				if (!ev || !g_hapticFn)
+					return RE::BSEventNotifyControl::kContinue;
+				if (ev->tag == "arrowRelease") {
+					g_hapticFn(0, 3, 50000);
+					g_hapticFn(1, 3, 50000);
+				}
+				return RE::BSEventNotifyControl::kContinue;
+			}
+		};
+
+		// The player's animation graph only exists once a save is up, so this
+		// runs at kPostLoadGame/kNewGame. AddAnimationGraphEventSink dedupes,
+		// so re-calling on every load is safe.
+		void RegisterAnimSink()
+		{
+			if (!g_hapticFn)
+				return;
+			static AnimSink sink;
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (player && player->AddAnimationGraphEventSink(&sink))
+				SKSE::log::info("Combat haptics: arrowRelease anim sink registered");
+		}
+
+		// Concentration stream rumble: ~8Hz poll of both hand casters; while a
+		// concentration spell is flowing, re-trigger a low 150ms pulse. The
+		// overlap (150ms pulse every 120ms) reads as one continuous hum.
+		void StartMagicPump()
+		{
+			static std::atomic<bool> started{ false };
+			if (started.exchange(true))
+				return;
+			std::thread([]() {
+				while (true) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(120));
+					if (!g_hapticFn)
+						continue;
+					SKSE::GetTaskInterface()->AddTask([]() {
+						auto* player = RE::PlayerCharacter::GetSingleton();
+						if (!player)
+							return;
+						for (int hand = 0; hand < 2; hand++) {
+							auto source = hand == 0 ? RE::MagicSystem::CastingSource::kLeftHand
+							                        : RE::MagicSystem::CastingSource::kRightHand;
+							auto* caster = player->GetMagicCaster(source);
+							if (!caster || caster->state.get() != RE::MagicCaster::State::kCasting)
+								continue;
+							auto* spell = caster->currentSpell;
+							if (spell && spell->GetCastingType() == RE::MagicSystem::CastingType::kConcentration)
+								g_hapticFn(hand, 5, 150000);
+						}
+					});
+				}
+			}).detach();
+		}
+
+		void Register()
+		{
+			ResolveExport();
+			if (!g_hapticFn)
+				return;
+			if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
+				holder->AddEventSink<RE::TESHitEvent>(new HitSink());
+				holder->AddEventSink<RE::TESSpellCastEvent>(new SpellSink());
+				SKSE::log::info("Combat haptics: TESHitEvent + TESSpellCastEvent sinks registered");
+			}
+			StartMagicPump();
+		}
+	}
+
 	void OnMessage(SKSE::MessagingInterface::Message* a_msg)
 	{
 		switch (a_msg->type) {
@@ -3392,6 +3642,9 @@ uint main() : SV_Target { return 255; }
 			// Spell picker source for the Configurator's gesture actions
 			DumpGestureSpellList();
 
+			// Shield-block / weapon-hit controller rumble (gated in the DLL)
+			CombatHaptics::Register();
+
 			break;
 
 		case SKSE::MessagingInterface::kPostLoadGame:
@@ -3399,6 +3652,7 @@ uint main() : SV_Target { return 255; }
 			FindAndStoreNiCamera();  // Retry after scene graph is fully loaded
 			TestRendererShadowState();  // Diagnostic: verify game VP matrices
 			DumpGestureSpellList();  // Re-dump with the character's known spells tagged
+			CombatHaptics::RegisterAnimSink();  // player anim graph exists now (arrow release)
 			break;
 
 		case SKSE::MessagingInterface::kInputLoaded:

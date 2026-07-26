@@ -2265,6 +2265,14 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 	// Menu quad parameters — overrideable via menu_quad_settings.ini
 	// File is watched every ~1 second (same pattern as keyboard_settings.ini).
 	static bool  s_mqEnableLaser = false; // master gate: enable_laser=1 in ini
+	static bool  s_mqAlwaysShow = false; // calibration: quad stays up at ALL times (always_show_quad=1)
+	// Live trim applied to the ADOPTED game plane (meters, hot-reload ~1s).
+	// User's 2026-07-25 in-headset estimate: down 2 cell heights (~0.18m),
+	// back half a cell (~0.04m). plane_scale multiplies quad width+height.
+	static float s_mqPlaneShiftDown = 0.18f;
+	static float s_mqPlaneShiftBack = 0.04f;
+	static float s_mqPlaneShiftRight = 0.0f;
+	static float s_mqPlaneScale = 1.0f;
 	static float s_mqDist = 0.85f;
 	static float s_mqWidthScale = 0.80f;
 	static float s_mqHeightScale = 0.42f;
@@ -2298,6 +2306,11 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 	// dimensions (distance, width, height, offsets, angles, opacity) so
 	// the calibrator can't stomp them. Mouse params are always updated.
 	static bool  s_profileActive = false;
+	// Per-menu-open diagnostic budgets: adoption/fallback state is re-logged on
+	// every VRMenuLaser creation, not once per process (the one-shot logs made
+	// the 2026-07-25 "small quad on reopen" session undiagnosable).
+	static int   s_planeAdoptLogsLeft = 0;
+	static int   s_planeFallbackLogsLeft = 0;
 
 	{
 		ULONGLONG now = GetTickCount64();
@@ -2332,6 +2345,11 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							}
 							// These are ALWAYS read from settings.ini (even with profile active)
 							if (sscanf(line, "enable_laser=%d", &iv) == 1) s_mqEnableLaser = (iv != 0);
+							else if (sscanf(line, "always_show_quad=%d", &iv) == 1) s_mqAlwaysShow = (iv != 0);
+							else if (sscanf(line, "plane_shift_down=%f", &fv) == 1) s_mqPlaneShiftDown = fv;
+							else if (sscanf(line, "plane_shift_back=%f", &fv) == 1) s_mqPlaneShiftBack = fv;
+							else if (sscanf(line, "plane_shift_right=%f", &fv) == 1) s_mqPlaneShiftRight = fv;
+							else if (sscanf(line, "plane_scale=%f", &fv) == 1) s_mqPlaneScale = fv;
 							else if (sscanf(line, "show_debug=%d", &iv) == 1) s_mqShowDebug = (iv != 0);
 							else if (sscanf(line, "head_locked=%d", &iv) == 1) {
 								bool newLock = (iv != 0);
@@ -2378,6 +2396,52 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 		if (!s_mqEnableLaser)
 			menuActive = false;
 
+		// CALIBRATION OVERRIDE (2026-07-25, user request): always_show_quad=1
+		// keeps the quad up at ALL times — menus come and go, the quad stays.
+		// Skips every menu/plane gate below; the quad renders head-anchored at
+		// the fallback pose until a menu opens and exports the real plane.
+		bool alwaysShow = s_mqEnableLaser && s_mqAlwaysShow;
+		if (alwaysShow)
+			menuActive = true;
+
+		// LOADING-SCREEN GUARD (2026-07-25): the bridge's OC_MENU_ACTIVE flag
+		// includes gamePaused (so WASD passthrough works in text boxes), and
+		// loading screens pause the game — the quad was arming on every
+		// loading screen with no menu present. Require an actual tracked
+		// menu name from shared memory: never CREATE without one, and tear
+		// down after ~15 frames without one (tolerates transient seqlock
+		// read misses mid-menu).
+		static int s_noMenuNameFrames = 0;
+		static int s_planeStarvedFrames = 0;
+		if (menuActive && !alwaysShow) {
+			OpenSharedMemory();
+			OCMenuTransform mxGate = {};
+			bool readOk = ReadMenuTransform(mxGate);
+			bool named = readOk && mxGate.menuName[0] != '\0';
+			// Pump present (v2 bridge) but refusing to export a plane = the SKSE
+			// side is deliberately dormant (StatsMenu-on-top-of-TweenMenu left a
+			// stale fallback quad floating in Sovngarde, 2026-07-25). Never show
+			// the fallback in that state: delay creation until the first valid
+			// plane, and tear down if the export starves mid-menu. Transient
+			// seqlock read misses reset nothing (readOk=false = no information).
+			bool pumpPresent = readOk && mxGate.version >= 2;
+			bool planeLive = pumpPresent && mxGate.uiPlaneValid;
+			if (named)
+				s_noMenuNameFrames = 0;
+			else if (readOk)
+				s_noMenuNameFrames++;
+			if (!pumpPresent || planeLive)
+				s_planeStarvedFrames = 0;
+			else
+				s_planeStarvedFrames++;
+			if (!menuLaser) {
+				if (!named || (pumpPresent && !planeLive))
+					menuActive = false; // loading screen / plain pause / StatsMenu — stay dormant
+			} else if (s_noMenuNameFrames > 15 || (pumpPresent && s_planeStarvedFrames > 30)) {
+				menuActive = false; // menu closed (or plane export stopped) — tear down
+			}
+		}
+
 		if (menuActive) {
 			OOVR_LOG_ONCE("MCM menu detected active via OC_MENU_ACTIVE property");
 
@@ -2393,6 +2457,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				menuLaser = std::make_unique<VRMenuLaser>(laserDev);
 				s_mqHasAnchor = false; // Re-anchor from current head on menu reopen
 				s_feedbackWritten = false; // Write feedback on first anchored frame
+				s_planeAdoptLogsLeft = 2; // Re-log plane adoption state for THIS menu open
+				s_planeFallbackLogsLeft = 2;
 
 				// Log head pose at menu open
 				XrSpaceLocation openHead = { XR_TYPE_SPACE_LOCATION };
@@ -2422,7 +2488,10 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					s_mqDist = pDist; s_mqWidthScale = pW; s_mqHeightScale = pH;
 					s_mqYOffset = pYOff; s_mqXOffset = pXOff;
 					s_mqYawOffset = 0; s_mqPitchOffset = 0; s_mqRollOffset = 0;
-					s_mqOpacity = pOpacity;
+					// Profiles carry a faint default (20). During calibration the ini
+					// opacity should win when higher — a 15-20% grid is invisible over
+					// lit menu content (2026-07-25 "quad not showing in menus").
+					s_mqOpacity = (pOpacity > s_mqOpacity) ? pOpacity : s_mqOpacity;
 				}
 			}
 
@@ -2447,7 +2516,10 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							s_mqDist = pDist; s_mqWidthScale = pW; s_mqHeightScale = pH;
 							s_mqYOffset = pYOff; s_mqXOffset = pXOff;
 							s_mqYawOffset = 0; s_mqPitchOffset = 0; s_mqRollOffset = 0;
-							s_mqOpacity = pOpacity;
+							// Profiles carry a faint default (20). During calibration the ini
+					// opacity should win when higher — a 15-20% grid is invisible over
+					// lit menu content (2026-07-25 "quad not showing in menus").
+					s_mqOpacity = (pOpacity > s_mqOpacity) ? pOpacity : s_mqOpacity;
 						}
 					}
 				}
@@ -2527,7 +2599,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				// (happened live 2026-07-10). Reject and fall back instead.
 				{
 					OCMenuTransform mxPlane = {};
-					if (ReadMenuTransform(mxPlane) && mxPlane.version >= 2 && mxPlane.uiPlaneValid &&
+					bool readOk = ReadMenuTransform(mxPlane);
+					if (readOk && mxPlane.version >= 2 && mxPlane.uiPlaneValid &&
 					    mxPlane.uiPlaneWidth > 0.01f && mxPlane.uiPlaneWidth < 20.0f &&
 					    mxPlane.uiPlaneHeight > 0.01f && mxPlane.uiPlaneHeight < 20.0f) {
 						XrVector3f p = { mxPlane.uiPlanePos[0], mxPlane.uiPlanePos[1], mxPlane.uiPlanePos[2] };
@@ -2540,22 +2613,73 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						if (posSane && quatSane) {
 							// Renormalize anyway — belt and suspenders
 							q.x /= qn; q.y /= qn; q.z /= qn; q.w /= qn;
+
+							// FACE-THE-VIEWER GUARD (2026-07-25): the game's uiNode
+							// rotation contains a reflection; the rebuilt basis can leave
+							// the quad's +Z face pointing away from the player, and quad
+							// layers can render one-sided — a perfectly placed quad that
+							// faces away is simply invisible (the fallback quads face the
+							// player by construction, which is why only THOSE were ever
+							// seen). If the face normal points away from the HMD, spin
+							// 180° about local Y. (This mirrors U relative to the game's
+							// menu — the mouse mapping calibration absorbs it.)
+							XrVector3f faceN;
+							rotate_vector_by_quaternion({ 0, 0, 1 }, q, faceN);
+							XrVector3f toHead = { headPos.x - p.x, headPos.y - p.y, headPos.z - p.z };
+							float facing = faceN.x * toHead.x + faceN.y * toHead.y + faceN.z * toHead.z;
+							if (facing < 0.0f) {
+								XrQuaternionf qf = { -q.z, q.w, q.x, -q.y }; // q ⊗ (180° about Y)
+								q = qf;
+								rotate_vector_by_quaternion({ 0, 0, 1 }, q, faceN);
+								if (s_planeAdoptLogsLeft > 0)
+									OOVR_LOG("Menu laser: shared plane faced AWAY from viewer — flipped 180");
+							}
+							// Nudge 2cm toward the viewer so the quad never z-fights the
+							// menu surface the game draws at this exact plane.
+							p.x += faceN.x * 0.02f;
+							p.y += faceN.y * 0.02f;
+							p.z += faceN.z * 0.02f;
+
+							// Live calibration trim (ini, hot-reload): shift along the
+							// quad's own axes and scale its extent. The visible menu
+							// image doesn't sit exactly on the uiNode geometry, the
+							// user dials these in-headset against the numbered grid.
+							{
+								XrVector3f upN, rightN;
+								rotate_vector_by_quaternion({ 0, 1, 0 }, q, upN);
+								rotate_vector_by_quaternion({ 1, 0, 0 }, q, rightN);
+								p.x += -upN.x * s_mqPlaneShiftDown - faceN.x * s_mqPlaneShiftBack + rightN.x * s_mqPlaneShiftRight;
+								p.y += -upN.y * s_mqPlaneShiftDown - faceN.y * s_mqPlaneShiftBack + rightN.y * s_mqPlaneShiftRight;
+								p.z += -upN.z * s_mqPlaneShiftDown - faceN.z * s_mqPlaneShiftBack + rightN.z * s_mqPlaneShiftRight;
+							}
+
 							quadPose.position = p;
 							quadPose.orientation = q;
-							quadSize = { mxPlane.uiPlaneWidth, mxPlane.uiPlaneHeight };
-							static bool s_loggedPlaneSource = false;
-							if (!s_loggedPlaneSource) {
-								s_loggedPlaneSource = true;
+							float ps = (s_mqPlaneScale > 0.1f && s_mqPlaneScale < 10.0f) ? s_mqPlaneScale : 1.0f;
+							quadSize = { mxPlane.uiPlaneWidth * ps, mxPlane.uiPlaneHeight * ps };
+							if (s_planeAdoptLogsLeft > 0) {
+								s_planeAdoptLogsLeft--;
 								OOVR_LOGF("Menu laser: using game uiNode plane pos(%.3f,%.3f,%.3f) quat(%.3f,%.3f,%.3f,%.3f) size %.3fx%.3fm",
 								    p.x, p.y, p.z, q.x, q.y, q.z, q.w, quadSize.width, quadSize.height);
 							}
 						} else {
-							static int s_rejectLogs = 0;
-							if (s_rejectLogs < 5) {
-								s_rejectLogs++;
+							if (s_planeFallbackLogsLeft > 0) {
+								s_planeFallbackLogsLeft--;
 								OOVR_LOGF("Menu laser: REJECTED shared plane pos(%.3f,%.3f,%.3f) |q|=%.3f — using fallback profile quad",
 								    p.x, p.y, p.z, qn);
 							}
+						}
+					} else {
+						// Shared plane unavailable — fallback profile quad is showing.
+						// This is the "small quad" state; log WHY, per menu open.
+						if (s_planeFallbackLogsLeft > 0) {
+							s_planeFallbackLogsLeft--;
+							OOVR_LOGF("Menu laser: shared plane unavailable (read=%d ver=%u valid=%u w=%.3f h=%.3f) — using fallback profile quad %.2fx%.2fm",
+							    (int)readOk, readOk ? mxPlane.version : 0,
+							    readOk ? (unsigned)mxPlane.uiPlaneValid : 0,
+							    readOk ? mxPlane.uiPlaneWidth : 0.0f,
+							    readOk ? mxPlane.uiPlaneHeight : 0.0f,
+							    quadSize.width, quadSize.height);
 						}
 					}
 				}
@@ -2802,8 +2926,10 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 			}
 		} else {
 			// Menu closed — destroy laser system, unlock profile
-			if (menuLaser)
+			if (menuLaser) {
+				OOVR_LOG("Menu laser: destroyed (menu-active flag went false)");
 				menuLaser.reset();
+			}
 			g_menuLaserActive = false;
 			s_profileActive = false; // Allow file watcher to update quad dims again
 			if (s_pTransform && s_pTransform->laserActive)
