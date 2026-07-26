@@ -6,7 +6,6 @@
 #include "BaseSystem.h"
 #include "Drivers/Backend.h"
 #include "Misc/Config.h"
-#include "Misc/Haptics.h"
 #include "convert.h"
 #include "generated/static_bases.gen.h"
 
@@ -783,6 +782,10 @@ void BaseSystem::TriggerHapticPulse(vr::TrackedDeviceIndex_t unControllerDeviceI
 		}
 
 		inputSystem->TriggerLegacyHapticPulse(unControllerDeviceIndex, (uint64_t)usDurationMicroSec * 1000);
+	} else if (inputSystem) {
+		// Body trackers (devices 3+): HTCX role haptics — Vive tracker pogo
+		// pin, or wearables a runtime bridges as trackers. No-op otherwise.
+		inputSystem->TriggerBodyTrackerHapticPulse(unControllerDeviceIndex, (uint64_t)usDurationMicroSec * 1000);
 	}
 	// if index is invalid, nothing to do
 	return;

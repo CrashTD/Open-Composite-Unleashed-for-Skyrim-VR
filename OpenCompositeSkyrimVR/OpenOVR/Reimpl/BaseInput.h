@@ -368,6 +368,21 @@ public: // INTERNAL FUNCTIONS
 
 	void GetHandSpace(ITrackedDevice::HandType hand, XrSpace& space, bool aimPose);
 
+	/**
+	 * Get the pose space for a body tracker role (0=waist, 1=left foot, 2=right foot).
+	 * XR_NULL_HANDLE when body trackers are unavailable or not yet created.
+	 */
+	void GetTrackerSpace(int role, XrSpace& space);
+
+	// Called by XrBackend when it exposes a body tracker device, so haptic
+	// pulses aimed at that device index can find the role's output action.
+	void RegisterBodyTrackerDevice(vr::TrackedDeviceIndex_t deviceIndex, int roleIndex);
+
+	// Legacy-style haptic pulse on a body tracker (HTCX output/haptic, e.g.
+	// Vive tracker pogo pin / runtimes that route tracker haptics). No-op for
+	// unknown device indices or when the runtime rejected haptic bindings.
+	void TriggerBodyTrackerHapticPulse(vr::TrackedDeviceIndex_t deviceIndex, uint64_t durationNanos);
+
 	bool AreActionsLoaded();
 	bool IsRestartingSession();
 
@@ -696,6 +711,15 @@ private:
 	std::unordered_map<std::string, std::unique_ptr<InputValueHandle>> inputHandleRegistry;
 
 	XrActionSet legacyInputsSet = XR_NULL_HANDLE;
+
+	// Body tracker pose actions (XR_HTCX_vive_tracker_interaction), one per
+	// role in OCU_TRACKER_ROLES; only ini-enabled roles get created. Live in
+	// legacyInputsSet so they attach and sync with zero extra lifecycle work.
+	XrAction bodyTrackerActions[14] = {};
+	XrSpace bodyTrackerSpaces[14] = {};
+	XrAction bodyTrackerHaptics[14] = {}; // vibration outputs; null if runtime rejected them
+	std::map<vr::TrackedDeviceIndex_t, int> bodyTrackerDeviceRoles; // OpenVR device index -> role
+	void CreateBodyTrackerActions();
 
 	/**
 	 * The list of subaction paths anything can be bound to - this basically just means 'everything' and contains

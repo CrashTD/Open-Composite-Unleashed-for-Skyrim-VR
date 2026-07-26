@@ -239,6 +239,13 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	if (availableExtensions.contains(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME))
 		extensions.push_back(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME);
 
+	// Body trackers: VDXR exposes Virtual Desktop's body tracking through this,
+	// SteamVR's OpenXR runtime exposes real Vive/Tundra/SlimeVR trackers the same way
+	if (availableExtensions.count("XR_HTCX_vive_tracker_interaction")) {
+		extensions.push_back("XR_HTCX_vive_tracker_interaction");
+		xr_htcxViveTrackers = true;
+	}
+
 	// XR_FB_space_warp — runtime-side ASW (Meta Quest via Link/AirLink)
 	if (availableExtensions.count("XR_FB_space_warp")) {
 		extensions.push_back("XR_FB_space_warp");

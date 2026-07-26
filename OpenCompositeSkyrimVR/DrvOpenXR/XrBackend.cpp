@@ -30,6 +30,7 @@
 #include "../OpenOVR/convert.h"
 #include "generated/static_bases.gen.h"
 
+#include "../OpenOVR/Misc/NetworkTrackers.h"
 #include "../OpenOVR/Misc/OVRPerfHook.h"
 #include "generated/interfaces/IVRCompositor_018.h"
 
@@ -230,6 +231,9 @@ void XrBackend::CleanupGpuTiming()
 
 XrBackend::~XrBackend()
 {
+	// Stop the OSC listener before anything it could touch goes away
+	NetworkTrackerReceiver::Instance().Stop();
+
 	ShutdownOVRPerfHook();
 
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
@@ -269,8 +273,17 @@ ITrackedDevice* XrBackend::GetDevice(
 		return hand_left.get();
 	case 2:
 		return hand_right.get();
-	default:
+	default: {
+		if (index < 3)
+			return nullptr;
+		vr::TrackedDeviceIndex_t i = index - 3;
+		if (i < (vr::TrackedDeviceIndex_t)bodyTrackers.size())
+			return bodyTrackers[i].get();
+		i -= (vr::TrackedDeviceIndex_t)bodyTrackers.size();
+		if (i < (vr::TrackedDeviceIndex_t)networkTrackers.size())
+			return networkTrackers[i].get();
 		return nullptr;
+	}
 	}
 }
 
@@ -867,8 +880,10 @@ bool XrBackend::BeginAswWarpFrameForSplit()
 		return false;
 	}
 
-	if (aswWarpFrameState.predictedDisplayPeriod > 0)
+	if (aswWarpFrameState.predictedDisplayPeriod > 0) {
 		predictedDisplayPeriodMs = (float)(aswWarpFrameState.predictedDisplayPeriod / 1000000.0);
+		xr_gbl->nextPredictedFramePeriod.store(aswWarpFrameState.predictedDisplayPeriod, std::memory_order_release);
+	}
 
 	if (measuredWaitFrameMs > kAswWaitStallThresholdMs) {
 		aswStallCount++;
@@ -922,8 +937,10 @@ bool XrBackend::BeginRealFrameAfterAswWarp(float* outWaitMs)
 		return false;
 	}
 
-	if (aswRealFrameState.predictedDisplayPeriod > 0)
+	if (aswRealFrameState.predictedDisplayPeriod > 0) {
 		predictedDisplayPeriodMs = (float)(aswRealFrameState.predictedDisplayPeriod / 1000000.0);
+		xr_gbl->nextPredictedFramePeriod.store(aswRealFrameState.predictedDisplayPeriod, std::memory_order_release);
+	}
 
 	XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
 	OOVR_FAILED_XR_ABORT(xrBeginFrame(xr_session.get(), &beginInfo));
@@ -992,6 +1009,7 @@ void XrBackend::WaitForTrackingData()
 		// Store the runtime's actual display period (nanoseconds → milliseconds)
 		if (state.predictedDisplayPeriod > 0) {
 			predictedDisplayPeriodMs = (float)(state.predictedDisplayPeriod / 1000000.0);
+			xr_gbl->nextPredictedFramePeriod.store(state.predictedDisplayPeriod, std::memory_order_release);
 		}
 
 		// xrBeginFrame stays adjacent to xrWaitFrame for consistent frame pacing.
@@ -1933,6 +1951,65 @@ void XrBackend::PumpEvents()
 	if (input && sessionState == XR_SESSION_STATE_FOCUSED && !hand_left && !hand_right) {
 		if (input->AreActionsLoaded()) {
 			UpdateInteractionProfile();
+		}
+	}
+
+	// Body trackers: once actions are attached, expose every ini-enabled role
+	// (BaseInput created a space for it) as a generic tracker device at index
+	// 3+. Poses stay invalid until the runtime actually delivers trackers
+	// (VD body tracking / real hardware), which consumers handle gracefully.
+	if (input && sessionState == XR_SESSION_STATE_FOCUSED && bodyTrackers.empty()
+	    && xr_htcxViveTrackers && oovr_global_configuration.BodyTrackersEnabled()
+	    && input->AreActionsLoaded()) {
+		vr::TrackedDeviceIndex_t nextIndex = 3;
+		for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
+			XrSpace space = XR_NULL_HANDLE;
+			input->GetTrackerSpace(i, space);
+			if (space == XR_NULL_HANDLE)
+				continue;
+			bodyTrackers.push_back(std::make_unique<XrGenericTracker>(i, nextIndex));
+			input->RegisterBodyTrackerDevice(nextIndex, i); // lets TriggerHapticPulse reach this tracker
+			OOVR_LOGF("Body trackers: device %u = %s (%s)", nextIndex,
+			    OCU_TRACKER_ROLES[i].iniName, OCU_TRACKER_ROLES[i].serial);
+			nextIndex++;
+		}
+		if (!bodyTrackers.empty())
+			OOVR_LOGF("Body trackers: exposing %d generic trackers (devices 3-%u)",
+			    (int)bodyTrackers.size(), nextIndex - 1);
+	}
+
+	// Network trackers (VRChat-style OSC: SlimeVR/Standable/phone apps): these
+	// need no OpenXR extension at all, only an open UDP port. Created after
+	// the HTCX block above so the body trackers' device indices are final.
+	// One-shot: a failed bind logs once and stays off for the session.
+	if (input && sessionState == XR_SESSION_STATE_FOCUSED && !networkTrackersAttempted
+	    && oovr_global_configuration.NetworkTrackersEnabled() && input->AreActionsLoaded()) {
+		networkTrackersAttempted = true;
+		int port = oovr_global_configuration.NetworkTrackerPort();
+		if (NetworkTrackerReceiver::Instance().Start(port)) {
+			vr::TrackedDeviceIndex_t nextIndex = 3 + (vr::TrackedDeviceIndex_t)bodyTrackers.size();
+			for (int i = 0; i < NetworkTrackerReceiver::MAX_TRACKERS; i++, nextIndex++)
+				networkTrackers.push_back(std::make_unique<XrNetworkTracker>(i, nextIndex));
+			OOVR_LOGF("Network trackers: listening on UDP %d, exposing %d trackers (devices %u-%u)",
+			    port, NetworkTrackerReceiver::MAX_TRACKERS,
+			    (unsigned)(3 + bodyTrackers.size()), (unsigned)(nextIndex - 1));
+		} else {
+			OOVR_LOGF("Network trackers: could not open UDP port %d — disabled for this session", port);
+		}
+	}
+
+	// Keep the sender->playspace alignment fresh (EMA of real HMD vs the
+	// head position the sender reports; no-op if it never reports one).
+	if (!networkTrackers.empty() && hmd) {
+		vr::TrackedDevicePose_t hp;
+		hmd->GetPose(vr::TrackingUniverseStanding, &hp, ETrackingStateType::TrackingStateType_Now);
+		if (hp.bPoseIsValid) {
+			float p[3] = {
+				hp.mDeviceToAbsoluteTracking.m[0][3],
+				hp.mDeviceToAbsoluteTracking.m[1][3],
+				hp.mDeviceToAbsoluteTracking.m[2][3],
+			};
+			NetworkTrackerReceiver::Instance().UpdateAlignment(p);
 		}
 	}
 	// Poll for OpenXR events

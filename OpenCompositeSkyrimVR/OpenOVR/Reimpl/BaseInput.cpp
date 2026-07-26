@@ -1,4 +1,5 @@
 #include "generated/interfaces/vrtypes.h"
+#include "Misc/BodyTrackerRoles.h"
 #include "logging.h"
 #include "openxr/openxr.h"
 #include "stdafx.h"
@@ -732,6 +733,9 @@ void BaseInput::BindInputsForSession()
 	for (const std::unique_ptr<ActionSet>& as : actionSets.GetItems()) {
 		sets.push_back(as->xr);
 	}
+
+	// Body trackers ride in the legacy set — create + suggest before attach
+	CreateBodyTrackerActions();
 
 	sets.push_back(legacyInputsSet);
 
@@ -2686,6 +2690,148 @@ int BaseInput::DeviceIndexToHandId(vr::TrackedDeviceIndex_t idx)
 	default:
 		return -1;
 	}
+}
+
+void BaseInput::CreateBodyTrackerActions()
+{
+	if (!xr_htcxViveTrackers || !oovr_global_configuration.BodyTrackersEnabled())
+		return;
+
+	// Parse the enabled role list: "waist,left_foot,right_foot" (default) or "all"
+	const std::string& roleList = oovr_global_configuration.BodyTrackerRoles();
+	bool all = (roleList == "all");
+
+	std::vector<XrActionSuggestedBinding> bindings;
+	std::vector<XrActionSuggestedBinding> hapticBindings;
+	for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
+		if (bodyTrackerActions[i] != XR_NULL_HANDLE)
+			continue; // already created
+
+		if (!all) {
+			// Match iniName as a whole item in the comma list
+			std::string needle = OCU_TRACKER_ROLES[i].iniName;
+			std::string padded = "," + roleList + ",";
+			if (padded.find("," + needle + ",") == std::string::npos)
+				continue;
+		}
+
+		XrActionCreateInfo info = { XR_TYPE_ACTION_CREATE_INFO };
+		info.actionType = XR_ACTION_TYPE_POSE_INPUT;
+		strcpy_arr(info.actionName, OCU_TRACKER_ROLES[i].actionName);
+		strcpy_arr(info.localizedActionName, OCU_TRACKER_ROLES[i].localizedName);
+		OOVR_FAILED_XR_ABORT(xrCreateAction(legacyInputsSet, &info, &bodyTrackerActions[i]));
+
+		XrPath path;
+		OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, OCU_TRACKER_ROLES[i].xrPath, &path));
+		bindings.push_back({ bodyTrackerActions[i], path });
+
+		XrActionSpaceCreateInfo spaceInfo = { XR_TYPE_ACTION_SPACE_CREATE_INFO };
+		spaceInfo.action = bodyTrackerActions[i];
+		spaceInfo.poseInActionSpace.orientation.w = 1.0f;
+		OOVR_FAILED_XR_ABORT(xrCreateActionSpace(xr_session.get(), &spaceInfo, &bodyTrackerSpaces[i]));
+
+		// Haptic output for the same role (Vive tracker pogo pin, wearables
+		// bridged as trackers). Role path is ".../input/grip/pose"; the
+		// haptic lives at ".../output/haptic" on the same user path.
+		XrActionCreateInfo hinfo = { XR_TYPE_ACTION_CREATE_INFO };
+		hinfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+		std::string hapticName = std::string(OCU_TRACKER_ROLES[i].actionName) + "-haptic";
+		std::string hapticLocalized = std::string(OCU_TRACKER_ROLES[i].localizedName) + " Haptic";
+		strcpy_arr(hinfo.actionName, hapticName.c_str());
+		strcpy_arr(hinfo.localizedActionName, hapticLocalized.c_str());
+		OOVR_FAILED_XR_ABORT(xrCreateAction(legacyInputsSet, &hinfo, &bodyTrackerHaptics[i]));
+
+		std::string rolePath = OCU_TRACKER_ROLES[i].xrPath;
+		size_t inputPos = rolePath.find("/input/");
+		if (inputPos != std::string::npos) {
+			std::string hapticPath = rolePath.substr(0, inputPos) + "/output/haptic";
+			XrPath hpath;
+			OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, hapticPath.c_str(), &hpath));
+			hapticBindings.push_back({ bodyTrackerHaptics[i], hpath });
+		}
+	}
+
+	if (bindings.empty())
+		return;
+
+	XrPath profilePath;
+	OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, "/interaction_profiles/htc/vive_tracker_htcx", &profilePath));
+
+	// All bindings for a profile must go in ONE suggestion call (a second call
+	// replaces the first), so poses and haptics are suggested together. Some
+	// runtimes may accept the pose paths but reject output/haptic — retry
+	// pose-only before giving up entirely.
+	std::vector<XrActionSuggestedBinding> combined = bindings;
+	combined.insert(combined.end(), hapticBindings.begin(), hapticBindings.end());
+
+	XrInteractionProfileSuggestedBinding suggested = { XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
+	suggested.interactionProfile = profilePath;
+	suggested.suggestedBindings = combined.data();
+	suggested.countSuggestedBindings = (uint32_t)combined.size();
+	XrResult res = xrSuggestInteractionProfileBindings(xr_instance, &suggested);
+
+	bool hapticsLive = !hapticBindings.empty();
+	if (XR_FAILED(res) && !hapticBindings.empty()) {
+		OOVR_LOGF("Body trackers: suggestion with haptics failed (%d), retrying pose-only", res);
+		for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
+			if (bodyTrackerHaptics[i] != XR_NULL_HANDLE) {
+				xrDestroyAction(bodyTrackerHaptics[i]);
+				bodyTrackerHaptics[i] = XR_NULL_HANDLE;
+			}
+		}
+		hapticsLive = false;
+		suggested.suggestedBindings = bindings.data();
+		suggested.countSuggestedBindings = (uint32_t)bindings.size();
+		res = xrSuggestInteractionProfileBindings(xr_instance, &suggested);
+	}
+
+	if (XR_FAILED(res)) {
+		// Non-fatal: runtime advertised HTCX but rejected the profile — trackers stay dead
+		OOVR_LOGF("Body trackers: xrSuggestInteractionProfileBindings failed (%d), trackers disabled", res);
+		for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
+			bodyTrackerSpaces[i] = XR_NULL_HANDLE;
+		}
+		return;
+	}
+
+	OOVR_LOGF("Body trackers: created %d tracker pose actions (roles: %s, haptics: %s)",
+	    (int)bindings.size(), roleList.c_str(), hapticsLive ? "yes" : "no");
+}
+
+void BaseInput::GetTrackerSpace(int role, XrSpace& space)
+{
+	space = XR_NULL_HANDLE;
+	if (role < 0 || role >= OCU_TRACKER_ROLE_COUNT)
+		return;
+	space = bodyTrackerSpaces[role];
+}
+
+void BaseInput::RegisterBodyTrackerDevice(vr::TrackedDeviceIndex_t deviceIndex, int roleIndex)
+{
+	if (roleIndex < 0 || roleIndex >= OCU_TRACKER_ROLE_COUNT)
+		return;
+	bodyTrackerDeviceRoles[deviceIndex] = roleIndex;
+}
+
+void BaseInput::TriggerBodyTrackerHapticPulse(vr::TrackedDeviceIndex_t deviceIndex, uint64_t durationNanos)
+{
+	auto it = bodyTrackerDeviceRoles.find(deviceIndex);
+	if (it == bodyTrackerDeviceRoles.end())
+		return;
+	XrAction action = bodyTrackerHaptics[it->second];
+	if (action == XR_NULL_HANDLE)
+		return; // runtime rejected haptic bindings, or role has none
+
+	XrHapticActionInfo info = { XR_TYPE_HAPTIC_ACTION_INFO };
+	info.action = action;
+
+	XrHapticVibration vibration = { XR_TYPE_HAPTIC_VIBRATION };
+	vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+	vibration.duration = durationNanos;
+	vibration.amplitude = oovr_global_configuration.HapticStrength();
+
+	// Haptic failure must never kill the game (abort = hidden message box = perceived freeze)
+	OOVR_FAILED_XR_SOFT_ABORT(xrApplyHapticFeedback(xr_session.get(), &info, (XrHapticBaseHeader*)&vibration));
 }
 
 void BaseInput::GetHandSpace(vr::TrackedDeviceIndex_t index, XrSpace& space, bool aimPose)

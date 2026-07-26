@@ -7,7 +7,9 @@
 #include "XrDriverPrivate.h"
 
 #include "XrController.h"
+#include "XrGenericTracker.h"
 #include "XrHMD.h"
+#include "XrNetworkTracker.h"
 
 #include <memory>
 
@@ -57,6 +59,9 @@ private:
 	std::unique_ptr<XrHMD> hmd = std::make_unique<XrHMD>();
 	std::unique_ptr<XrController> hand_left;
 	std::unique_ptr<XrController> hand_right;
+	std::vector<std::unique_ptr<XrGenericTracker>> bodyTrackers; // ini-enabled roles, devices 3+
+	std::vector<std::unique_ptr<XrNetworkTracker>> networkTrackers; // OSC-fed, devices after bodyTrackers
+	bool networkTrackersAttempted = false; // one-shot: don't retry a failed UDP bind every pump
 
 	void CheckOrInitCompositors(const vr::Texture_t* tex);
 	std::unique_ptr<Compositor> compositors[XruEyeCount];
