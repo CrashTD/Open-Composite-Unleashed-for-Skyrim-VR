@@ -1,6 +1,7 @@
 #pragma once
 
 #include "generated/interfaces/vrtypes.h"
+#include <atomic>
 #include <mutex>
 #include <openxr/openxr.h>
 #include <shared_mutex>
@@ -66,6 +67,7 @@ public:
 
 	// Set by XrBackend
 	XrTime nextPredictedFrameTime = 1;
+	std::atomic<XrDuration> nextPredictedFramePeriod{ 0 };
 
 	/**
 	 * The latest time we've observed from the runtime. This will be set before a frame is submitted, so for
@@ -83,7 +85,19 @@ public:
 	 * Returns nextPredictedFrameTime if available, otherwise returns latestTime.
 	 */
 	XrTime GetBestTime();
+
+	/**
+	 * Returns the latest OpenXR predicted display period converted to Hz,
+	 * snapped to the nearest standard panel rate, or 0 if no frame period
+	 * has been observed yet.
+	 */
+	float GetPredictedDisplayFrequencyHz();
 };
+
+// True when XR_HTCX_vive_tracker_interaction was requested and enabled —
+// set during instance creation in DrvOpenXR, consumed by BaseInput/XrBackend
+// to expose body trackers (waist + feet) as OpenVR generic trackers.
+extern bool xr_htcxViveTrackers;
 
 class SessionLock;
 // A wrapper around the XrSession to prevent session destruction while it's being accessed

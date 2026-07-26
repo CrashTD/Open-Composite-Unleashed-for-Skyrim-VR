@@ -604,7 +604,19 @@ float XrHMD::GetFloatTrackedDeviceProperty(vr::ETrackedDeviceProperty prop, vr::
 
 	switch (prop) {
 	case vr::Prop_DisplayFrequency_Float:
-		return 90.0; // TODO use the real value
+		if (xr_gbl) {
+			const float frequencyHz = xr_gbl->GetPredictedDisplayFrequencyHz();
+			if (frequencyHz > 0.0f)
+				return frequencyHz;
+		}
+
+		// Boot-time queries land here (the game and SKSE plugins read device
+		// properties during VR init, before the first xrWaitFrame). Return the
+		// classic 90 instead of 0 so fMaxTime = 1/freq consumers never divide
+		// by zero; the error code still flags it for callers that check.
+		if (pErrorL)
+			*pErrorL = vr::TrackedProp_NotYetAvailable;
+		return 90.0f;
 	case vr::Prop_LensCenterLeftU_Float:
 	case vr::Prop_LensCenterLeftV_Float:
 	case vr::Prop_LensCenterRightU_Float:

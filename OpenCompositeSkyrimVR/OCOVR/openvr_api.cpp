@@ -19,6 +19,10 @@
 #include "Drivers/Backend.h"
 #include "Drivers/DriverManager.h"
 #include "DrvOpenXR.h"
+
+// For the OCU_CombatHaptic export (SKSE plugin -> controller rumble)
+#include "Reimpl/BaseInput.h"
+#include "generated/static_bases.gen.h"
 #ifdef _WIN32
 #include <intrin.h>
 #include <windows.h>
@@ -443,6 +447,52 @@ VR_INTERFACE void VR_CALLTYPE VR_ShutdownInternal()
 #endif
 
 	running = false;
+}
+
+// Combat haptics entry point for the OCU SKSE plugin (OpenCompositeInput).
+// The plugin resolves this via GetProcAddress on openvr_api.dll and reports
+// game combat events; config gating lives here so the Configurator only has
+// to write opencomposite.ini. hand: 0=left 1=right. kind: 0=shield/weapon
+// block, 1=your weapon connected, 2=your fist connected mid-swing, 3=arrow
+// release, 4=spell release (fire-and-forget), 5=concentration stream tick
+// (sent repeatedly while streaming; low amplitude reads as steady rumble).
+// durationMicros is clamped to 400ms.
+extern "C" __declspec(dllexport) void OCU_CombatHaptic(int hand, int kind, unsigned int durationMicros)
+{
+	if (!oovr_global_configuration.Haptics())
+		return;
+	if (kind == 0 && !oovr_global_configuration.CombatHapticShield())
+		return;
+	if ((kind == 1 || kind == 2) && !oovr_global_configuration.CombatHapticWeapon())
+		return;
+	if (kind == 3 && !oovr_global_configuration.CombatHapticBow())
+		return;
+	if ((kind == 4 || kind == 5) && !oovr_global_configuration.CombatHapticMagic())
+		return;
+	if (hand != 0 && hand != 1)
+		return;
+
+	BaseInput* input = GetUnsafeBaseInput();
+	if (!input)
+		return;
+
+	if (durationMicros > 400000)
+		durationMicros = 400000;
+
+	// Slider (0-100) scaled per kind: a block thumps hardest, weapon hits
+	// just under, then spell release, fists, bow snap; the concentration
+	// stream sits lowest so it reads as a hum rather than impacts.
+	int strength = oovr_global_configuration.CombatHapticStrength();
+	if (strength < 0)
+		strength = 0;
+	if (strength > 100)
+		strength = 100;
+	static const float kindScales[6] = { 1.0f, 0.85f, 0.6f, 0.5f, 0.7f, 0.3f };
+	float kindScale = (kind >= 0 && kind < 6) ? kindScales[kind] : 0.6f;
+	float amplitude = (strength / 100.0f) * kindScale;
+
+	// Hands are fixed OpenVR device indices under OCU: left=1, right=2
+	input->TriggerLegacyHapticPulse(hand == 0 ? 1 : 2, (uint64_t)durationMicros * 1000, amplitude);
 }
 
 VR_INTERFACE void* VRClientCoreFactory(const char* pInterfaceName, int* pReturnCode)
