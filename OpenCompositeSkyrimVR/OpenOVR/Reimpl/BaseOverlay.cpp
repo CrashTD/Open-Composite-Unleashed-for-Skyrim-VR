@@ -3085,7 +3085,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				bool hardSuppressLaser = (strcmp(s_lastMenuName, "StatsMenu") == 0)
 				    || (strcmp(s_lastMenuName, "Loading Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Main Menu") == 0)
-				    || (strcmp(s_lastMenuName, "Mist Menu") == 0);
+				    || (strcmp(s_lastMenuName, "Mist Menu") == 0)
+				    || !oovr_global_configuration.MenuLaserEnabled();
 				const bool physicalBookPending = physicalBookMode && !liveSharedPlaneAdopted;
 				const bool suppressLaser = hardSuppressLaser || physicalBookPending;
 
@@ -3119,15 +3120,24 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				}
 
 				// MapMenu is visual-only: never claim or mask its native input.
-				// For flat menus, own the physical trigger whenever a calibrated
-				// controller ray exists, even during a one-frame off-quad transition.
-				// Otherwise Skyrim can see the same trigger that our Scaleform bridge
-				// handles and activate the newly opened row underneath it.
+				// For flat menus, own the physical trigger only while the beam is
+				// ON the quad, plus a short grace window after it leaves. The
+				// grace covers the one-frame off-quad transition where Skyrim
+				// could otherwise see the same trigger our Scaleform bridge
+				// handled and activate the newly opened row underneath it. Off
+				// the quad past the grace, the full legacy menu bindings
+				// (trigger included) belong to the game again.
 				g_menuLaserActive = !suppressLaser && !mapVisualOnly &&
 				    (menuLaser->IsHit(0) || menuLaser->IsHit(1));
+				static ULONGLONG s_lastQuadHitMs[2] = {};
+				constexpr ULONGLONG kTriggerGraceMs = 250;
 				for (int side = 0; side < 2; side++) {
+					if (menuLaser->IsHit(side))
+						s_lastQuadHitMs[side] = GetTickCount64();
+					const bool recentHit = s_lastQuadHitMs[side] != 0
+					    && GetTickCount64() - s_lastQuadHitMs[side] <= kTriggerGraceMs;
 					g_menuLaserConsumesTrigger[side] = !suppressLaser && !mapVisualOnly &&
-					    !kbHit[side] && menuLaser->IsRayValid(side);
+					    !kbHit[side] && menuLaser->IsRayValid(side) && recentHit;
 				}
 
 				// ── In-VR Quad Adjustment (thumbstick click toggles) ──

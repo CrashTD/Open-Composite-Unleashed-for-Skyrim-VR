@@ -215,6 +215,7 @@ namespace OpenCompositeConfigurator
         // Menu laser quad grid toggle: self-saving (writes menu_quad_settings.ini
         // directly, hot-reloaded by the DLL ~1s) — excluded from dirty-tracking.
         private CheckBox _chkShowQuadGrid = null!;
+        private CheckBox _chkMenuLaserEnabled = null!;
         private bool _suppressQuadGridWrite;
         private NumericUpDown _nudRightLaserRotX = null!;
         private NumericUpDown _nudRightLaserRotY = null!;
@@ -1503,6 +1504,12 @@ namespace OpenCompositeConfigurator
                 lblLaserWarn.ForeColor = Color.FromArgb(255, 185, 70);
                 lblLaserWarn.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
                 _pnlAxisAdjust.Controls.Add(lblLaserWarn);
+                ay += 24;
+
+                _chkMenuLaserEnabled = MakeCheckBox(
+                    "Enable menu lasers (uncheck for classic controller-only menus; Save + game restart required)", ax1, ay);
+                _chkMenuLaserEnabled.Checked = true;
+                _pnlAxisAdjust.Controls.Add(_chkMenuLaserEnabled);
                 ay += 24;
 
                 _chkLeftLaserRotation = MakeCheckBox("Left laser", ax1, ay);
@@ -6756,6 +6763,7 @@ namespace OpenCompositeConfigurator
             _chkCombatHapticWeapon.Checked = ParseBool(_ini.Get("", "combatHapticWeapon", "true"));
             _chkCombatHapticBow.Checked = ParseBool(_ini.Get("", "combatHapticBow", "true"));
             _chkCombatHapticMagic.Checked = ParseBool(_ini.Get("", "combatHapticMagic", "true"));
+            _chkMenuLaserEnabled.Checked = ParseBool(_ini.Get("", "menuLaserEnabled", "true"));
             _chkNetTrackersEnabled.Checked = ParseBool(_ini.Get("", "networkTrackersEnabled", "false"));
             _chkCameraLegCalibration.Checked = ParseBool(_ini.Get("", "cameraLegCalibrationEnabled", "true"));
             _chkWalkInPlace.Checked = ParseBool(_ini.Get("", "walkInPlaceEnabled", "false"));
@@ -7072,6 +7080,7 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "supersampleRatio", _nudSuperSample.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "renderCustomHands", _chkRenderHands.Checked ? "true" : "false");
             _ini.Set("", "haptics", _chkHaptics.Checked ? "true" : "false");
+            _ini.Set("", "menuLaserEnabled", _chkMenuLaserEnabled.Checked ? "true" : "false");
             // Always-visible control (both games) — must write unconditionally to match the unconditional read
             _ini.Set("", "hapticStrength", _nudHapticStrength.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "enableHiddenMeshFix", _chkHiddenMesh.Checked ? "true" : "false");

@@ -113,6 +113,7 @@ public:
 	bool NetworkTrackersEnabled() const { return networkTrackersEnabled; }
 	int NetworkTrackerPort() const { return networkTrackerPort; }
 	bool CameraLegCalibrationEnabled() const { return cameraLegCalibrationEnabled; }
+	bool MenuLaserEnabled() const { return menuLaserEnabled; }
 	bool WalkInPlaceEnabled() const { return walkInPlaceEnabled; }
 	float WalkInPlaceSpeed() const { return walkInPlaceSpeed; }
 	const std::string& WalkInPlaceActivation() const { return walkInPlaceActivation; }
@@ -491,6 +492,7 @@ private:
 	bool networkTrackersEnabled = false;
 	int networkTrackerPort = 9000; // the de-facto default OSC tracker port
 	bool cameraLegCalibrationEnabled = false; // dev-only: arm live camera-foot trim controls
+	bool menuLaserEnabled = true; // laser menu pointing; false = classic gamepad-only menus
 
 	// Walk-in-place locomotion driven from the body-tracker feed.
 	bool walkInPlaceEnabled = false;

@@ -37,6 +37,7 @@ namespace OpenCompositeConfigurator
             ["renderCustomHands"] = "general",
             ["handColour"] = "general",
             ["haptics"] = "general",
+            ["menuLaserEnabled"] = "general",
             ["hapticStrength"] = "general",
             ["enableLayers"] = "general",
             ["dx10Mode"] = "general",

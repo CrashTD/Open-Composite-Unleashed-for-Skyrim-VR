@@ -340,6 +340,7 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(bool, networkTrackersEnabled);
 		CFGOPT(int, networkTrackerPort);
 		CFGOPT(bool, cameraLegCalibrationEnabled);
+		CFGOPT(bool, menuLaserEnabled);
 		CFGOPT(bool, walkInPlaceEnabled);
 		CFGOPT(float, walkInPlaceSpeed);
 		CFGOPT(string, walkInPlaceActivation);
