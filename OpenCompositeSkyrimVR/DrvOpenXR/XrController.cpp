@@ -3,6 +3,7 @@
 // HACK: grab the pose from BaseInput
 #include "../OpenOVR/Misc/xrmoreutils.h"
 #include "../OpenOVR/Misc/Config.h"
+#include "../OpenOVR/Misc/CameraLegCalibration.h"
 #include "../OpenOVR/Reimpl/BaseInput.h"
 #include "generated/static_bases.gen.h"
 
@@ -25,6 +26,8 @@ static glm::mat4 s_rmAdjust(1.0f); // device-space trim, right-hand convention
 
 static void RmAdjustTick(const glm::mat3& rNow)
 {
+	if (CameraLegCalibration::CapturesInput())
+		return;
 	BaseInput* input = GetUnsafeBaseInput();
 	if (!input)
 		return;

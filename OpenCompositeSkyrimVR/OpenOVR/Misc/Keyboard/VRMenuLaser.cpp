@@ -61,8 +61,8 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 {
 	dev->GetImmediateContext(&ctx);
 
-	// Create beam swapchains — tapered VD-style beam (2026-07-25), shared
-	// generator with the VR keyboard's laser (BeamTexture.h).
+	// Create both color variants up front so clicking never stalls a VR frame
+	// on texture creation/upload. State 0 is warm white; state 1 is blue.
 	for (int i = 0; i < 2; i++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
@@ -74,53 +74,57 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		sci.arraySize = 1;
 		sci.mipCount = 1;
 
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &beamChain[i]));
+		for (int clicked = 0; clicked < 2; clicked++) {
+			OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &beamChain[i][clicked]));
 
-		uint32_t imgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[i], 0, &imgCount, nullptr));
-		std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[i], imgCount, &imgCount,
-		    (XrSwapchainImageBaseHeader*)imgs.data()));
+			uint32_t imgCount = 0;
+			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[i][clicked], 0, &imgCount, nullptr));
+			std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[i][clicked], imgCount, &imgCount,
+			    (XrSwapchainImageBaseHeader*)imgs.data()));
 
-		// Warm white beam — RGB(255,240,220), tapered + tip-faded
-		std::vector<uint32_t> colorPixels;
-		beamtex::Fill(colorPixels, 255, 240, 220, 200);
+			std::vector<uint32_t> colorPixels;
+			if (clicked)
+				beamtex::Fill(colorPixels, 55, 145, 255, 220); // electric blue click
+			else
+				beamtex::Fill(colorPixels, 255, 240, 220, 200); // warm white idle
 
-		D3D11_TEXTURE2D_DESC td = {};
-		td.Width = beamtex::kW;
-		td.Height = beamtex::kH;
-		td.MipLevels = 1;
-		td.ArraySize = 1;
-		td.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		td.SampleDesc = { 1, 0 };
-		td.Usage = D3D11_USAGE_DEFAULT;
+			D3D11_TEXTURE2D_DESC td = {};
+			td.Width = beamtex::kW;
+			td.Height = beamtex::kH;
+			td.MipLevels = 1;
+			td.ArraySize = 1;
+			td.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+			td.SampleDesc = { 1, 0 };
+			td.Usage = D3D11_USAGE_DEFAULT;
 
-		D3D11_SUBRESOURCE_DATA init = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
-		CComPtr<ID3D11Texture2D> tex;
-		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
+			D3D11_SUBRESOURCE_DATA init = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
+			CComPtr<ID3D11Texture2D> tex;
+			OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
 
-		XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-		uint32_t idx = 0;
-		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(beamChain[i], &acq, &idx));
-		XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-		wait.timeout = 500000000;
-		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(beamChain[i], &wait));
-		ctx->CopyResource(imgs[idx].texture, tex);
-		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(beamChain[i], &rel));
+			XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+			uint32_t idx = 0;
+			OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(beamChain[i][clicked], &acq, &idx));
+			XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+			wait.timeout = 500000000;
+			OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(beamChain[i][clicked], &wait));
+			ctx->CopyResource(imgs[idx].texture, tex);
+			XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+			OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(beamChain[i][clicked], &rel));
+		}
 
 		memset(&beamLayer[i], 0, sizeof(beamLayer[i]));
 		beamLayer[i].type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		beamLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		beamLayer[i].space = xr_gbl->floorSpace;
 		beamLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		beamLayer[i].subImage.swapchain = beamChain[i];
+		beamLayer[i].subImage.swapchain = beamChain[i][0];
 		beamLayer[i].subImage.imageRect.offset = { 0, 0 };
 		beamLayer[i].subImage.imageRect.extent = { beamtex::kW, beamtex::kH };
 		beamLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	// Create cursor dot swapchains — same color, full alpha, 8x8 pixels
+	// Create matching normal/clicked cursor dots.
 	for (int i = 0; i < 2; i++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
@@ -132,55 +136,57 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		sci.arraySize = 1;
 		sci.mipCount = 1;
 
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &dotChain[i]));
+		for (int clicked = 0; clicked < 2; clicked++) {
+			OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &dotChain[i][clicked]));
 
-		uint32_t imgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[i], 0, &imgCount, nullptr));
-		std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[i], imgCount, &imgCount,
-		    (XrSwapchainImageBaseHeader*)imgs.data()));
+			uint32_t imgCount = 0;
+			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[i][clicked], 0, &imgCount, nullptr));
+			std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[i][clicked], imgCount, &imgCount,
+			    (XrSwapchainImageBaseHeader*)imgs.data()));
 
-		// Warm white dot — full alpha for visibility
-		uint8_t cr = 255, cg = 240, cb = 220, ca = 255;
-		uint32_t packed = cr | (cg << 8) | (cb << 16) | (ca << 24);
-		uint32_t dotPixels[64];
-		// Create a circle mask in the 8x8 texture
-		for (int py = 0; py < 8; py++) {
-			for (int px = 0; px < 8; px++) {
-				float dx = px - 3.5f, dy = py - 3.5f;
-				dotPixels[py * 8 + px] = (dx * dx + dy * dy <= 12.25f) ? packed : 0;
+			uint8_t cr = clicked ? 55 : 255;
+			uint8_t cg = clicked ? 145 : 240;
+			uint8_t cb = clicked ? 255 : 220;
+			uint32_t packed = cr | (cg << 8) | (cb << 16) | (255u << 24);
+			uint32_t dotPixels[64];
+			for (int py = 0; py < 8; py++) {
+				for (int px = 0; px < 8; px++) {
+					float dx = px - 3.5f, dy = py - 3.5f;
+					dotPixels[py * 8 + px] = (dx * dx + dy * dy <= 12.25f) ? packed : 0;
+				}
 			}
+
+			D3D11_TEXTURE2D_DESC td = {};
+			td.Width = 8;
+			td.Height = 8;
+			td.MipLevels = 1;
+			td.ArraySize = 1;
+			td.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+			td.SampleDesc = { 1, 0 };
+			td.Usage = D3D11_USAGE_DEFAULT;
+
+			D3D11_SUBRESOURCE_DATA init = { dotPixels, sizeof(uint32_t) * 8, sizeof(uint32_t) * 64 };
+			CComPtr<ID3D11Texture2D> tex;
+			OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
+
+			XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+			uint32_t idx = 0;
+			OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(dotChain[i][clicked], &acq, &idx));
+			XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+			wait.timeout = 500000000;
+			OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(dotChain[i][clicked], &wait));
+			ctx->CopyResource(imgs[idx].texture, tex);
+			XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+			OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(dotChain[i][clicked], &rel));
 		}
-
-		D3D11_TEXTURE2D_DESC td = {};
-		td.Width = 8;
-		td.Height = 8;
-		td.MipLevels = 1;
-		td.ArraySize = 1;
-		td.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		td.SampleDesc = { 1, 0 };
-		td.Usage = D3D11_USAGE_DEFAULT;
-
-		D3D11_SUBRESOURCE_DATA init = { dotPixels, sizeof(uint32_t) * 8, sizeof(uint32_t) * 64 };
-		CComPtr<ID3D11Texture2D> tex;
-		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
-
-		XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-		uint32_t idx = 0;
-		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(dotChain[i], &acq, &idx));
-		XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-		wait.timeout = 500000000;
-		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(dotChain[i], &wait));
-		ctx->CopyResource(imgs[idx].texture, tex);
-		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(dotChain[i], &rel));
 
 		memset(&dotLayer[i], 0, sizeof(dotLayer[i]));
 		dotLayer[i].type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		dotLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		dotLayer[i].space = xr_gbl->floorSpace;
 		dotLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		dotLayer[i].subImage.swapchain = dotChain[i];
+		dotLayer[i].subImage.swapchain = dotChain[i][0];
 		dotLayer[i].subImage.imageRect.offset = { 0, 0 };
 		dotLayer[i].subImage.imageRect.extent = { 8, 8 };
 		dotLayer[i].subImage.imageArrayIndex = 0;
@@ -226,10 +232,12 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 VRMenuLaser::~VRMenuLaser()
 {
 	for (int i = 0; i < 2; i++) {
-		if (beamChain[i] != XR_NULL_HANDLE)
-			xrDestroySwapchain(beamChain[i]);
-		if (dotChain[i] != XR_NULL_HANDLE)
-			xrDestroySwapchain(dotChain[i]);
+		for (int state = 0; state < 2; state++) {
+			if (beamChain[i][state] != XR_NULL_HANDLE)
+				xrDestroySwapchain(beamChain[i][state]);
+			if (dotChain[i][state] != XR_NULL_HANDLE)
+				xrDestroySwapchain(dotChain[i][state]);
+		}
 	}
 	if (debugQuadChain != XR_NULL_HANDLE)
 		xrDestroySwapchain(debugQuadChain);
@@ -526,8 +534,28 @@ void VRMenuLaser::UpdateDot(int side, const XrVector3f& hitPoint)
 		hitPoint.z + planeNormal.z * 0.001f
 	};
 	dotLayer[side].pose.orientation = menuPose.orientation;
-	dotLayer[side].size.width = 0.012f;  // 12mm dot
-	dotLayer[side].size.height = 0.012f;
+	// The map is visually busy and farther away than flat inventory panels.
+	// Give its endpoint enough size to remain obvious without obscuring icons.
+	float dotSize = mapVisualMode ? 0.018f : 0.012f;
+	dotLayer[side].size.width = dotSize;
+	dotLayer[side].size.height = dotSize;
+}
+
+void VRMenuLaser::UpdateWorldDot(int side, const XrVector3f& hitPoint,
+    const XrQuaternionf& headOrientation, const XrVector3f& rayDir)
+{
+	// Pull the marker 3mm toward the controller so it cannot disappear inside
+	// the collision surface. Matching the HMD orientation makes the circular
+	// quad face the viewer anywhere in the full 360-degree scene.
+	dotLayer[side].pose.position = {
+		hitPoint.x - rayDir.x * 0.003f,
+		hitPoint.y - rayDir.y * 0.003f,
+		hitPoint.z - rayDir.z * 0.003f
+	};
+	dotLayer[side].pose.orientation = headOrientation;
+	float dotSize = mapVisualMode ? 0.018f : 0.015f;
+	dotLayer[side].size.width = dotSize;
+	dotLayer[side].size.height = dotSize;
 }
 
 const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
@@ -537,6 +565,16 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 
 	if (!menuValid)
 		return activeLayers;
+
+	// Use the exact reference space selected by the game for its projection
+	// layer. The exported RoomNode-local menu mesh, controller rays, dot, beam,
+	// and debug quad must all be expressed in this same space.
+	XrSpace appSpace = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
+	debugQuadLayer.space = appSpace;
+	for (int side = 0; side < 2; ++side) {
+		beamLayer[side].space = appSpace;
+		dotLayer[side].space = appSpace;
+	}
 
 	// Debug quad — show the menu hit area as a semi-transparent overlay
 	if (debugQuadChain != XR_NULL_HANDLE && showDebugQuad) {
@@ -548,7 +586,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 
 	// Get head position for beam billboard orientation
 	XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
-	xrLocateSpace(xr_gbl->viewSpace, xr_gbl->floorSpace, predictedTime, &headLoc);
+	xrLocateSpace(xr_gbl->viewSpace, appSpace, predictedTime, &headLoc);
 	XrVector3f headPos = headLoc.pose.position;
 
 	// Get input system for controller poses
@@ -571,6 +609,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 		xBtnLast[side] = xBtnState[side];
 		appMenuLast[side] = appMenuState[side];
 		hitActive[side] = false;
+		rayValid[side] = false;
 
 		// Skip this hand if keyboard has it
 		if (keyboardHitSide[side])
@@ -583,48 +622,98 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 			continue;
 
 		XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
-		XrResult result = xrLocateSpace(aimSpace, xr_gbl->floorSpace, predictedTime, &location);
+		XrResult result = xrLocateSpace(aimSpace, appSpace, predictedTime, &location);
 		if (XR_FAILED(result) || !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) || !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
 			continue;
 
 		XrVector3f rayOrigin = location.pose.position;
+		float originDown = oovr_laser_calibration::OriginDown(side);
+		if (originDown != 0.0f) {
+			XrVector3f downWorld;
+			rotate_vector_by_quaternion({ 0.0f, -1.0f, 0.0f }, location.pose.orientation, downWorld);
+			rayOrigin.x += downWorld.x * originDown;
+			rayOrigin.y += downWorld.y * originDown;
+			rayOrigin.z += downWorld.z * originDown;
+		}
 		XrVector3f fwd = oovr_laser_calibration::LocalForward(side);
 		XrVector3f rayDir;
 		rotate_vector_by_quaternion(fwd, location.pose.orientation, rayDir);
+		rayValid[side] = true;
 
 		// Store ray data for calibration/diagnostics
 		lastRayOrigin[side] = rayOrigin;
 		lastRayDir[side] = rayDir;
 
-		// Ray-plane intersection for hit detection and dot placement
-		float u, v, t;
-		bool hit = RayIntersectQuad(rayOrigin, rayDir, u, v, t);
-
-		if (hit) {
-			lastHitT[side] = t;
-			hitActive[side] = true;
-			hitU[side] = u;
-			// Flip V so 0=top, 1=bottom (Scaleform convention: 0,0 is top-left)
-			hitV[side] = 1.0f - v;
-
-			if (renderHand[side]) {
-				XrVector3f hitPoint = {
+		// Flat menus intersect the exported Scaleform quad. MapMenu instead uses
+		// Skyrim's native depth-resolved endpoint, which already follows terrain
+		// relief and floating icons.
+		float u = 0.0f, v = 0.0f, t = -1.0f;
+		bool hit = false;
+		bool visualSurfaceHit = false;
+		XrVector3f hitPoint = {};
+		if (mapVisualMode) {
+			if (mapVisualHitValid) {
+				XrVector3f toHit = {
+					mapVisualHitPoint.x - rayOrigin.x,
+					mapVisualHitPoint.y - rayOrigin.y,
+					mapVisualHitPoint.z - rayOrigin.z
+				};
+				t = sqrtf(toHit.x * toHit.x + toHit.y * toHit.y + toHit.z * toHit.z);
+				if (std::isfinite(t) && t > 0.02f && t < 5.0f) {
+					rayDir = { toHit.x / t, toHit.y / t, toHit.z / t };
+					hitPoint = mapVisualHitPoint;
+					hit = true;
+					visualSurfaceHit = true;
+				}
+			}
+		} else {
+			hit = RayIntersectQuad(rayOrigin, rayDir, u, v, t);
+			visualSurfaceHit = hit;
+			if (hit) {
+				hitPoint = {
 					rayOrigin.x + t * rayDir.x,
 					rayOrigin.y + t * rayDir.y,
 					rayOrigin.z + t * rayDir.z
 				};
-				UpdateDot(side, hitPoint);
-				activeLayers.push_back((XrCompositionLayerBaseHeader*)&dotLayer[side]);
+			}
+		}
+		lastRayDir[side] = rayDir;
+
+		bool drawDot = false;
+		if (visualSurfaceHit) {
+			lastHitT[side] = t;
+			hitActive[side] = true;
+			if (!mapVisualMode) {
+				hitU[side] = u;
+				// Flip V so 0=top, 1=bottom (Scaleform convention: 0,0 is top-left)
+				hitV[side] = 1.0f - v;
+			}
+
+			if (renderHand[side]) {
+				if (mapVisualMode)
+					UpdateWorldDot(side, hitPoint, headLoc.pose.orientation, rayDir);
+				else
+					UpdateDot(side, hitPoint);
+				drawDot = true;
 			}
 		}
 
-		// Beam stops at menu surface when hitting, short hint otherwise.
+		// Flat menus use OCU's beam. MapMenu already renders Skyrim's native
+		// depth-aware red laser, so submit only OCU's endpoint dot there. This
+		// also prevents the no-hit fallback beam from flashing straight upward
+		// while Skyrim is publishing its first map-pointer endpoint.
 		// Hidden hands still track hits/trigger above so they can claim the
 		// pointer, but draw nothing.
 		if (renderHand[side]) {
-			float beamLen = hit ? t : DEFAULT_BEAM;
-			UpdateBeam(side, rayOrigin, rayDir, beamLen, headPos);
-			activeLayers.push_back((XrCompositionLayerBaseHeader*)&beamLayer[side]);
+			if (!mapVisualMode) {
+				float beamLen = visualSurfaceHit ? t : DEFAULT_BEAM;
+				UpdateBeam(side, rayOrigin, rayDir, beamLen, headPos);
+				activeLayers.push_back((XrCompositionLayerBaseHeader*)&beamLayer[side]);
+			}
+			// Submit the dot after the beam so it remains visible on top of the
+			// shaft and Skyrim's busy map art.
+			if (drawDot)
+				activeLayers.push_back((XrCompositionLayerBaseHeader*)&dotLayer[side]);
 		}
 
 		// Track trigger state with hysteresis to prevent bouncing
@@ -633,7 +722,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 			    side == 0 ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
 			if (devIdx != vr::k_unTrackedDeviceIndexInvalid) {
 				vr::VRControllerState_t ctrlState = {};
-				sys->GetControllerState(devIdx, &ctrlState, sizeof(ctrlState));
+				sys->GetUnmaskedControllerState(devIdx, &ctrlState, sizeof(ctrlState));
 				float trigVal = ctrlState.rAxis[1].x;
 				bool btnPressed = (ctrlState.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)) != 0;
 				// Hysteresis: press at 0.7, release at 0.3 (prevents bouncing near threshold)
@@ -659,6 +748,135 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 				appMenuState[side] = appMenu;
 			}
 		}
+
+		// Composition layers are submitted after Update returns, so switching the
+		// selected pre-baked swapchain here affects this same frame.
+		int colorState = triggerState[side] ? 1 : 0;
+		beamLayer[side].subImage.swapchain = beamChain[side][colorState];
+		dotLayer[side].subImage.swapchain = dotChain[side][colorState];
+	}
+
+	return activeLayers;
+}
+
+const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::UpdateWorld(
+    XrTime predictedTime, const bool keyboardHitSide[2],
+    const bool worldHitSide[2], const float worldHitDistanceMeters[2])
+{
+	activeLayers.clear();
+
+	XrSpace appSpace = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
+	for (int side = 0; side < 2; ++side) {
+		beamLayer[side].space = appSpace;
+		dotLayer[side].space = appSpace;
+	}
+
+	XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
+	XrResult headResult = xrLocateSpace(xr_gbl->viewSpace, appSpace, predictedTime, &headLoc);
+	if (XR_FAILED(headResult) ||
+	    !(headLoc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
+	    !(headLoc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+		return activeLayers;
+
+	std::shared_ptr<BaseInput> input = GetBaseInput();
+	if (!input || !input->AreActionsLoaded())
+		return activeLayers;
+	BaseSystem* sys = GetUnsafeBaseSystem();
+	constexpr float kWorldNoHitBeam = 20.0f;
+	constexpr float kMaxWorldHit = 120.0f;
+
+	for (int side = 0; side < 2; ++side) {
+		triggerLast[side] = triggerState[side];
+		thumbstickLast[side] = thumbstickState[side];
+		xBtnLast[side] = xBtnState[side];
+		appMenuLast[side] = appMenuState[side];
+		hitActive[side] = false;
+		rayValid[side] = false;
+
+		// Always sample the unmasked state, even over the keyboard. That prevents
+		// a trigger held while typing from becoming a false fresh world click when
+		// the hand leaves the keyboard surface.
+		if (sys) {
+			vr::TrackedDeviceIndex_t devIdx = sys->GetTrackedDeviceIndexForControllerRole(
+			    side == 0 ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
+			if (devIdx != vr::k_unTrackedDeviceIndexInvalid) {
+				vr::VRControllerState_t ctrlState = {};
+				if (sys->GetUnmaskedControllerState(devIdx, &ctrlState, sizeof(ctrlState))) {
+					float trigVal = ctrlState.rAxis[1].x;
+					bool btnPressed = (ctrlState.ulButtonPressed &
+					    vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)) != 0;
+					if (triggerState[side])
+						triggerState[side] = (trigVal >= 0.3f) || btnPressed;
+					else
+						triggerState[side] = (trigVal >= 0.7f) || btnPressed;
+				}
+			}
+		}
+
+		int colorState = triggerState[side] ? 1 : 0;
+		beamLayer[side].subImage.swapchain = beamChain[side][colorState];
+		dotLayer[side].subImage.swapchain = dotChain[side][colorState];
+
+		if (keyboardHitSide[side])
+			continue;
+
+		XrSpace aimSpace = XR_NULL_HANDLE;
+		input->GetHandSpace((vr::TrackedDeviceIndex_t)(side + 1), aimSpace, true);
+		if (aimSpace == XR_NULL_HANDLE)
+			continue;
+
+		XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
+		XrResult result = xrLocateSpace(aimSpace, appSpace, predictedTime, &location);
+		if (XR_FAILED(result) ||
+		    !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
+		    !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+			continue;
+
+		XrVector3f rayOrigin = location.pose.position;
+		float originDown = oovr_laser_calibration::OriginDown(side);
+		if (originDown != 0.0f) {
+			XrVector3f downWorld;
+			rotate_vector_by_quaternion({ 0.0f, -1.0f, 0.0f },
+			    location.pose.orientation, downWorld);
+			rayOrigin.x += downWorld.x * originDown;
+			rayOrigin.y += downWorld.y * originDown;
+			rayOrigin.z += downWorld.z * originDown;
+		}
+		XrVector3f localForward = oovr_laser_calibration::LocalForward(side);
+		XrVector3f rayDir;
+		rotate_vector_by_quaternion(localForward, location.pose.orientation, rayDir);
+
+		float dirMag = sqrtf(rayDir.x * rayDir.x + rayDir.y * rayDir.y + rayDir.z * rayDir.z);
+		if (!std::isfinite(dirMag) || dirMag < 0.5f)
+			continue;
+		rayDir.x /= dirMag;
+		rayDir.y /= dirMag;
+		rayDir.z /= dirMag;
+
+		rayValid[side] = true;
+		lastRayOrigin[side] = rayOrigin;
+		lastRayDir[side] = rayDir;
+
+		float beamLength = kWorldNoHitBeam;
+		bool hit = worldHitSide[side] &&
+		    std::isfinite(worldHitDistanceMeters[side]) &&
+		    worldHitDistanceMeters[side] > 0.01f &&
+		    worldHitDistanceMeters[side] <= kMaxWorldHit;
+		if (hit) {
+			beamLength = worldHitDistanceMeters[side];
+			lastHitT[side] = beamLength;
+			hitActive[side] = true;
+			XrVector3f hitPoint = {
+				rayOrigin.x + rayDir.x * beamLength,
+				rayOrigin.y + rayDir.y * beamLength,
+				rayOrigin.z + rayDir.z * beamLength
+			};
+			UpdateWorldDot(side, hitPoint, headLoc.pose.orientation, rayDir);
+			activeLayers.push_back((XrCompositionLayerBaseHeader*)&dotLayer[side]);
+		}
+
+		UpdateBeam(side, rayOrigin, rayDir, beamLength, headLoc.pose.position);
+		activeLayers.push_back((XrCompositionLayerBaseHeader*)&beamLayer[side]);
 	}
 
 	return activeLayers;

@@ -5,8 +5,10 @@
 #include <RE/B/BSVirtualKeyboardDevice.h>
 #include <RE/B/BSWin32VirtualKeyboardDevice.h>
 #include <RE/B/BSTEvent.h>
+#include <RE/B/BookMenu.h>         // Physical book/note model + native menu state
 #include <RE/C/ControlMap.h>
 #include <RE/G/GFxEvent.h>
+#include <RE/G/GFxValue.h>
 // [EXPERIMENTAL — DISABLED] These headers were used by the VR laser→Scaleform
 // mouse injection system (WM_OC_LASER handler). That system is disabled because
 // accessing the wrong menu's Scaleform movie (especially StatsMenu during
@@ -21,6 +23,14 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <RE/M/MenuCursor.h>        // Laser cursor pump v2: cursor feedback + visibility (game singleton, NOT Scaleform)
 #include <RE/M/MenuOpenCloseEvent.h>
 #include <RE/N/NiNode.h>            // Laser cursor pump v2: uiNode plane export
+#include <RE/B/BSTriShape.h>        // Actual Scaleform render mesh + model bound
+#include <RE/B/bhkPickData.h>       // Console ref pick: havok ray into the world
+#include <RE/B/bhkWorld.h>          // Console ref pick: world + read lock
+#include <RE/C/Console.h>           // Console ref pick: SetSelectedRef
+#include <RE/C/ConsoleLog.h>        // Console ref pick: print name + FormID
+#include <RE/C/CollisionLayers.h>   // Console ref pick: LOS collision layer
+#include <RE/T/TESHavokUtilities.h> // Console ref pick: collidable -> TESObjectREFR
+#include <RE/T/TESObjectCELL.h>     // Console ref pick: cell -> bhkWorld
 #include <RE/N/NiCamera.h>
 #include <RE/N/NiRTTI.h>
 #include <RE/P/PlayerCamera.h>
@@ -48,8 +58,10 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <RE/T/TESSpellCastEvent.h>      // combat haptics: spell release pulse
 #include <RE/U/UI.h>
 #include <RE/U/UIMessageQueue.h>    // console show/hide via UI queue
+#include <RE/U/UserEvents.h>        // Native PrevPage / NextPage actions
 #include <SKSE/SKSE.h>
 #include <algorithm> // laser cursor pump: std::clamp
+#include <array>
 #include <chrono> // gesture concentration-spell burst pacing
 #include <cstddef>
 #include <fstream>
@@ -59,6 +71,7 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <spdlog/sinks/basic_file_sink.h>
 #include <set>
 #include <string>
+#include <vector>
 #include <mutex>
 
 // Win32 API for WndProc hook (REX::W32 doesn't provide CallWindowProcW)
@@ -75,7 +88,7 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #pragma pack(push, 1)
 struct OCMenuTransform {
 	static constexpr uint32_t MAGIC = 0x54434D4F; // 'OCMT'
-	static constexpr uint32_t VERSION = 2;
+	static constexpr uint32_t VERSION = 5;
 
 	uint32_t magic;           // Must be MAGIC
 	uint32_t version;         // Protocol version
@@ -123,9 +136,59 @@ struct OCMenuTransform {
 	uint8_t  laserShowCursor; // 1 = show the 2D arrow (diagnostic only; default
 	                          // 0 — the laser dot on the quad IS the pointer)
 
-	uint8_t  reserved[15];    // Future use
+	// v3: Skyrim HMD pose in the exact same RoomNode-local metric frame as
+	// uiPlanePos/uiPlaneQuat. The compositor uses this to map the menu plane
+	// into the live OpenXR Stage origin instead of assuming both origins match.
+	uint8_t  roomHmdValid;
+	float    roomHmdPos[3];
+	float    roomHmdQuat[4];
+
+	// v4: Skyrim's native MapMenu pointer already resolves mountains and
+	// floating icons. Export its real endpoint so OCU does not flatten the map.
+	uint8_t  mapPointerValid;
+	float    mapPointerHitPos[3]; // RoomNode-local OpenXR axes, meters
+
+	// v5: physical OpenXR hand that owns the published trigger edge.
+	// 0 = left, 1 = right, 0xFF = unavailable/legacy runtime.
+	uint8_t  laserHand;
+	uint8_t  reserved[1];
 };
 #pragma pack(pop)
+static_assert(sizeof(OCMenuTransform) == 270);
+
+// Console world-space laser bridge. This protocol is deliberately separate
+// from OCMenuTransform so the locked menu quad/cursor calibration cannot be
+// affected by console picking. OC writes controller rays; this plugin writes
+// Havok hit feedback and commits a reference only on that hand's trigger edge.
+#pragma pack(push, 1)
+struct OCConsoleLaserBridge {
+	static constexpr uint32_t MAGIC = 0x524C434F; // 'OCLR'
+	static constexpr uint32_t VERSION = 1;
+
+	uint32_t magic;
+	uint32_t version;
+	uint32_t byteSize;
+
+	uint32_t runtimeSequence;
+	uint32_t frameSequence;
+	uint32_t triggerPressSequence[2];
+	uint8_t  rayValid[2];
+	uint8_t  runtimePad[2];
+	float    rayOriginFromHmd[2][3];
+	float    rayDirection[2][3];
+
+	uint32_t gameSequence;
+	uint32_t hitFormId[2];
+	uint8_t  hitValid[2];
+	uint8_t  gamePad[2];
+	float    hitDistanceMeters[2];
+	uint32_t selectedFormId;
+	uint8_t  reserved[12];
+};
+#pragma pack(pop)
+static_assert(offsetof(OCConsoleLaserBridge, runtimeSequence) % 4 == 0);
+static_assert(offsetof(OCConsoleLaserBridge, gameSequence) % 4 == 0);
+static_assert(sizeof(OCConsoleLaserBridge) == 120);
 
 // =========================================================================
 // Shared memory struct — render target bridge for Open Composite FSR 2/3
@@ -258,6 +321,8 @@ namespace
 	// =========================================================================
 	HANDLE           g_hMapFile = nullptr;
 	OCMenuTransform* g_pTransform = nullptr;
+	HANDLE                  g_hConsoleLaserMap = nullptr;
+	OCConsoleLaserBridge*   g_pConsoleLaser = nullptr;
 
 	// =========================================================================
 	// Shared memory for render target bridge (read by Open Composite for FSR)
@@ -526,7 +591,37 @@ namespace
 		g_pTransform->magic = OCMenuTransform::MAGIC;
 		g_pTransform->version = OCMenuTransform::VERSION;
 		g_pTransform->updateCounter = 0;
+		g_pTransform->laserHand = 0xFF;
 		SKSE::log::info("Shared memory created: Local\\OpenCompositeMenuTransform ({} bytes)", sizeof(OCMenuTransform));
+	}
+
+	void CreateConsoleLaserBridge()
+	{
+		g_hConsoleLaserMap = CreateFileMappingW(
+			INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+			0, sizeof(OCConsoleLaserBridge),
+			L"Local\\OpenCompositeConsoleLaser");
+		if (!g_hConsoleLaserMap) {
+			SKSE::log::error("Console laser bridge: CreateFileMapping failed ({})", GetLastError());
+			return;
+		}
+
+		g_pConsoleLaser = static_cast<OCConsoleLaserBridge*>(
+			MapViewOfFile(g_hConsoleLaserMap, FILE_MAP_ALL_ACCESS, 0, 0,
+				sizeof(OCConsoleLaserBridge)));
+		if (!g_pConsoleLaser) {
+			SKSE::log::error("Console laser bridge: MapViewOfFile failed ({})", GetLastError());
+			CloseHandle(g_hConsoleLaserMap);
+			g_hConsoleLaserMap = nullptr;
+			return;
+		}
+
+		memset(g_pConsoleLaser, 0, sizeof(OCConsoleLaserBridge));
+		g_pConsoleLaser->magic = OCConsoleLaserBridge::MAGIC;
+		g_pConsoleLaser->version = OCConsoleLaserBridge::VERSION;
+		g_pConsoleLaser->byteSize = sizeof(OCConsoleLaserBridge);
+		SKSE::log::info("Console laser bridge created: Local\\OpenCompositeConsoleLaser ({} bytes)",
+			sizeof(OCConsoleLaserBridge));
 	}
 
 	void CreateRenderTargetBridge()
@@ -890,7 +985,15 @@ namespace
 	// ui->IsMenuOpen from inside the event handler, which deadlocks because
 	// Bethesda's UI holds a lock during MenuOpenCloseEvent dispatch).
 	std::set<std::string> g_activeTrackedMenus;
-	bool g_consoleOpen = false;  // Track console separately for WM_CHAR suppression
+	// MenuOpenCloseEvent is ordered. Keep that order instead of resolving the
+	// active movie from std::set, which made InventoryMenu beat MagicMenu
+	// alphabetically during their hand-off even when Magic was actually on top.
+	std::vector<std::string> g_trackedMenuOpenOrder;
+	std::atomic<bool> g_consoleOpen{ false }; // game-thread event, scheduler read
+	// Incremented for every tracked-menu stack change. The pump is normally
+	// queued only while a menu is active, so it cannot depend on observing an
+	// inactive tick to distinguish closing and reopening the same menu.
+	std::uint32_t g_menuPlaneGeneration = 0;
 	bool g_statsMenuOpen = false; // StatsMenu opens ON TOP of TweenMenu — laser must go dormant
 
 	// Update shared memory with the active menu's 3D transform data
@@ -898,6 +1001,8 @@ namespace
 	{
 		if (!g_pTransform)
 			return;
+
+		++g_menuPlaneGeneration;
 
 		auto ui = RE::UI::GetSingleton();
 		if (!ui)
@@ -907,11 +1012,22 @@ namespace
 		// not keep a quad alive in the Sovngarde constellation view. WASD
 		// blocking (active flag below) still sees the pause, so that behavior
 		// is unchanged.
-		bool anyActive = !g_activeTrackedMenus.empty() && !g_statsMenuOpen;
+		const std::string* topTrackedMenu = nullptr;
+		for (auto it = g_trackedMenuOpenOrder.rbegin(); it != g_trackedMenuOpenOrder.rend(); ++it) {
+			if (g_activeTrackedMenus.count(*it) != 0) {
+				topTrackedMenu = &*it;
+				break;
+			}
+		}
+		bool anyActive = topTrackedMenu != nullptr && !g_statsMenuOpen;
 		bool gamePaused = ui->GameIsPaused();
 
 		// Begin write (odd counter = writing)
 		g_pTransform->updateCounter++;
+		// The previous menu's interaction plane is dead immediately. The pump
+		// republishes after the newly opened render mesh has a coherent pose.
+		g_pTransform->uiPlaneValid = 0;
+		g_pTransform->mapPointerValid = 0;
 
 		// Allow WASD when ANY menu is active OR game is paused (kPausesGame menu like text boxes)
 		g_pTransform->active = anyActive || gamePaused;
@@ -925,23 +1041,9 @@ namespace
 			return;
 		}
 
-		// Write the menu name so the DLL knows which menu is open (for profile
-		// quad selection). This does NOT access any Scaleform data — just copies
-		// the string from our tracked set.
-		// Priority: CustomMenu (MCM) > any content menu > TweenMenu
-		const char* menuNameStr;
-		if (g_activeTrackedMenus.count("CustomMenu") > 0)
-			menuNameStr = "CustomMenu";
-		else {
-			menuNameStr = nullptr;
-			for (auto& m : g_activeTrackedMenus) {
-				if (m != "TweenMenu") { menuNameStr = m.c_str(); break; }
-			}
-			if (!menuNameStr)
-				menuNameStr = g_activeTrackedMenus.begin()->c_str();
-		}
-
-		strncpy_s(g_pTransform->menuName, menuNameStr, 63);
+		// Write the actual last-opened tracked menu so geometry and input resolve
+		// against the same top movie. No Scaleform data is touched here.
+		strncpy_s(g_pTransform->menuName, topTrackedMenu->c_str(), 63);
 		g_pTransform->menuName[63] = '\0';
 
 		// [EXPERIMENTAL — DISABLED] Scaleform access for stage dimensions.
@@ -982,10 +1084,15 @@ namespace
 			}
 
 			if (isTracked) {
-				if (a_event->opening)
-					g_activeTrackedMenus.insert(std::string(name));
-				else
-					g_activeTrackedMenus.erase(std::string(name));
+				const std::string menuName(name);
+				if (a_event->opening) {
+					g_activeTrackedMenus.insert(menuName);
+					std::erase(g_trackedMenuOpenOrder, menuName);
+					g_trackedMenuOpenOrder.push_back(menuName);
+				} else {
+					g_activeTrackedMenus.erase(menuName);
+					std::erase(g_trackedMenuOpenOrder, menuName);
+				}
 
 				// Update shared memory whenever tracked menus change
 				UpdateMenuTransform();
@@ -1121,6 +1228,12 @@ namespace
 		}
 	}
 
+	// Column extraction: image of local axis a (0=X,1=Y,2=Z) under rotation
+	inline RE::NiPoint3 MatColumn(const RE::NiMatrix3& r, int a)
+	{
+		return { r.entry[0][a], r.entry[1][a], r.entry[2][a] };
+	}
+
 	// R^T * v for NiMatrix3 (entry[row][col], columns = rotated basis vectors)
 	inline RE::NiPoint3 TransposeMul(const RE::NiMatrix3& r, const RE::NiPoint3& v)
 	{
@@ -1131,53 +1244,206 @@ namespace
 		};
 	}
 
-	// Column extraction: image of local axis a (0=X,1=Y,2=Z) under rotation
-	inline RE::NiPoint3 MatColumn(const RE::NiMatrix3& r, int a)
+	// Export the game's UI plane (uiNode) into shared memory, RoomNode-local,
+	// converted to OpenXR axes in Skyrim's app-selected tracking-origin space.
+	// Returns true if a valid plane was written.
+	// Compose immutable/local scene transforms up to an ancestor. Reading
+	// uiNode.world and RoomNode.world independently can mix two scene-update
+	// frames and manufacture a large transient displacement.
+	bool BuildLocalToAncestor(RE::NiAVObject* object, RE::NiNode* ancestor, RE::NiTransform& out)
 	{
-		return { r.entry[0][a], r.entry[1][a], r.entry[2][a] };
+		if (!object || !ancestor)
+			return false;
+
+		out = RE::NiTransform{};
+		RE::NiAVObject* current = object;
+		for (int depth = 0; current && current != ancestor && depth < 32; ++depth) {
+			out = current->local * out;
+			current = current->parent;
+		}
+		return current == ancestor;
 	}
 
-	// Export the game's UI plane (uiNode) into shared memory, RoomNode-local,
-	// converted to OpenXR floor space. Returns true if a valid plane was written.
-	bool ExportUiPlane(bool logDiagnostics)
+	// Dialogue is loaded from skyVR_dialogue.nif rather than the normal
+	// InWorldUIQuadGeo pointer.  Prefer the named stock mesh, but retain a
+	// scene-graph fallback for replacement NIFs that rename it.
+	RE::BSTriShape* FindLargestVisibleTriShape(RE::NiAVObject* object, int depth = 0)
 	{
+		if (!object || depth > 16)
+			return nullptr;
+
+		RE::BSTriShape* best = nullptr;
+		float bestRadius = -1.0f;
+		if (auto* tri = object->AsTriShape(); tri && !tri->GetAppCulled()) {
+			const float r = tri->GetModelData().modelBound.radius;
+			if (std::isfinite(r) && r > 0.01f) {
+				best = tri;
+				bestRadius = r;
+			}
+		}
+
+		if (auto* node = object->AsNode()) {
+			for (auto& child : node->GetChildren()) {
+				auto* candidate = FindLargestVisibleTriShape(child.get(), depth + 1);
+				if (!candidate)
+					continue;
+				const float r = candidate->GetModelData().modelBound.radius;
+				if (r > bestRadius) {
+					best = candidate;
+					bestRadius = r;
+				}
+			}
+		}
+		return best;
+	}
+
+	bool ExportUiPlane(bool logDiagnostics, bool mapOpen, bool dialogueOpen, bool bookOpen)
+	{
+		auto pending = [logDiagnostics](const char* reason) {
+			if (logDiagnostics)
+				SKSE::log::info("LASER plane pending: {}", reason);
+			return false;
+		};
+
 		auto pc = RE::PlayerCharacter::GetSingleton();
 		if (!pc)
-			return false;
+			return pending("PlayerCharacter unavailable");
 		auto vrData = pc->GetVRNodeData();
 		if (!vrData)
-			return false;
+			return pending("VR node data unavailable");
 
-		RE::NiNode* uiNode = vrData->uiNode.get();
 		RE::NiNode* roomNode = vrData->RoomNode.get();
-		if (!uiNode || !roomNode)
-			return false;
+		if (!roomNode)
+			return pending("RoomNode unavailable");
 
-		const RE::NiTransform& uiW = uiNode->world;
+		// Book Menu is neither the normal Scaleform quad nor DialogueUINode. Its
+		// text is rendered onto a physical 3D book/note model owned by BookMenu.
+		// Use that live model so the ray follows the game's actual reading depth.
+		RE::GPtr<RE::BookMenu> bookMenu;
+		RE::NiAVObject* bookModel = nullptr;
+		bool bookIsNote = false;
+		if (bookOpen) {
+			auto* ui = RE::UI::GetSingleton();
+			if (!ui)
+				return pending("UI unavailable for Book Menu");
+			bookMenu = ui->GetMenu<RE::BookMenu>();
+			if (!bookMenu)
+				return pending("BookMenu unavailable");
+			auto& bookData = bookMenu->GetRuntimeData();
+			if (!bookData.bookInitialized || !bookData.bookModel)
+				return pending("BookMenu physical model is not initialized");
+			bookModel = bookData.bookModel.get();
+			bookIsNote = bookData.isNote;
+		}
+
+		// Dialogue is not rendered on the normal in-world UI quad. Skyrim VR
+		// exposes a dedicated, much closer DialogueUINode; using uiNode here sends
+		// the laser through the choices and into the NPC/world behind them.
+		RE::NiNode* uiNode = bookOpen ? nullptr :
+		    (dialogueOpen ? vrData->DialogueUINode.get() : vrData->uiNode.get());
+		if (!bookOpen && !uiNode)
+			return pending(dialogueOpen ? "DialogueUINode unavailable" : "uiNode unavailable");
+
+		RE::BSTriShape* quadGeo = (dialogueOpen || bookOpen) ? nullptr : vrData->InWorldUIQuadGeo.get();
+		if (dialogueOpen) {
+			if (auto* named = uiNode->GetObjectByName(RE::BSFixedString("skyVR_dialogue")))
+				quadGeo = named->AsTriShape();
+			if (!quadGeo)
+				quadGeo = FindLargestVisibleTriShape(uiNode);
+		}
+		// If a replacement dialogue mesh is not parented beneath RoomNode, its
+		// world transform is still more authoritative than DialogueUINode's
+		// parent basis. Normal menus retain the proven uiNode fallback.
+		RE::NiAVObject* fallbackPlaneObject = bookOpen ? bookModel :
+		    (dialogueOpen && quadGeo ? static_cast<RE::NiAVObject*>(quadGeo) :
+		                               static_cast<RE::NiAVObject*>(uiNode));
+
+		// InWorldUIQuadGeo is not a RoomNode descendant in every menu. Requiring
+		// that parent chain made plane export fail forever and blanked the quad
+		// plus both lasers. uiNode.world is the proven render pose. The caller
+		// samples it only during a short stabilization window, then freezes the
+		// accepted RoomNode-relative plane for the entire menu lifetime. That
+		// avoids both the missing-geometry deadlock and the old head-pose drift.
+		const RE::NiTransform& planeW = fallbackPlaneObject->world;
 		const RE::NiTransform& roomW = roomNode->world;
-		float roomScale = (roomW.scale != 0.0f) ? roomW.scale : 1.0f;
+		if (!std::isfinite(roomW.scale) || fabsf(roomW.scale) < 1e-5f)
+			return pending("RoomNode has invalid scale");
+		if (!std::isfinite(fallbackPlaneObject->worldBound.radius) ||
+		    fallbackPlaneObject->worldBound.radius < 1.0f)
+			return pending("UI plane world bound is not ready");
+		const float roomScale = roomW.scale;
 
 		// Stale-node filter: on the first frame(s) of a menu the uiNode still
 		// carries its previous/unplaced transform far from the playspace.
 		// Exporting that garbage froze the display once (invalid layer pose).
-		RE::NiPoint3 rel = uiNode->worldBound.center - roomW.translate;
+		RE::NiPoint3 rel = fallbackPlaneObject->worldBound.center - roomW.translate;
 		float relDist = sqrtf(rel.x * rel.x + rel.y * rel.y + rel.z * rel.z);
-		if (relDist > 700.0f || uiNode->worldBound.radius < 1.0f)
-			return false;
+		if (!std::isfinite(relDist) || relDist > 700.0f)
+			return pending("uiNode transform is stale or outside the playspace");
 
 		// RoomNode-local pose of the UI plane. Use worldBound.center for the
 		// plane center — the node origin can be an off-center pivot.
-		RE::NiPoint3 centerLocal = TransposeMul(roomW.rotate, rel);
-		centerLocal /= roomScale;
+		// centerLocal came from the actual render mesh's model bound and local
+		// transform chain, not separately updated world transforms.
 
 		// Local rotation = R_room^T * R_ui. The game's uiNode world matrix can
 		// contain a REFLECTION (negative determinant — observed live), so we
 		// only trust two axes and REBUILD an orthonormal right-handed basis
 		// with cross products. A hand-rolled quat from a reflected basis is
 		// non-unit -> XR_ERROR_POSE_INVALID -> frozen display. Never again.
-		RE::NiPoint3 fwdS = TransposeMul(roomW.rotate, MatColumn(uiW.rotate, 1)); // local +Y
-		RE::NiPoint3 upS = TransposeMul(roomW.rotate, MatColumn(uiW.rotate, 2));  // local +Z
-		RE::NiPoint3 normalS = { -fwdS.x, -fwdS.y, -fwdS.z }; // toward viewer
+		RE::NiTransform geoToRoom;
+		const bool coherentGeometry = !bookOpen && quadGeo && BuildLocalToAncestor(quadGeo, roomNode, geoToRoom);
+		RE::NiTransform bookToRoom;
+		const bool coherentBook = bookOpen && BuildLocalToAncestor(bookModel, roomNode, bookToRoom);
+		RE::NiPoint3 centerLocal;
+		RE::NiPoint3 fwdS;
+		RE::NiPoint3 upS;
+		RE::NiPoint3 normalS;
+		float planeRadiusRoom;
+		if (bookOpen) {
+			// Reading assets use local X=right, Y=up, Z=page normal. The model's
+			// live world bound follows Skyrim's VR book/note placement, including
+			// replacement meshes and its configured reading distance.
+			centerLocal = TransposeMul(roomW.rotate, rel);
+			centerLocal /= roomScale;
+			if (coherentBook) {
+				upS = MatColumn(bookToRoom.rotate, 1);
+				normalS = MatColumn(bookToRoom.rotate, 2);
+			} else {
+				upS = TransposeMul(roomW.rotate, MatColumn(planeW.rotate, 1));
+				normalS = TransposeMul(roomW.rotate, MatColumn(planeW.rotate, 2));
+			}
+			planeRadiusRoom = fallbackPlaneObject->worldBound.radius / fabsf(roomScale);
+
+			// Keep the page upright and make its exported +normal face the HMD.
+			// The runtime's final face guard is then a safety net, not a source of
+			// left/right page mirroring.
+			if (upS.z < 0.0f)
+				upS = { -upS.x, -upS.y, -upS.z };
+			if (auto* hmdNode = vrData->UprightHmdNode.get()) {
+				RE::NiPoint3 hmdRel = hmdNode->world.translate - roomW.translate;
+				RE::NiPoint3 hmdLocal = TransposeMul(roomW.rotate, hmdRel);
+				hmdLocal /= roomScale;
+				const RE::NiPoint3 toHmd = hmdLocal - centerLocal;
+				const float facing = normalS.x * toHmd.x + normalS.y * toHmd.y + normalS.z * toHmd.z;
+				if (facing < 0.0f)
+					normalS = { -normalS.x, -normalS.y, -normalS.z };
+			}
+		} else if (coherentGeometry) {
+			const auto& modelBound = quadGeo->GetModelData().modelBound;
+			centerLocal = geoToRoom * modelBound.center;
+			fwdS = MatColumn(geoToRoom.rotate, 1); // local +Y
+			upS = MatColumn(geoToRoom.rotate, 2);  // local +Z
+			normalS = { -fwdS.x, -fwdS.y, -fwdS.z }; // toward viewer
+			planeRadiusRoom = modelBound.radius * fabsf(geoToRoom.scale);
+		} else {
+			centerLocal = TransposeMul(roomW.rotate, rel);
+			centerLocal /= roomScale;
+			fwdS = TransposeMul(roomW.rotate, MatColumn(planeW.rotate, 1));
+			upS = TransposeMul(roomW.rotate, MatColumn(planeW.rotate, 2));
+			normalS = { -fwdS.x, -fwdS.y, -fwdS.z }; // toward viewer
+			planeRadiusRoom = fallbackPlaneObject->worldBound.radius / fabsf(roomScale);
+		}
 
 		auto norm3 = [](RE::NiPoint3& v) -> bool {
 			float m = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -1198,7 +1464,7 @@ namespace
 		if (!norm3(upS))
 			return false;
 
-		// Convert to OpenXR floor space (the axis map is a proper rotation, so
+		// Convert to OpenXR axes (the axis map is a proper rotation, so
 		// the basis stays orthonormal and right-handed).
 		float rightXr[3], upXr[3], normalXr[3], posXr[3], quat[4];
 		MapSkyrimToXr(rightS, rightXr);
@@ -1218,13 +1484,134 @@ namespace
 		for (int i = 0; i < 4; i++)
 			quat[i] /= qn;
 
+		// v3 reference-frame bridge: export Skyrim's upright HMD in the same
+		// RoomNode-local metric frame as the menu plane. OpenXR's Stage origin
+		// is not guaranteed to be RoomNode's origin (recenter and room setup can
+		// translate/rotate it), so the compositor maps plane-relative-to-HMD
+		// instead of treating RoomNode coordinates as Stage coordinates.
+		g_pTransform->roomHmdValid = 0;
+		auto* hmdNode = vrData->UprightHmdNode.get();
+		if (hmdNode) {
+			RE::NiTransform hmdToRoom;
+			const bool coherentHmd = BuildLocalToAncestor(hmdNode, roomNode, hmdToRoom);
+			RE::NiPoint3 hmdPosS;
+			RE::NiPoint3 hmdFwdS;
+			RE::NiPoint3 hmdUpS;
+			if (coherentHmd) {
+				hmdPosS = hmdToRoom.translate;
+				hmdFwdS = MatColumn(hmdToRoom.rotate, 1);
+				hmdUpS = MatColumn(hmdToRoom.rotate, 2);
+			} else {
+				RE::NiPoint3 hmdRel = hmdNode->world.translate - roomW.translate;
+				hmdPosS = TransposeMul(roomW.rotate, hmdRel);
+				hmdPosS /= roomScale;
+				hmdFwdS = TransposeMul(roomW.rotate, MatColumn(hmdNode->world.rotate, 1));
+				hmdUpS = TransposeMul(roomW.rotate, MatColumn(hmdNode->world.rotate, 2));
+			}
+
+			if (norm3(hmdFwdS) && norm3(hmdUpS)) {
+				RE::NiPoint3 hmdBackS = { -hmdFwdS.x, -hmdFwdS.y, -hmdFwdS.z };
+				RE::NiPoint3 hmdRightS = cross3(hmdUpS, hmdBackS);
+				if (norm3(hmdRightS)) {
+					hmdUpS = cross3(hmdBackS, hmdRightS);
+					if (norm3(hmdUpS)) {
+						float hRightXr[3], hUpXr[3], hBackXr[3], hPosXr[3], hQuat[4];
+						MapSkyrimToXr(hmdRightS, hRightXr);
+						MapSkyrimToXr(hmdUpS, hUpXr);
+						MapSkyrimToXr(hmdBackS, hBackXr);
+						MapSkyrimToXr(hmdPosS, hPosXr);
+						for (int i = 0; i < 3; ++i)
+							hPosXr[i] /= kSkyrimUnitsPerMeter;
+						QuatFromBasis(hRightXr, hUpXr, hBackXr, hQuat);
+						float hqn = sqrtf(hQuat[0] * hQuat[0] + hQuat[1] * hQuat[1] + hQuat[2] * hQuat[2] + hQuat[3] * hQuat[3]);
+						if (std::isfinite(hqn) && hqn > 0.5f) {
+							for (int i = 0; i < 3; ++i)
+								g_pTransform->roomHmdPos[i] = hPosXr[i];
+							for (int i = 0; i < 4; ++i)
+								g_pTransform->roomHmdQuat[i] = hQuat[i] / hqn;
+							g_pTransform->roomHmdValid = 1;
+						}
+					}
+				}
+			}
+		}
+
+		// v4 MapMenu endpoint. Skyrim already clips its native UIPointerGeo
+		// against the raised terrain and floating icons. The beam mesh is scaled
+		// from UIPointerNode to that hit; its model-bound center is therefore the
+		// midpoint. Reconstruct the endpoint in one coherent RoomNode-local frame
+		// so OCU can draw its blue beam/dot at the real 3D depth.
+		g_pTransform->mapPointerValid = 0;
+		if (mapOpen) {
+			auto* pointerNode = vrData->UIPointerNode.get();
+			auto* pointerGeo = vrData->UIPointerGeo.get();
+			if (pointerNode && pointerGeo) {
+				const auto& pointerBound = pointerGeo->GetModelData().modelBound;
+				RE::NiPoint3 originLocal{};
+				RE::NiPoint3 middleLocal{};
+				RE::NiTransform pointerToRoom;
+				RE::NiTransform pointerGeoToRoom;
+				const bool coherent =
+				    BuildLocalToAncestor(pointerNode, roomNode, pointerToRoom) &&
+				    BuildLocalToAncestor(pointerGeo, roomNode, pointerGeoToRoom);
+				if (coherent) {
+					originLocal = pointerToRoom.translate;
+					middleLocal = pointerGeoToRoom * pointerBound.center;
+				} else {
+					// UIPointer objects are not RoomNode descendants in every Skyrim VR
+					// scene. Convert their live world poses just like the proven UI-plane
+					// fallback instead of silently leaving mapPointerValid at zero.
+					auto worldToRoomPoint = [&](const RE::NiPoint3& worldPoint) {
+						RE::NiPoint3 local = TransposeMul(roomW.rotate, worldPoint - roomW.translate);
+						local /= roomScale;
+						return local;
+					};
+					originLocal = worldToRoomPoint(pointerNode->world.translate);
+					middleLocal = worldToRoomPoint(pointerGeo->world * pointerBound.center);
+				}
+				const RE::NiPoint3 endpointLocal = {
+				    2.0f * middleLocal.x - originLocal.x,
+				    2.0f * middleLocal.y - originLocal.y,
+				    2.0f * middleLocal.z - originLocal.z
+				};
+				const RE::NiPoint3 beam = endpointLocal - originLocal;
+				const float beamLength = sqrtf(beam.x * beam.x + beam.y * beam.y + beam.z * beam.z);
+				if (std::isfinite(beamLength) && beamLength > 2.0f && beamLength < 700.0f) {
+					float endpointXr[3];
+					MapSkyrimToXr(endpointLocal, endpointXr);
+					for (int i = 0; i < 3; ++i)
+						g_pTransform->mapPointerHitPos[i] = endpointXr[i] / kSkyrimUnitsPerMeter;
+					g_pTransform->mapPointerValid = 1;
+					if (logDiagnostics) {
+						SKSE::log::info("LASER MapMenu native endpoint source={} room({:.3f},{:.3f},{:.3f}) length={:.3f}m",
+						    coherent ? "local-chain" : "world-fallback",
+						    g_pTransform->mapPointerHitPos[0], g_pTransform->mapPointerHitPos[1],
+						    g_pTransform->mapPointerHitPos[2], beamLength / kSkyrimUnitsPerMeter);
+					}
+				} else if (logDiagnostics) {
+					SKSE::log::info("LASER MapMenu endpoint rejected source={} length={}su",
+					    coherent ? "local-chain" : "world-fallback", beamLength);
+				}
+			} else if (logDiagnostics) {
+				SKSE::log::info("LASER MapMenu endpoint pending pointerNode={} pointerGeo={}",
+				    pointerNode != nullptr, pointerGeo != nullptr);
+			}
+		}
+
 		// Plane extents from the node's bounding sphere. The plane geometry
 		// ('In World UI Quad Geometry') is a 16:9 quad (verified live: local
 		// half-extents 1.0 x 0.5625, corner radius 1.1473 — matches
 		// worldBound.radius / world.scale exactly). Do NOT use the cursor
 		// range for aspect: that's the square 2048x2048 render target.
-		constexpr float aspect = 16.0f / 9.0f;
-		float radiusM = (uiNode->worldBound.radius / roomScale) / kSkyrimUnitsPerMeter;
+		// skyVR_dialogue.nif is a square. Treating its bounding sphere as 16:9
+		// shrank the vertical hit region enough that dialogue choices missed the
+		// quad and the renderer fell back to its visibly short 0.5 m beam.
+		// Physical reading models are different again. A stock note is a portrait
+		// sheet (~0.76:1); an open book is two facing pages (~1.5:1). Depth and
+		// overall scale still come from the live model bound, never these ratios.
+		const float aspect = bookOpen ? (bookIsNote ? 0.761f : 1.5f) :
+		    (dialogueOpen ? 1.0f : 16.0f / 9.0f);
+		float radiusM = planeRadiusRoom / kSkyrimUnitsPerMeter;
 		float heightM = 2.0f * radiusM / sqrtf(1.0f + aspect * aspect);
 		float widthM = heightM * aspect;
 
@@ -1237,26 +1624,424 @@ namespace
 		g_pTransform->uiPlaneHeight = heightM;
 
 		if (logDiagnostics) {
-			SKSE::log::info("LASER uiNode world t({:.2f},{:.2f},{:.2f}) bound c({:.2f},{:.2f},{:.2f}) r={:.2f} scale={:.3f}",
-			    uiW.translate.x, uiW.translate.y, uiW.translate.z,
-			    uiNode->worldBound.center.x, uiNode->worldBound.center.y, uiNode->worldBound.center.z,
-			    uiNode->worldBound.radius, uiW.scale);
-			SKSE::log::info("LASER uiNode rot rows [{:.2f},{:.2f},{:.2f}] [{:.2f},{:.2f},{:.2f}] [{:.2f},{:.2f},{:.2f}]",
-			    uiW.rotate.entry[0][0], uiW.rotate.entry[0][1], uiW.rotate.entry[0][2],
-			    uiW.rotate.entry[1][0], uiW.rotate.entry[1][1], uiW.rotate.entry[1][2],
-			    uiW.rotate.entry[2][0], uiW.rotate.entry[2][1], uiW.rotate.entry[2][2]);
-			SKSE::log::info("LASER room t({:.2f},{:.2f},{:.2f}) scale={:.3f}",
-			    roomW.translate.x, roomW.translate.y, roomW.translate.z, roomW.scale);
-			SKSE::log::info("LASER plane XR pos({:.3f},{:.3f},{:.3f}) quat({:.3f},{:.3f},{:.3f},{:.3f}) size {:.3f}x{:.3f}m",
+			const char* planeSource = bookOpen ?
+			    (coherentBook ? (bookIsNote ? "note-model-local" : "book-model-local") :
+			                    (bookIsNote ? "note-model-world" : "book-model-world")) :
+			    (dialogueOpen ? (coherentGeometry ? "dialogue-geometry-local" : "dialogue-geometry-world") :
+			                    (coherentGeometry ? "geometry-local" : "world-fallback"));
+			SKSE::log::info("LASER live-plane source={} world center({:.2f},{:.2f},{:.2f}) r={:.2f} uiFrame={} roomFrame={}",
+			    planeSource,
+			    fallbackPlaneObject->worldBound.center.x, fallbackPlaneObject->worldBound.center.y,
+			    fallbackPlaneObject->worldBound.center.z, fallbackPlaneObject->worldBound.radius,
+			    fallbackPlaneObject->lastUpdatedFrameCounter, roomNode->lastUpdatedFrameCounter);
+			SKSE::log::info("LASER live plane app-space pos({:.3f},{:.3f},{:.3f}) quat({:.3f},{:.3f},{:.3f},{:.3f}) size {:.3f}x{:.3f}m",
 			    posXr[0], posXr[1], posXr[2], quat[0], quat[1], quat[2], quat[3], widthM, heightM);
+			if (g_pTransform->roomHmdValid) {
+				SKSE::log::info("LASER RoomNode HMD pos({:.3f},{:.3f},{:.3f}) quat({:.3f},{:.3f},{:.3f},{:.3f})",
+				    g_pTransform->roomHmdPos[0], g_pTransform->roomHmdPos[1], g_pTransform->roomHmdPos[2],
+				    g_pTransform->roomHmdQuat[0], g_pTransform->roomHmdQuat[1],
+				    g_pTransform->roomHmdQuat[2], g_pTransform->roomHmdQuat[3]);
+			}
 			// First-level children of uiNode — identifies the actual menu geometry
-			for (auto& child : uiNode->GetChildren()) {
-				if (child) {
-					SKSE::log::info("LASER uiNode child '{}' bound r={:.2f} culled={}",
-					    child->name.c_str(), child->worldBound.radius, child->GetAppCulled());
+			if (bookOpen && bookMenu) {
+				auto& bookData = bookMenu->GetRuntimeData();
+				SKSE::log::info("LASER BookMenu isNote={} initialized={} startAnimating={} model='{}' bound r={:.2f}",
+				    bookData.isNote, bookData.bookInitialized, bookData.startAnimating,
+				    bookModel->name.c_str(), bookModel->worldBound.radius);
+				if (auto* textGeo = bookData.pageTextGeo.get()) {
+					SKSE::log::info("LASER BookMenu PageText template '{}' center({:.2f},{:.2f},{:.2f}) r={:.2f} culled={}",
+					    textGeo->name.c_str(), textGeo->worldBound.center.x, textGeo->worldBound.center.y,
+					    textGeo->worldBound.center.z, textGeo->worldBound.radius, textGeo->GetAppCulled());
+				}
+			} else if (uiNode) {
+				for (auto& child : uiNode->GetChildren()) {
+					if (child) {
+						SKSE::log::info("LASER uiNode child '{}' bound r={:.2f} culled={}",
+						    child->name.c_str(), child->worldBound.radius, child->GetAppCulled());
+					}
 				}
 			}
 		}
+		return true;
+	}
+
+	// Route laser page gestures through Skyrim's Book input context. This keeps
+	// the physical page animation, sound, page bounds, and mod hooks in native
+	// code; BookMenu's Scaleform movie has no useful mouse hit targets.
+	bool QueueBookPageAction(bool nextPage)
+	{
+		auto* queue = RE::BSInputEventQueue::GetSingleton();
+		if (!queue)
+			return false;
+
+		const std::string_view actionName = nextPage ? "NextPage" : "PrevPage";
+		RE::BSFixedString action(actionName);
+		if (auto* userEvents = RE::UserEvents::GetSingleton())
+			action = nextPage ? userEvents->nextPage : userEvents->prevPage;
+
+		std::uint32_t key = nextPage ? 0xCDu : 0xCBu; // stock Right / Left arrows
+		if (auto* controls = RE::ControlMap::GetSingleton()) {
+			const auto mapped = controls->GetMappedKey(actionName, RE::INPUT_DEVICE::kKeyboard,
+			    RE::UserEvents::INPUT_CONTEXT_ID::kBook);
+			if (mapped != RE::ControlMap::kInvalid)
+				key = mapped;
+		}
+
+		queue->AddButtonEvent(RE::INPUT_DEVICE::kKeyboard, 0, static_cast<std::int32_t>(key),
+		    1.0f, 0.0f, action);
+		queue->AddButtonEvent(RE::INPUT_DEVICE::kKeyboard, 0, static_cast<std::int32_t>(key),
+		    0.0f, 0.06f, action);
+		SKSE::log::info("LASER BookMenu native action={} key=0x{:X}", actionName, key);
+		return true;
+	}
+
+	// TweenMenu's mouse hit rectangles and visible selection clip disagree in
+	// Skyrim VR: a click over visible Magic can reach Items (and vice versa).
+	// The movie already records the authoritative visible highlight in
+	// Selections_mc._currentframe. Activate that semantic selection directly so
+	// pointer geometry never has to be mirrored or guessed.
+	bool ActivateHighlightedTweenSelection(RE::GFxMovieView& movie)
+	{
+		RE::GFxValue currentFrame;
+		if (movie.GetVariable(&currentFrame,
+		        "_root.TweenMenu_mc.Selections_mc._currentframe") &&
+		    currentFrame.IsNumber()) {
+			const int selection = static_cast<int>(currentFrame.GetNumber()) - 1;
+			if (selection >= 1 && selection <= 4) {
+				RE::GFxValue arg;
+				arg.SetNumber(static_cast<double>(selection));
+				if (movie.Invoke("_root.TweenMenu_mc.onInputRectClick", nullptr, &arg, 1)) {
+					SKSE::log::info("LASER Tween semantic ACTIVATE selection={} ({})",
+					    selection, selection == 1 ? "Skills" : selection == 2 ? "Magic" :
+					    selection == 3 ? "Items" : "Map");
+					return true;
+				}
+			}
+		}
+
+		// Fail safe: TweenMenu's own Enter handler also opens its current visual
+		// selection. Never fall back to the mismatched mouse-down hit rectangle.
+		RE::GFxKeyEvent down(RE::GFxEvent::EventType::kKeyDown,
+		    RE::GFxKey::kReturn, 0, 0, {}, 0);
+		RE::GFxKeyEvent up(RE::GFxEvent::EventType::kKeyUp,
+		    RE::GFxKey::kReturn, 0, 0, {}, 0);
+		movie.HandleEvent(down);
+		movie.HandleEvent(up);
+		SKSE::log::warn("LASER Tween semantic lookup failed; used current-highlight Enter fallback");
+		return true;
+	}
+
+	void SendGFxKeyPulse(RE::GFxMovieView& movie, RE::GFxKey::Code key)
+	{
+		RE::GFxKeyEvent down(RE::GFxEvent::EventType::kKeyDown, key, 0, 0, {}, 0);
+		RE::GFxKeyEvent up(RE::GFxEvent::EventType::kKeyUp, key, 0, 0, {}, 0);
+		movie.HandleEvent(down);
+		movie.HandleEvent(up);
+	}
+
+	bool GetNumberVariable(RE::GFxMovieView& movie, const char* firstPath,
+	    const char* secondPath, int& result)
+	{
+		RE::GFxValue value;
+		if ((!movie.GetVariable(&value, firstPath) || !value.IsNumber()) &&
+		    (!secondPath || !movie.GetVariable(&value, secondPath) || !value.IsNumber())) {
+			return false;
+		}
+		result = static_cast<int>(value.GetNumber());
+		return true;
+	}
+
+	// AS2 MovieClip.hitTest() expects root/movie coordinates, while the laser and
+	// NotifyMouseState use viewport pixels. Resolve the loaded clip and convert
+	// through the movie's live viewport so interface replacers may move/scale it.
+	bool MovieClipHitAtViewportPoint(RE::GFxMovieView& movie,
+	    const std::array<const char*, 4>& clipPaths, float viewportX, float viewportY)
+	{
+		RE::GViewport viewport{};
+		movie.GetViewport(&viewport);
+		const RE::GRectF visibleFrame = movie.GetVisibleFrameRect();
+		const float frameWidth = visibleFrame.right - visibleFrame.left;
+		const float frameHeight = visibleFrame.bottom - visibleFrame.top;
+		if (viewport.width <= 0 || viewport.height <= 0 ||
+		    !std::isfinite(frameWidth) || !std::isfinite(frameHeight) ||
+		    frameWidth <= 0.0f || frameHeight <= 0.0f) {
+			return false;
+		}
+
+		const float rootX = visibleFrame.left +
+		    (viewportX - static_cast<float>(viewport.left)) * frameWidth /
+		        static_cast<float>(viewport.width);
+		const float rootY = visibleFrame.top +
+		    (viewportY - static_cast<float>(viewport.top)) * frameHeight /
+		        static_cast<float>(viewport.height);
+		std::array<RE::GFxValue, 3> hitArgs;
+		hitArgs[0].SetNumber(rootX);
+		hitArgs[1].SetNumber(rootY);
+		hitArgs[2].SetBoolean(false); // bounding box, including blank list-row width
+
+		for (const char* path : clipPaths) {
+			if (!path)
+				continue;
+			RE::GFxValue clip;
+			if (!movie.GetVariable(&clip, path) ||
+			    (!clip.IsObject() && !clip.IsDisplayObject())) {
+				continue;
+			}
+			RE::GFxValue hit;
+			if (clip.Invoke("hitTest", &hit, hitArgs) && hit.IsBool() && hit.GetBool())
+				return true;
+		}
+		return false;
+	}
+
+	enum class JournalLeftPaneAction
+	{
+		kNone,
+		kFocusQuestTitles,
+		kReturnSystemCategories
+	};
+
+	bool JournalMainFaderIsInteractive(RE::GFxMovieView& movie)
+	{
+		// SkyUI's embedded MCM ConfigPanel remains inside Journal Menu but fades the
+		// journal fader out and moves a different focus tree on top. Positive proof
+		// that the journal is hidden must cancel our pane recovery; missing members
+		// simply mean an interface replacer uses another hierarchy, so other
+		// feature-detection below decides whether the recovery is supported.
+		RE::GFxValue visible;
+		if (movie.GetVariable(&visible, "_root.QuestJournalFader._visible") &&
+		    visible.IsBool() && !visible.GetBool()) {
+			return false;
+		}
+		RE::GFxValue alpha;
+		if (movie.GetVariable(&alpha, "_root.QuestJournalFader._alpha") &&
+		    alpha.IsNumber() && alpha.GetNumber() <= 1.0) {
+			return false;
+		}
+		return true;
+	}
+
+	// The Journal's mouse selection and keyboard/gamepad focus are independent.
+	// Clicking a quest title can leave FocusHandler on ObjectiveList, and the
+	// System page deliberately disables its visible CategoryList while a right
+	// submenu owns focus. Feature-detect the real list clips instead of guessing
+	// a left-column X threshold (SkyUI and Dear Diary reposition these panels).
+	JournalLeftPaneAction ResolveJournalLeftPaneAction(RE::GFxMovieView& movie,
+	    float targetX, float targetY, int& systemState)
+	{
+		if (!JournalMainFaderIsInteractive(movie))
+			return JournalLeftPaneAction::kNone;
+
+		int currentTab = -1;
+		if (!GetNumberVariable(movie,
+		        "_root.QuestJournalFader.Menu_mc.iCurrentTab",
+		        "_root.Menu_mc.iCurrentTab", currentTab)) {
+			return JournalLeftPaneAction::kNone;
+		}
+
+		if (currentTab == 0) {
+			constexpr std::array<const char*, 4> titleLists = {
+			    "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList",
+			    "_root.QuestJournalFader.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc",
+			    "_root.Menu_mc.QuestsFader.Page_mc.TitleList",
+			    "_root.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc"
+			};
+			if (MovieClipHitAtViewportPoint(movie, titleLists, targetX, targetY))
+				return JournalLeftPaneAction::kFocusQuestTitles;
+			return JournalLeftPaneAction::kNone;
+		}
+
+		if (currentTab == 2) {
+			constexpr std::array<const char*, 4> categoryLists = {
+			    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.CategoryList",
+			    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.CategoryList_mc.List_mc",
+			    "_root.Menu_mc.SystemFader.Page_mc.CategoryList",
+			    "_root.Menu_mc.SystemFader.Page_mc.CategoryList_mc.List_mc"
+			};
+			if (!MovieClipHitAtViewportPoint(movie, categoryLists, targetX, targetY))
+				return JournalLeftPaneAction::kNone;
+
+			if (!GetNumberVariable(movie,
+			        "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.iCurrentState",
+			        "_root.Menu_mc.SystemFader.Page_mc.iCurrentState", systemState)) {
+				return JournalLeftPaneAction::kNone;
+			}
+			if (systemState != 0)
+				return JournalLeftPaneAction::kReturnSystemCategories;
+		}
+
+		return JournalLeftPaneAction::kNone;
+	}
+
+	// Skyrim VR's Inventory/Magic menus deliberately ignore mouse-originated
+	// itemPress events.  A physical mouse click is completed by Skyrim's native
+	// input layer calling AttemptEquip(slot); a GFx-only laser click never reaches
+	// that layer.  Keep the pointer as a mouse, but complete an item-row trigger
+	// through the same hand-aware AttemptEquip API Skyrim VR uses.
+	//
+	// This is deliberately limited to InventoryMenu/MagicMenu.  Dialogue keeps
+	// its proven NotifyMouseState + Return route, and every other flat menu keeps
+	// the ordinary paired GFx mouse gesture.
+	bool TryActivateHoveredVRItem(RE::GFxMovieView& movie, const char* menuName,
+	    std::uint8_t laserHand, float targetX, float targetY)
+	{
+		const bool inventory = strcmp(menuName, "InventoryMenu") == 0;
+		const bool magic = strcmp(menuName, "MagicMenu") == 0;
+		if (!inventory && !magic)
+			return false;
+
+		// SkyUI/Dear Diary and Bethesda's vanilla VR movies expose the same native
+		// AttemptEquip contract through different AS2 member names. Feature-detect
+		// the loaded movie instead of depending on a particular interface replacer.
+		RE::GFxValue itemList;
+		bool skyUiLayout = movie.GetVariable(&itemList,
+		    "_root.Menu_mc.inventoryLists.itemList") &&
+		    (itemList.IsObject() || itemList.IsDisplayObject());
+		const char* platformPath = "_root.Menu_mc._platform";
+		const char* processMethod = "_root.Menu_mc.shouldProcessItemsListInput";
+		if (!skyUiLayout) {
+			if (!movie.GetVariable(&itemList,
+			        "_root.Menu_mc.InventoryLists_mc.ItemsList") ||
+			    (!itemList.IsObject() && !itemList.IsDisplayObject())) {
+				return false;
+			}
+			platformPath = "_root.Menu_mc.iPlatform";
+			processMethod = "_root.Menu_mc.ShouldProcessItemsListInput";
+		}
+
+		// HandleEvent(kMouseMove) is enough to dispatch SkyUI's rollover/highlight,
+		// but it does not reliably update the AS2 Mouse singleton used by
+		// Mouse.getTopMostEntity(). Synchronize that state at the exact trigger
+		// coordinate before asking the movie to prove which row is under the laser.
+		// Keep this local to Inventory/Magic; Dialogue and Tween use separate proven
+		// activation paths and must not inherit flat-menu mouse-state behavior.
+		movie.NotifyMouseState(targetX, targetY, 0, 0);
+
+		// Let the loaded SWF resolve its own Mouse.getTopMostEntity(). Calling
+		// _global.Mouse from C++ produced a wrapper object whose ancestry did not
+		// compare equal to itemList, so the old helper never reached AttemptEquip.
+		//
+		// The stock checks bypass mouse ancestry while the movie says a controller
+		// is active. That can change simply because the player touched a
+		// stick, even though this particular interaction is the laser mouse. Pin the
+		// checks to mouse platform 0, restore the menu immediately, and only then
+		// invoke AttemptEquip. This prevents a trigger over a category/tab from
+		// equipping whichever row happened to remain selected.
+		RE::GFxValue originalPlatform;
+		RE::GFxValue mousePlatform;
+		mousePlatform.SetNumber(0.0);
+		if (!movie.GetVariable(&originalPlatform, platformPath) ||
+		    !originalPlatform.IsNumber() ||
+		    !movie.SetVariable(platformPath, mousePlatform,
+		        RE::GFxMovie::SetVarType::kNormal)) {
+			return false;
+		}
+
+		RE::GFxValue checkOverList;
+		checkOverList.SetBoolean(true);
+		RE::GFxValue canProcess;
+		bool overSelectedRow = movie.Invoke(processMethod, &canProcess,
+		    &checkOverList, 1) && canProcess.IsBool() && canProcess.GetBool();
+		if (overSelectedRow && skyUiLayout) {
+			// SkyUI adds a second guard which rejects its scrollbar and blank row
+			// space. Vanilla's own ShouldProcess method is its complete stock guard.
+			RE::GFxValue confirmsHover;
+			overSelectedRow = movie.Invoke("_root.Menu_mc.confirmSelectedEntry",
+			    &confirmsHover, nullptr, 0) && confirmsHover.IsBool() &&
+			    confirmsHover.GetBool();
+		}
+		const bool platformRestored = movie.SetVariable(platformPath, originalPlatform,
+		    RE::GFxMovie::SetVarType::kNormal);
+		if (!platformRestored)
+			SKSE::log::warn("LASER could not restore {} platform after row hit-test", menuName);
+		if (!overSelectedRow) {
+			return false;
+		}
+
+		RE::GFxValue selectedIndex;
+		RE::GFxValue selectedEntry;
+		if (!itemList.GetMember("selectedIndex", &selectedIndex) ||
+		    !selectedIndex.IsNumber() || selectedIndex.GetNumber() < 0.0 ||
+		    !itemList.GetMember("selectedEntry", &selectedEntry) ||
+		    selectedEntry.IsUndefined() || selectedEntry.IsNull()) {
+			return false;
+		}
+
+		// SkyUI's confirmSelectedEntry() above already performs the authoritative
+		// topmost-entity walk and requires that entity's itemIndex to equal the
+		// selected row. Do not repeat that proof with MovieClip.hitTest(): Scaleform
+		// exposes that clip in local/list coordinates on these VR movies, while the
+		// laser cursor is in stage coordinates, so the redundant test rejected a
+		// visibly highlighted row and forced activation into the ignored mouse path.
+		//
+		// Vanilla has no confirmSelectedEntry() helper, so retain its rendered-row
+		// proof until the stock menu gives us an equivalent semantic predicate.
+		if (!skyUiLayout) {
+			RE::GFxValue selectedClip;
+			RE::GFxValue clipIndex;
+			if (!selectedEntry.GetMember("clipIndex", &clipIndex) ||
+			    !clipIndex.IsNumber() || clipIndex.GetNumber() < 0.0 ||
+			    !itemList.Invoke("GetClipByIndex", &selectedClip, &clipIndex, 1)) {
+				return false;
+			}
+			if (!selectedClip.IsObject() && !selectedClip.IsDisplayObject())
+				return false;
+
+			RE::GFxValue clipVisible;
+			RE::GFxValue clipItemIndex;
+			if (!selectedClip.GetMember("_visible", &clipVisible) ||
+			    !clipVisible.IsBool() || !clipVisible.GetBool() ||
+			    !selectedClip.GetMember("itemIndex", &clipItemIndex) ||
+			    !clipItemIndex.IsNumber() ||
+			    static_cast<int>(clipItemIndex.GetNumber()) !=
+			        static_cast<int>(selectedIndex.GetNumber())) {
+				return false;
+			}
+
+			RE::GViewport viewport{};
+			movie.GetViewport(&viewport);
+			const RE::GRectF visibleFrame = movie.GetVisibleFrameRect();
+			const float frameWidth = visibleFrame.right - visibleFrame.left;
+			const float frameHeight = visibleFrame.bottom - visibleFrame.top;
+			if (viewport.width <= 0 || viewport.height <= 0 ||
+			    !std::isfinite(frameWidth) || !std::isfinite(frameHeight) ||
+			    frameWidth <= 0.0f || frameHeight <= 0.0f) {
+				return false;
+			}
+			const float rootX = visibleFrame.left +
+			    (targetX - static_cast<float>(viewport.left)) * frameWidth /
+			        static_cast<float>(viewport.width);
+			const float rootY = visibleFrame.top +
+			    (targetY - static_cast<float>(viewport.top)) * frameHeight /
+			        static_cast<float>(viewport.height);
+
+			std::array<RE::GFxValue, 3> hitArgs;
+			hitArgs[0].SetNumber(rootX);
+			hitArgs[1].SetNumber(rootY);
+			hitArgs[2].SetBoolean(false); // full row bounds, not glyph-only shape
+			RE::GFxValue rowHit;
+			if (!selectedClip.Invoke("hitTest", &rowHit, hitArgs) ||
+			    !rowHit.IsBool() || !rowHit.GetBool()) {
+				return false;
+			}
+		}
+
+		// SkyUI/Skyrim use slot 0 for the right hand and slot 1 for the left.
+		// Protocol v5 publishes the physical controller that generated this edge.
+		// Legacy/unknown senders retain the game's traditional right-hand default.
+		const double equipSlot = laserHand == 0 ? 1.0 : 0.0;
+		RE::GFxValue equipArg;
+		equipArg.SetNumber(equipSlot);
+		// One argument preserves InventoryMenu's default over-list validation and
+		// exactly matches MagicMenu's API in vanilla VR, SkyUI VR, and Dear Diary.
+		if (!movie.Invoke("_root.Menu_mc.AttemptEquip", nullptr, &equipArg, 1))
+			return false;
+
+		SKSE::log::info("LASER selected-row ACTIVATE menu='{}' layout={} index={} hand={} slot={}",
+		    menuName, skyUiLayout ? "SkyUI" : "vanilla",
+		    static_cast<int>(selectedIndex.GetNumber()),
+		    laserHand == 0 ? "LEFT" : (laserHand == 1 ? "RIGHT" : "UNKNOWN"),
+		    static_cast<int>(equipSlot));
 		return true;
 	}
 
@@ -1271,6 +2056,8 @@ namespace
 		static uint32_t s_lastPressSeq = 0;
 		static uint32_t s_lastReleaseSeq = 0;
 		static bool     s_mouseHeld = false;
+		static bool     s_clickArmed = false;
+		static ULONGLONG s_clickRearmNotBefore = 0;
 		static bool     s_cursorShown = false;
 		static ULONGLONG s_pressTick = 0;
 		static bool     s_wasActive = false;
@@ -1278,6 +2065,56 @@ namespace
 		static float    s_gain = 0.5f;       // closed-loop gain, adapted below
 		static float    s_lastSentDx = 0.0f, s_lastSentDy = 0.0f;
 		static float    s_lastCurX = -1.0f, s_lastCurY = -1.0f;
+		static std::uint32_t s_planeGeneration = 0;
+		static char     s_planeMenuName[64] = {};
+		static ULONGLONG s_planeNotBefore = 0;
+		static int      s_planeStableFrames = 0;
+		static bool     s_planePublished = false;
+		static bool     s_gfxMousePrimed = false;
+		static bool     s_bookGestureActive = false;
+		static bool     s_bookGestureMoved = false;
+		static float    s_bookAnchorV = 0.0f;
+		static float    s_bookPressU = 0.5f;
+		static ULONGLONG s_bookActionNotBefore = 0;
+		static RE::GPtr<RE::GFxMovieView> s_pressedMovie;
+		static float    s_pressedMovieX = 0.0f;
+		static float    s_pressedMovieY = 0.0f;
+		static bool     s_pressedMovieUsesNotifyMouse = false;
+		static bool     s_pressedMoviePendingStats = false;
+		static bool     s_journalReturnToSystemCategories = false;
+		static ULONGLONG s_journalReturnNextAttempt = 0;
+		static bool     s_mapPointerCulled = false;
+		static bool     s_mapPointerOriginalCull = false;
+		static float    s_candidatePos[3] = {};
+		static float    s_candidateQuat[4] = { 0, 0, 0, 1 };
+		static float    s_candidateWidth = 0.0f, s_candidateHeight = 0.0f;
+
+		auto releasePressedMovie = [&](const char* reason) {
+			// A gesture owns one exact Scaleform movie for its entire lifetime.
+			// Never inject a coordinate-less/global mouse-up after the menu stack
+			// changes: that was selecting a control in the newly opened movie.
+			if (s_mouseHeld && s_pressedMovie) {
+				if (s_pressedMovieUsesNotifyMouse) {
+					// Journal controls (lists, sliders, steppers, scroll arrows) are
+					// wired to AS2 Mouse state. End that exact movie's held bit even if
+					// the menu stack changed before the physical trigger was released.
+					s_pressedMovie->NotifyMouseState(
+					    s_pressedMovieX, s_pressedMovieY, 0u, 0);
+					SKSE::log::info("LASER notify-click UP at ({:.1f},{:.1f}) reason={}",
+					    s_pressedMovieX, s_pressedMovieY, reason);
+				} else {
+					RE::GFxMouseEvent up(RE::GFxEvent::EventType::kMouseUp, 0,
+					    s_pressedMovieX, s_pressedMovieY);
+					s_pressedMovie->HandleEvent(up);
+					SKSE::log::info("LASER gfx-click UP at ({:.1f},{:.1f}) reason={}",
+					    s_pressedMovieX, s_pressedMovieY, reason);
+				}
+			}
+			s_pressedMovie = nullptr;
+			s_mouseHeld = false;
+			s_pressedMovieUsesNotifyMouse = false;
+			s_pressedMoviePendingStats = false;
+		};
 
 		bool menuActive = !g_activeTrackedMenus.empty();
 
@@ -1286,18 +2123,59 @@ namespace
 		// the input path too while its special scene owns rendering.
 		auto ui = RE::UI::GetSingleton();
 		bool statsOpen = ui && ui->IsMenuOpen("StatsMenu");
+		// Geometry, hover, and activation must all key off the same advertised
+		// top movie. An underlying open menu must not override the active plane.
+		bool mapOpen = strcmp(g_pTransform->menuName, "MapMenu") == 0;
+		bool dialogueOpen = strcmp(g_pTransform->menuName, "Dialogue Menu") == 0;
+		bool journalOpen = strcmp(g_pTransform->menuName, "Journal Menu") == 0;
+		// Special geometry and special input must key off the same advertised top
+		// menu. BookMenu can remain open underneath another tracked overlay.
+		bool bookOpen = ui && ui->IsMenuOpen("Book Menu") &&
+		    strcmp(g_pTransform->menuName, "Book Menu") == 0;
+
+		// Map depth comes from the live UIPointerGeo length. App-culling that
+		// geometry starves the endpoint source, so keep it updating and draw the
+		// compositor's blue beam/dot over Skyrim's stock pointer.
+		auto setMapPointerCulled = [&](bool culled) {
+			auto pc = RE::PlayerCharacter::GetSingleton();
+			auto vrData = pc ? pc->GetVRNodeData() : nullptr;
+			auto geo = vrData ? vrData->UIPointerGeo.get() : nullptr;
+			if (!geo)
+				return;
+			if (culled) {
+				if (!s_mapPointerCulled)
+					s_mapPointerOriginalCull = geo->GetAppCulled();
+				geo->SetAppCulled(true);
+				s_mapPointerCulled = true;
+			} else if (s_mapPointerCulled && !g_consoleOpen.load(std::memory_order_acquire)) {
+				geo->SetAppCulled(s_mapPointerOriginalCull);
+				s_mapPointerCulled = false;
+			}
+		};
+		setMapPointerCulled(false);
+
+		// Stats/Sovngarde forbids Scaleform calls. Retain the exact old movie
+		// through that interval, then clear its held state on the first safe tick.
+		if (!statsOpen && s_pressedMoviePendingStats && s_pressedMovie)
+			releasePressedMovie("post-Stats cleanup");
 
 		if (!menuActive || statsOpen) {
+			s_journalReturnToSystemCategories = false;
 			if (s_wasActive) {
 				g_pTransform->updateCounter++;
 				g_pTransform->uiPlaneValid = 0;
+				g_pTransform->mapPointerValid = 0;
 				g_pTransform->updateCounter++;
-				if (s_mouseHeld) {
-					// Release a stuck button if the menu closed mid-press
-					if (auto q = RE::BSInputEventQueue::GetSingleton())
-						q->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 0.0f,
-						    (GetTickCount64() - s_pressTick) / 1000.0f);
-					s_mouseHeld = false;
+				if (s_mouseHeld || s_pressedMovie) {
+					if (statsOpen) {
+						// Absolute Sovngarde guard: do not call any Scaleform movie while
+						// the constellation renderer owns the shared UI machinery.
+						// Keep the native held state until a safe post-Stats tick can
+						// deliver its release. Clearing it here wedges Skyrim's mouse.
+						s_pressedMoviePendingStats = s_mouseHeld || s_pressedMovie.get() != nullptr;
+					} else {
+						releasePressedMovie("menu closed");
+					}
 				}
 				if (s_cursorShown) {
 					if (auto mc = RE::MenuCursor::GetSingleton())
@@ -1305,21 +2183,124 @@ namespace
 					s_cursorShown = false;
 				}
 				s_wasActive = false;
+				s_planePublished = false;
+				s_planeStableFrames = 0;
+				s_bookGestureActive = false;
+				s_bookGestureMoved = false;
 			}
 			return;
 		}
 
-		if (!s_wasActive) {
+		const bool generationChanged = s_planeGeneration != g_menuPlaneGeneration;
+		const bool menuNameChanged = strncmp(s_planeMenuName, g_pTransform->menuName, sizeof(s_planeMenuName)) != 0;
+		if (!s_wasActive || generationChanged || menuNameChanged) {
+			s_journalReturnToSystemCategories = false;
+			// A Scaleform MouseDown can open a different movie before the
+			// controller is released (Settings -> Mod Configuration is the
+			// common case). Never deliver the old page's MouseUp to the new
+			// movie at the same screen coordinate. Consume every edge during
+			// a short page-settle quarantine, then arm from a clean snapshot.
+			if (s_mouseHeld || s_pressedMovie)
+				releasePressedMovie("menu transition");
+			s_clickArmed = false;
+			s_clickRearmNotBefore = GetTickCount64() + 180;
+			s_lastPressSeq = g_pTransform->laserPressSeq;
+			s_lastReleaseSeq = g_pTransform->laserReleaseSeq;
 			s_wasActive = true;
+			s_planeGeneration = g_menuPlaneGeneration;
+			strncpy_s(s_planeMenuName, g_pTransform->menuName, sizeof(s_planeMenuName) - 1);
+			s_planeMenuName[sizeof(s_planeMenuName) - 1] = '\0';
+			s_planeNotBefore = GetTickCount64() + 75;
+			s_planeStableFrames = 0;
+			s_planePublished = false;
+			s_gfxMousePrimed = false;
+			s_bookGestureActive = false;
+			s_bookGestureMoved = false;
+			s_bookActionNotBefore = 0;
 			s_diagLogsLeft = 3; // log diagnostics for the first few ticks per menu
 			s_gain = 0.5f;
-			s_lastCurX = s_lastCurY = -1.0f;
+			 s_lastCurX = s_lastCurY = -1.0f;
+		}
+
+		// Resolve the exact movie advertised by the ordered open/close-event stack.
+		// Do not gate this on UI::GetTopMostMenu(): in Skyrim VR that resolver can
+		// return HUD/internal overlay entries (often with an empty VR menu name)
+		// while Tween/Inventory/Magic is visibly on top. Requiring pointer equality
+		// therefore suppressed every laser frame, and reading that unrelated
+		// object's VRRuntimeData menuName for diagnostics could dereference invalid
+		// data. The generation change + 180 ms edge quarantine above already makes
+		// movie transitions fail closed without consulting the engine resolver.
+		RE::GPtr<RE::IMenu> advertisedTopMenu;
+		if (ui)
+			advertisedTopMenu = ui->GetMenu(RE::BSFixedString(s_planeMenuName));
+		const bool advertisedMenuReady = advertisedTopMenu && advertisedTopMenu->OnStack() &&
+		    advertisedTopMenu->uiMovie;
+		if (!advertisedMenuReady) {
+			if (s_mouseHeld || s_pressedMovie)
+				releasePressedMovie("advertised menu unavailable");
+			g_pTransform->updateCounter++;
+			g_pTransform->uiPlaneValid = 0;
+			g_pTransform->mapPointerValid = 0;
+			g_pTransform->updateCounter++;
+			s_lastPressSeq = g_pTransform->laserPressSeq;
+			s_lastReleaseSeq = g_pTransform->laserReleaseSeq;
+			s_clickArmed = false;
+			s_clickRearmNotBefore = GetTickCount64() + 180;
+			s_planePublished = false;
+			s_planeStableFrames = 0;
+			s_bookGestureActive = false;
+			s_bookGestureMoved = false;
+
+			static ULONGLONG s_lastMenuUnavailableLog = 0;
+			const ULONGLONG now = GetTickCount64();
+			if (now - s_lastMenuUnavailableLog >= 1000) {
+				s_lastMenuUnavailableLog = now;
+				SKSE::log::warn("LASER advertised menu '{}' is not ready; plane/input suppressed",
+				    s_planeMenuName);
+			}
+			return;
 		}
 
 		// ---- Export UI plane + cursor feedback (SKSE-owned fields, seqlock) ----
 		g_pTransform->updateCounter++;
-		bool planeOk = ExportUiPlane(s_diagLogsLeft > 0);
-		g_pTransform->uiPlaneValid = planeOk ? 1 : 0;
+		// Keep exporting after the initial coherence gate. s_planePublished now
+		// means "live tracking armed", not "freeze the first accepted pose".
+		bool planeOk = ExportUiPlane(s_diagLogsLeft > 0, mapOpen, dialogueOpen, bookOpen);
+		if (!s_planePublished) {
+			if (planeOk) {
+				const float dx = g_pTransform->uiPlanePos[0] - s_candidatePos[0];
+				const float dy = g_pTransform->uiPlanePos[1] - s_candidatePos[1];
+				const float dz = g_pTransform->uiPlanePos[2] - s_candidatePos[2];
+				const float posDelta = sqrtf(dx * dx + dy * dy + dz * dz);
+				const float quatDot = fabsf(
+				    g_pTransform->uiPlaneQuat[0] * s_candidateQuat[0] +
+				    g_pTransform->uiPlaneQuat[1] * s_candidateQuat[1] +
+				    g_pTransform->uiPlaneQuat[2] * s_candidateQuat[2] +
+				    g_pTransform->uiPlaneQuat[3] * s_candidateQuat[3]);
+				const bool sameCandidate = s_planeStableFrames > 0 && posDelta < 0.002f && quatDot > 0.99995f &&
+				    fabsf(g_pTransform->uiPlaneWidth - s_candidateWidth) < 0.002f &&
+				    fabsf(g_pTransform->uiPlaneHeight - s_candidateHeight) < 0.002f;
+				if (sameCandidate) {
+					++s_planeStableFrames;
+				} else {
+					for (int i = 0; i < 3; ++i) s_candidatePos[i] = g_pTransform->uiPlanePos[i];
+					for (int i = 0; i < 4; ++i) s_candidateQuat[i] = g_pTransform->uiPlaneQuat[i];
+					s_candidateWidth = g_pTransform->uiPlaneWidth;
+					s_candidateHeight = g_pTransform->uiPlaneHeight;
+					s_planeStableFrames = 1;
+				}
+
+				if (GetTickCount64() >= s_planeNotBefore && s_planeStableFrames >= 3) {
+					s_planePublished = true;
+					SKSE::log::info("LASER live tracking ARMED menu='{}' generation={} stableFrames={} pos({:.3f},{:.3f},{:.3f})",
+					    s_planeMenuName, s_planeGeneration, s_planeStableFrames,
+					    g_pTransform->uiPlanePos[0], g_pTransform->uiPlanePos[1], g_pTransform->uiPlanePos[2]);
+				}
+			} else {
+				s_planeStableFrames = 0;
+			}
+		}
+		g_pTransform->uiPlaneValid = s_planePublished ? 1 : 0;
 
 		auto mc = RE::MenuCursor::GetSingleton();
 		if (mc) {
@@ -1343,8 +2324,125 @@ namespace
 			return;
 		s_lastFrameSeq = frameSeq;
 
-		auto queue = RE::BSInputEventQueue::GetSingleton();
-		if (!queue || !mc)
+		const bool bookMode = bookOpen;
+		if (bookMode) {
+			// BookMenu's bottom Scaleform bar is display-only in VR. Hide the
+			// ordinary 2D cursor and convert laser gestures into native page actions.
+			if (s_cursorShown && mc) {
+				mc->SetCursorVisibility(false);
+				s_cursorShown = false;
+			}
+
+			const uint32_t pressSeq = g_pTransform->laserPressSeq;
+			const uint32_t releaseSeq = g_pTransform->laserReleaseSeq;
+			if (!s_clickArmed) {
+				s_lastPressSeq = pressSeq;
+				s_lastReleaseSeq = releaseSeq;
+				if (GetTickCount64() >= s_clickRearmNotBefore) {
+					s_clickArmed = true;
+					SKSE::log::info("LASER BookMenu gesture input armed");
+				}
+			}
+
+			if (!g_pTransform->laserActive) {
+				// Leaving the physical page cancels the gesture. Never leak a book
+				// press into the generic mouse path when the ray comes back.
+				s_lastPressSeq = pressSeq;
+				s_lastReleaseSeq = releaseSeq;
+				s_mouseHeld = false;
+				s_bookGestureActive = false;
+				s_bookGestureMoved = false;
+				return;
+			}
+
+			bool bookReady = false;
+			bool isNote = false;
+			if (ui) {
+				if (auto menu = ui->GetMenu<RE::BookMenu>()) {
+					auto& bookData = menu->GetRuntimeData();
+					bookReady = planeOk && s_planePublished && bookData.bookInitialized && !bookData.closeMenu &&
+					    bookData.bookModel && bookData.startAnimating == 0;
+					isNote = bookData.isNote;
+				}
+			}
+
+			if (s_clickArmed && pressSeq != s_lastPressSeq) {
+				s_lastPressSeq = pressSeq;
+				s_pressTick = GetTickCount64();
+				s_mouseHeld = true;
+				s_bookGestureActive = bookReady;
+				s_bookGestureMoved = false;
+				s_bookAnchorV = g_pTransform->laserV;
+				s_bookPressU = g_pTransform->laserU;
+				SKSE::log::info("LASER BookMenu gesture DOWN type={} uv({:.3f},{:.3f})",
+				    isNote ? "note" : "book", s_bookPressU, s_bookAnchorV);
+			}
+
+			// Stock notes are paginated rather than pixel-scrollable. While the
+			// trigger is held, each deliberate 10%-of-sheet vertical stroke becomes
+			// one native page action. Upward laser motion advances (scrolls down).
+			const ULONGLONG now = GetTickCount64();
+			if (isNote && bookReady && s_mouseHeld && s_bookGestureActive &&
+			    now >= s_bookActionNotBefore) {
+				const float delta = s_bookAnchorV - g_pTransform->laserV;
+				if (delta >= 0.10f || delta <= -0.10f) {
+					const bool nextPage = delta > 0.0f;
+					if (QueueBookPageAction(nextPage)) {
+						s_bookGestureMoved = true;
+						s_bookAnchorV = g_pTransform->laserV;
+						s_bookActionNotBefore = now + 400;
+					}
+				}
+			}
+
+			if (s_clickArmed && releaseSeq != s_lastReleaseSeq) {
+				s_lastReleaseSeq = releaseSeq;
+				if (s_mouseHeld && s_bookGestureActive && bookReady && !s_bookGestureMoved &&
+				    now >= s_bookActionNotBefore) {
+					// Ignore the narrow spine/gutter so a shaky click cannot choose the
+					// wrong side. This tap fallback works for notes as well as books.
+					const float releaseU = 0.5f * (s_bookPressU + g_pTransform->laserU);
+					if (releaseU < 0.47f || releaseU > 0.53f) {
+						if (QueueBookPageAction(releaseU > 0.5f))
+							s_bookActionNotBefore = now + 400;
+					}
+				}
+				s_mouseHeld = false;
+				s_bookGestureActive = false;
+				s_bookGestureMoved = false;
+			}
+			return;
+		}
+
+		// A System-category click made while a right-side Journal submenu owns
+		// focus means "return to the left list." Settings can be two states deep,
+		// and its 10-frame transitions (plus an optional settings save) discard
+		// input. Advance through the movie's official Tab/Cancel route one settled
+		// state at a time until MAIN_STATE restores FocusHandler to CategoryList.
+		if (s_journalReturnToSystemCategories) {
+			int currentTab = -1;
+			int systemState = -1;
+			const bool journalStateReadable = journalOpen &&
+			    JournalMainFaderIsInteractive(*advertisedTopMenu->uiMovie) &&
+			    GetNumberVariable(*advertisedTopMenu->uiMovie,
+			        "_root.QuestJournalFader.Menu_mc.iCurrentTab",
+			        "_root.Menu_mc.iCurrentTab", currentTab) &&
+			    GetNumberVariable(*advertisedTopMenu->uiMovie,
+			        "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.iCurrentState",
+			        "_root.Menu_mc.SystemFader.Page_mc.iCurrentState", systemState);
+			if (!journalStateReadable || currentTab != 2) {
+				s_journalReturnToSystemCategories = false;
+			} else if (systemState == 0) {
+				s_journalReturnToSystemCategories = false;
+				SKSE::log::info("LASER Journal System focus restored to left CategoryList");
+			} else if (systemState != 13 && GetTickCount64() >= s_journalReturnNextAttempt) {
+				SendGFxKeyPulse(*advertisedTopMenu->uiMovie, RE::GFxKey::kTab);
+				s_journalReturnNextAttempt = GetTickCount64() + 250;
+				SKSE::log::info("LASER Journal System return-left step from state={}", systemState);
+			}
+		}
+
+		if (!mc)
 			return;
 
 		if (g_pTransform->laserActive) {
@@ -1371,7 +2469,9 @@ namespace
 			float szX = cd.safeZoneX, szY = cd.safeZoneY;
 			if (!std::isfinite(szX) || szX < 0.0f || szX > rangeX * 0.4f) szX = 0.0f;
 			if (!std::isfinite(szY) || szY < 0.0f || szY > rangeY * 0.4f) szY = 0.0f;
-			// laserU/V are already Scaleform top-left convention
+			// The exported UV already follows Scaleform's left-to-right axis. Keep
+			// hover and activation on that same coordinate; mirroring here reverses
+			// Tween's visible Items and Magic targets.
 			float targetX = szX + g_pTransform->laserU * (rangeX - 2.0f * szX);
 			float targetY = szY + g_pTransform->laserV * (rangeY - 2.0f * szY);
 			// DIRECT CURSOR DRIVE (2026-07-25). The closed-loop mouse-delta
@@ -1397,17 +2497,55 @@ namespace
 			// menu's movie — the same channel the VR keyboard's GFxCharEvent
 			// injection has used safely for months. Game thread, tracked menus
 			// only, never StatsMenu, no MovieDef access = no Sovngarde risk.
-			RE::GPtr<RE::GFxMovieView> laserMovie;
-			if (auto uiSing = RE::UI::GetSingleton()) {
-				for (auto& nm : g_activeTrackedMenus) {
-					laserMovie = uiSing->GetMovieView(nm);
-					if (laserMovie)
-						break;
-				}
-			}
+			RE::GPtr<RE::GFxMovieView> laserMovie = advertisedTopMenu->uiMovie;
 			if (laserMovie) {
-				RE::GFxMouseEvent mv(RE::GFxEvent::EventType::kMouseMove, 0, targetX, targetY);
-				laserMovie->HandleEvent(mv);
+				// Hover is authoritative. Do not synthesize a Down-arrow to prime
+				// list focus; it can move selection away from the pointed-at row.
+				const bool firstGfxMouse = !s_gfxMousePrimed;
+				if (firstGfxMouse) {
+					RE::GViewport viewport{};
+					laserMovie->GetViewport(&viewport);
+					const auto oldCursorCount = laserMovie->GetMouseCursorCount();
+					if (oldCursorCount == 0)
+						laserMovie->SetMouseCursorCount(1);
+					SKSE::log::info(
+					    "LASER GFx mouse menu='{}' cursorCount {}->{} viewport buf={}x{} rect=({},{} {}x{})",
+					    s_planeMenuName, oldCursorCount, laserMovie->GetMouseCursorCount(), viewport.bufferWidth,
+					    viewport.bufferHeight, viewport.left, viewport.top, viewport.width, viewport.height);
+				}
+				// Journal's AS2 controls are driven by Mouse.getTopMostEntity() and
+				// _xmouse/_ymouse: Settings sliders, list entries, and scroll arrows
+				// all require the canonical mouse state and its held-button mask.
+				// NotifyMouseState also generates Journal's internal move/edge events,
+				// so never duplicate it with HandleEvent there. Other flat menus retain
+				// the proven GFx event path; Dialogue only synchronizes position before
+				// activating its focused choice with Return.
+				if (journalOpen) {
+					const bool journalHeld = s_mouseHeld && s_pressedMovieUsesNotifyMouse &&
+					    s_pressedMovie && s_pressedMovie.get() == laserMovie.get();
+					laserMovie->NotifyMouseState(targetX, targetY, journalHeld ? 1u : 0u, 0);
+				} else {
+					if (dialogueOpen && !s_mouseHeld)
+						laserMovie->NotifyMouseState(targetX, targetY, 0u, 0);
+					RE::GFxMouseEvent mv(RE::GFxEvent::EventType::kMouseMove, 0,
+					    targetX, targetY);
+					laserMovie->HandleEvent(mv);
+				}
+				if (firstGfxMouse) {
+					float mouseX = 0.0f, mouseY = 0.0f;
+					std::uint32_t mouseButtons = 0;
+					laserMovie->GetMouseState(0, &mouseX, &mouseY, &mouseButtons);
+					const bool buttonHit = laserMovie->HitTest(
+					    targetX, targetY, RE::GFxMovieView::HitTestType::kButtonEvents, 0);
+					SKSE::log::info(
+					    "LASER GFx state menu='{}' target({:.1f},{:.1f}) mouse({:.1f},{:.1f}) buttons={} buttonHit={}",
+					    s_planeMenuName, targetX, targetY, mouseX, mouseY, mouseButtons, buttonHit);
+					s_gfxMousePrimed = true;
+				}
+				if (s_pressedMovie && s_pressedMovie.get() == laserMovie.get()) {
+					s_pressedMovieX = targetX;
+					s_pressedMovieY = targetY;
+				}
 			}
 
 			// Throttled drive diagnostics (every 2s while pointing).
@@ -1423,44 +2561,436 @@ namespace
 				    errMag, cd.safeZoneX, cd.safeZoneY, cd.showCursorCount);
 			}
 
-			// Trigger edges -> real Scaleform mouse button events at the laser
-			// position (Scaleform tracks held state from down/up itself, so no
-			// per-tick "held" repeat is needed; the old BSInputEventQueue kMouse
-			// button was only ever an "accept what's hovered" — with true hover
-			// from the kMouseMove stream, GFx clicks are the real thing).
+			// Keep hover and activation in one exact movie. Dialogue uses its
+			// focused-choice route; every flat menu receives one paired GFx mouse
+			// gesture, matching the proven pre-Relos behavior.
 			uint32_t pressSeq = g_pTransform->laserPressSeq;
 			uint32_t releaseSeq = g_pTransform->laserReleaseSeq;
-			if (pressSeq != s_lastPressSeq) {
+			if (!s_clickArmed) {
+				// Synchronize without injecting either edge throughout the settle
+				// window. Do not require lifetime press/release counters to match:
+				// a release can legitimately be lost while the old movie disappears,
+				// and equality would then wedge every future menu open permanently.
 				s_lastPressSeq = pressSeq;
-				s_pressTick = GetTickCount64();
-				s_mouseHeld = true;
-				if (laserMovie) {
-					RE::GFxMouseEvent dn(RE::GFxEvent::EventType::kMouseDown, 0, targetX, targetY);
-					laserMovie->HandleEvent(dn);
-					SKSE::log::info("LASER gfx-click DOWN at ({:.1f},{:.1f})", targetX, targetY);
+				s_lastReleaseSeq = releaseSeq;
+				if (GetTickCount64() >= s_clickRearmNotBefore) {
+					s_clickArmed = true;
+					SKSE::log::info("LASER click input armed for '{}'", s_planeMenuName);
 				}
 			}
-			if (releaseSeq != s_lastReleaseSeq) {
-				s_lastReleaseSeq = releaseSeq;
-				if (s_mouseHeld) {
-					s_mouseHeld = false;
-					if (laserMovie) {
-						RE::GFxMouseEvent up(RE::GFxEvent::EventType::kMouseUp, 0, targetX, targetY);
+			if (s_clickArmed && pressSeq != s_lastPressSeq) {
+				s_lastPressSeq = pressSeq;
+				s_pressTick = GetTickCount64();
+				if (laserMovie) {
+					if (s_pressedMovie)
+						releasePressedMovie("superseded press");
+
+					if (dialogueOpen) {
+						RE::GFxKeyEvent down(RE::GFxEvent::EventType::kKeyDown,
+						    RE::GFxKey::kReturn, 0, 0, {}, 0);
+						RE::GFxKeyEvent up(RE::GFxEvent::EventType::kKeyUp,
+						    RE::GFxKey::kReturn, 0, 0, {}, 0);
+						laserMovie->HandleEvent(down);
 						laserMovie->HandleEvent(up);
-						SKSE::log::info("LASER gfx-click UP at ({:.1f},{:.1f})", targetX, targetY);
+						s_mouseHeld = false;
+						s_pressedMovie = nullptr;
+						s_pressedMovieUsesNotifyMouse = false;
+						SKSE::log::info("LASER Dialogue choice ACTIVATE at ({:.1f},{:.1f})", targetX, targetY);
+					} else if (strcmp(s_planeMenuName, "TweenMenu") == 0) {
+						ActivateHighlightedTweenSelection(*laserMovie);
+						// Semantic activation is atomic. Never send a mouse-up into the
+						// newly opened Inventory/Magic movie at the old Tween coordinate.
+						s_mouseHeld = false;
+						s_pressedMovie = nullptr;
+						s_pressedMovieUsesNotifyMouse = false;
+					} else if (TryActivateHoveredVRItem(*laserMovie, s_planeMenuName,
+					               g_pTransform->laserHand, targetX, targetY)) {
+						// AttemptEquip is an atomic press action.  Do not leave a synthetic
+						// mouse button held or send a second activation on trigger release.
+						s_mouseHeld = false;
+						s_pressedMovie = nullptr;
+						s_pressedMovieUsesNotifyMouse = false;
+					} else if (journalOpen) {
+						int systemState = -1;
+						const auto leftPaneAction = ResolveJournalLeftPaneAction(
+						    *laserMovie, targetX, targetY, systemState);
+						if (leftPaneAction == JournalLeftPaneAction::kFocusQuestTitles) {
+							// QuestsPage's own LEFT handler performs the complete focus handoff:
+							// TitleList focus, divider state, objective deselection, and stick routing.
+							SendGFxKeyPulse(*laserMovie, RE::GFxKey::kLeft);
+							SKSE::log::info("LASER Journal Quests focus synchronized to left TitleList");
+						} else if (leftPaneAction == JournalLeftPaneAction::kReturnSystemCategories) {
+							// Consume this mouse gesture: the visible CategoryList is disabled in a
+							// submenu, so its semantic action is Back/Cancel, not row activation.
+							s_journalReturnToSystemCategories = true;
+							SendGFxKeyPulse(*laserMovie, RE::GFxKey::kTab);
+							s_journalReturnNextAttempt = GetTickCount64() + 250;
+							s_mouseHeld = false;
+							s_pressedMovie = nullptr;
+							s_pressedMovieUsesNotifyMouse = false;
+							SKSE::log::info(
+							    "LASER Journal System return-left requested from state={}", systemState);
+							return;
+						}
+						// Bit 0 is GFx's first/left mouse button. The 0->1 transition is
+						// Journal's sole press event; continuing to publish 1 while held
+						// gives slider thumbs and scroll-arrow repeat logic a real drag/hold.
+						laserMovie->NotifyMouseState(targetX, targetY, 1u, 0);
+						s_pressedMovie = laserMovie;
+						s_pressedMovieX = targetX;
+						s_pressedMovieY = targetY;
+						s_mouseHeld = true;
+						s_pressedMovieUsesNotifyMouse = true;
+						SKSE::log::info("LASER notify-click DOWN menu='{}' at ({:.1f},{:.1f})",
+						    s_planeMenuName, targetX, targetY);
+					} else {
+						RE::GFxMouseEvent down(RE::GFxEvent::EventType::kMouseDown, 0,
+						    targetX, targetY);
+						laserMovie->HandleEvent(down);
+						s_pressedMovie = laserMovie;
+						s_pressedMovieX = targetX;
+						s_pressedMovieY = targetY;
+						s_mouseHeld = true;
+						s_pressedMovieUsesNotifyMouse = false;
+						SKSE::log::info("LASER gfx-click DOWN menu='{}' at ({:.1f},{:.1f})",
+						    s_planeMenuName, targetX, targetY);
 					}
 				}
+			}
+			if (s_clickArmed && releaseSeq != s_lastReleaseSeq) {
+				s_lastReleaseSeq = releaseSeq;
+				if (s_mouseHeld || s_pressedMovie)
+					releasePressedMovie("trigger release");
 			}
 		} else {
 			s_lastPressSeq = g_pTransform->laserPressSeq;
 			s_lastReleaseSeq = g_pTransform->laserReleaseSeq;
-			if (s_mouseHeld) {
-				s_mouseHeld = false;
-				queue->AddButtonEvent(RE::INPUT_DEVICE::kMouse, 0, 0.0f,
-				    (GetTickCount64() - s_pressTick) / 1000.0f);
-			}
+			if (s_mouseHeld || s_pressedMovie)
+				releasePressedMovie("left menu surface");
 			s_lastCurX = s_lastCurY = -1.0f;
 			s_lastSentDx = s_lastSentDy = 0.0f;
+		}
+	}
+
+	// =========================================================================
+	// Console world-ref selection: while the console is open, a physics ray
+	// from the UI pointer node (the game's own menu beam; wand fallback) picks
+	// whatever TESObjectREFR you point at — NPCs, items, doors, clutter, at
+	// range, anywhere around you — and makes it the console's selected ref,
+	// printing 'Name' (FormID) once per new target. No quad, no Scaleform,
+	// no mapping: accuracy is havok-exact. Runs on the game thread at ~10Hz.
+	// =========================================================================
+	void ConsoleRefPickOnce()
+	{
+		static RE::FormID s_lastPicked = 0;
+		static int s_diagLogsLeft = 2;
+
+		auto ui = RE::UI::GetSingleton();
+		if (!ui || !ui->IsMenuOpen(RE::Console::MENU_NAME)) {
+			s_lastPicked = 0; // Fresh console session = fresh pick announcements
+			return;
+		}
+
+		auto pc = RE::PlayerCharacter::GetSingleton();
+		if (!pc || !pc->Is3DLoaded())
+			return;
+		auto vrData = pc->GetVRNodeData();
+		if (!vrData)
+			return;
+
+		// The game's own UI pointer node carries the exact beam the player
+		// sees in menus; the raw wand node is the fallback if it's absent.
+		RE::NiNode* aimNode = vrData->UIPointerNode.get();
+		if (!aimNode)
+			aimNode = vrData->RightWandNode.get();
+		if (!aimNode)
+			return;
+
+		const RE::NiPoint3 from = aimNode->world.translate;
+		RE::NiPoint3 dir = MatColumn(aimNode->world.rotate, 1); // local +Y = beam forward
+		float dm = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+		if (dm < 1e-4f)
+			return;
+		dir /= dm;
+
+		auto cell = pc->GetParentCell();
+		auto world = cell ? cell->GetbhkWorld() : nullptr;
+		if (!world)
+			return;
+
+		constexpr float kRange = 8192.0f; // ~115m; console picks should reach across a scene
+		const float hkScale = RE::bhkWorld::GetWorldScale();
+		RE::bhkPickData pick;
+		pick.rayInput.from = RE::hkVector4(RE::NiPoint3(from.x * hkScale, from.y * hkScale, from.z * hkScale));
+		pick.rayInput.to = RE::hkVector4(RE::NiPoint3(
+		    (from.x + dir.x * kRange) * hkScale,
+		    (from.y + dir.y * kRange) * hkScale,
+		    (from.z + dir.z * kRange) * hkScale));
+		pick.rayInput.enableShapeCollectionFilter = false;
+		pick.rayInput.filterInfo.filter = static_cast<uint32_t>(RE::COL_LAYER::kLOS);
+
+		RE::TESObjectREFR* hitRef = nullptr;
+		{
+			RE::BSReadLockGuard lock(world->worldLock);
+			if (world->PickObject(pick) && pick.rayOutput.HasHit() && pick.rayOutput.rootCollidable)
+				hitRef = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
+		}
+
+		if (s_diagLogsLeft > 0) {
+			s_diagLogsLeft--;
+			SKSE::log::info("Console pick: node={} from({:.0f},{:.0f},{:.0f}) dir({:.2f},{:.2f},{:.2f}) hit={:08X}",
+			    vrData->UIPointerNode ? "UIPointer" : "RightWand",
+			    from.x, from.y, from.z, dir.x, dir.y, dir.z,
+			    hitRef ? hitRef->GetFormID() : 0);
+		}
+
+		// Terrain, sky, or own body: keep the current selection rather than
+		// clearing it — mid-command retargeting on a stray sweep is worse.
+		if (!hitRef || hitRef == pc)
+			return;
+		if (hitRef->GetFormID() == s_lastPicked)
+			return;
+		s_lastPicked = hitRef->GetFormID();
+
+		if (auto console = ui->GetMenu<RE::Console>())
+			console->SetSelectedRef(hitRef);
+		if (auto clog = RE::ConsoleLog::GetSingleton()) {
+			const char* name = hitRef->GetDisplayFullName();
+			clog->Print("'%s' (%08X)", (name && name[0]) ? name : hitRef->GetName(), hitRef->GetFormID());
+		}
+	}
+
+	// Full 3D console selection driven by the exact OpenXR controller rays.
+	// Unlike ConsoleRefPickOnce above, this never derives aim from UIPointerNode
+	// and never changes selection merely because the pointer moved.
+	void ConsoleWorldPickOnce()
+	{
+		static bool s_sessionActive = false;
+		static uint32_t s_lastFrameSequence = 0;
+		static uint32_t s_lastTriggerSequence[2] = {};
+		static uint32_t s_selectedFormId = 0;
+		static int s_diagLogsLeft = 0;
+
+		auto publishNoHits = []() {
+			if (!g_pConsoleLaser)
+				return;
+			InterlockedIncrement(reinterpret_cast<volatile LONG*>(&g_pConsoleLaser->gameSequence));
+			MemoryBarrier();
+			for (int side = 0; side < 2; ++side) {
+				g_pConsoleLaser->hitValid[side] = 0;
+				g_pConsoleLaser->hitFormId[side] = 0;
+				g_pConsoleLaser->hitDistanceMeters[side] = 0.0f;
+			}
+			MemoryBarrier();
+			InterlockedIncrement(reinterpret_cast<volatile LONG*>(&g_pConsoleLaser->gameSequence));
+		};
+
+		auto pc = RE::PlayerCharacter::GetSingleton();
+		auto vrData = pc ? pc->GetVRNodeData() : nullptr;
+		if (!g_consoleOpen.load(std::memory_order_acquire)) {
+			if (s_sessionActive) {
+				publishNoHits();
+				SKSE::log::info("Console world laser closed; flat pointer ownership released");
+			}
+			s_sessionActive = false;
+			s_lastFrameSequence = 0;
+			s_selectedFormId = 0;
+			return;
+		}
+
+		if (!g_pConsoleLaser || !pc || !pc->Is3DLoaded() || !vrData)
+			return;
+
+		// Hide the flat console pointer only. Normal Scaleform menus own their
+		// cursor visibility separately and are not modified here.
+		if (auto mc = RE::MenuCursor::GetSingleton())
+			mc->SetCursorVisibility(false);
+		if (vrData->UIPointerGeo)
+			vrData->UIPointerGeo->SetAppCulled(true);
+
+		uint8_t rayValid[2] = {};
+		float rayOriginFromHmd[2][3] = {};
+		float rayDirection[2][3] = {};
+		uint32_t triggerSequence[2] = {};
+		uint32_t frameSequence = 0;
+		bool snapshotOk = false;
+		for (int attempt = 0; attempt < 3; ++attempt) {
+			uint32_t seq1 = g_pConsoleLaser->runtimeSequence;
+			if (seq1 & 1)
+				continue;
+			MemoryBarrier();
+			frameSequence = g_pConsoleLaser->frameSequence;
+			for (int side = 0; side < 2; ++side) {
+				rayValid[side] = g_pConsoleLaser->rayValid[side];
+				triggerSequence[side] = g_pConsoleLaser->triggerPressSequence[side];
+				for (int axis = 0; axis < 3; ++axis) {
+					rayOriginFromHmd[side][axis] = g_pConsoleLaser->rayOriginFromHmd[side][axis];
+					rayDirection[side][axis] = g_pConsoleLaser->rayDirection[side][axis];
+				}
+			}
+			MemoryBarrier();
+			uint32_t seq2 = g_pConsoleLaser->runtimeSequence;
+			if (seq1 == seq2) {
+				snapshotOk = true;
+				break;
+			}
+		}
+		if (!snapshotOk)
+			return;
+
+		if (!s_sessionActive) {
+			s_sessionActive = true;
+			s_diagLogsLeft = 4;
+			s_lastFrameSequence = 0;
+			for (int side = 0; side < 2; ++side)
+				s_lastTriggerSequence[side] = triggerSequence[side];
+			SKSE::log::info("Console world laser armed: OpenXR -> RoomNode -> Havok");
+		}
+		if (frameSequence == s_lastFrameSequence)
+			return;
+		s_lastFrameSequence = frameSequence;
+
+		RE::NiNode* roomNode = vrData->RoomNode.get();
+		RE::NiNode* hmdNode = vrData->UprightHmdNode.get();
+		if (!roomNode || !hmdNode || !std::isfinite(roomNode->world.scale) ||
+		    fabsf(roomNode->world.scale) < 1e-5f) {
+			publishNoHits();
+			return;
+		}
+
+		RE::NiTransform hmdToRoom;
+		RE::NiPoint3 hmdRoomPos;
+		if (BuildLocalToAncestor(hmdNode, roomNode, hmdToRoom)) {
+			hmdRoomPos = hmdToRoom.translate;
+		} else {
+			RE::NiPoint3 hmdWorldDelta = hmdNode->world.translate - roomNode->world.translate;
+			hmdRoomPos = TransposeMul(roomNode->world.rotate, hmdWorldDelta);
+			hmdRoomPos /= roomNode->world.scale;
+		}
+
+		auto cell = pc->GetParentCell();
+		auto world = cell ? cell->GetbhkWorld() : nullptr;
+		if (!world) {
+			publishNoHits();
+			return;
+		}
+
+		constexpr float kRangeUnits = 8192.0f;
+		constexpr float kStartOffsetUnits = 4.0f;
+		const float hkScale = RE::bhkWorld::GetWorldScale();
+		const float roomScaleAbs = fabsf(roomNode->world.scale);
+		bool hitValid[2] = {};
+		float hitDistanceMeters[2] = {};
+		uint32_t hitFormId[2] = {};
+		RE::TESObjectREFR* hitRefs[2] = {};
+
+		for (int side = 0; side < 2; ++side) {
+			if (!rayValid[side])
+				continue;
+			bool finiteRay = true;
+			for (int axis = 0; axis < 3; ++axis) {
+				finiteRay = finiteRay && std::isfinite(rayOriginFromHmd[side][axis]) &&
+				    std::isfinite(rayDirection[side][axis]);
+			}
+			if (!finiteRay)
+				continue;
+
+			// Inverse of MapSkyrimToXr: XR (X right, Y up, Z back)
+			// becomes RoomNode-local (X right, Y forward, Z up).
+			RE::NiPoint3 originDeltaRoom = {
+				rayOriginFromHmd[side][0] * kSkyrimUnitsPerMeter,
+				-rayOriginFromHmd[side][2] * kSkyrimUnitsPerMeter,
+				rayOriginFromHmd[side][1] * kSkyrimUnitsPerMeter
+			};
+			RE::NiPoint3 directionRoom = {
+				rayDirection[side][0],
+				-rayDirection[side][2],
+				rayDirection[side][1]
+			};
+			RE::NiPoint3 from = roomNode->world * (hmdRoomPos + originDeltaRoom);
+			RE::NiPoint3 dir = roomNode->world.rotate * directionRoom;
+			float dm = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+			if (!std::isfinite(dm) || dm < 1e-4f)
+				continue;
+			dir /= dm;
+			RE::NiPoint3 rayStart = from + dir * kStartOffsetUnits;
+
+			RE::bhkPickData pick;
+			pick.rayInput.from = RE::hkVector4(RE::NiPoint3(
+				rayStart.x * hkScale, rayStart.y * hkScale, rayStart.z * hkScale));
+			pick.rayInput.to = RE::hkVector4(RE::NiPoint3(
+				(rayStart.x + dir.x * kRangeUnits) * hkScale,
+				(rayStart.y + dir.y * kRangeUnits) * hkScale,
+				(rayStart.z + dir.z * kRangeUnits) * hkScale));
+			pick.rayInput.enableShapeCollectionFilter = false;
+			pick.rayInput.filterInfo.filter = static_cast<uint32_t>(RE::COL_LAYER::kLOS);
+
+			{
+				RE::BSReadLockGuard lock(world->worldLock);
+				if (world->PickObject(pick) && pick.rayOutput.HasHit()) {
+					hitValid[side] = true;
+					hitDistanceMeters[side] =
+					    (kStartOffsetUnits + pick.rayOutput.hitFraction * kRangeUnits) /
+					    (kSkyrimUnitsPerMeter * roomScaleAbs);
+					if (pick.rayOutput.rootCollidable)
+						hitRefs[side] = RE::TESHavokUtilities::FindCollidableRef(
+						    *pick.rayOutput.rootCollidable);
+				}
+			}
+			if (hitRefs[side] == pc) {
+				hitRefs[side] = nullptr;
+				hitValid[side] = false;
+				hitDistanceMeters[side] = 0.0f;
+			}
+			if (hitRefs[side])
+				hitFormId[side] = hitRefs[side]->GetFormID();
+		}
+
+		for (int side = 0; side < 2; ++side) {
+			if (triggerSequence[side] == s_lastTriggerSequence[side])
+				continue;
+			s_lastTriggerSequence[side] = triggerSequence[side];
+			RE::TESObjectREFR* selected = hitRefs[side];
+			if (!selected) {
+				SKSE::log::info("Console {} trigger: no selectable reference under laser",
+					side == 0 ? "LEFT" : "RIGHT");
+				continue;
+			}
+
+			s_selectedFormId = selected->GetFormID();
+			if (auto ui = RE::UI::GetSingleton()) {
+				if (auto console = ui->GetMenu<RE::Console>())
+					console->SetSelectedRef(selected);
+			}
+			if (auto clog = RE::ConsoleLog::GetSingleton()) {
+				const char* displayName = selected->GetDisplayFullName();
+				const char* name = (displayName && displayName[0]) ? displayName : selected->GetName();
+				auto base = selected->GetBaseObject();
+				clog->Print("'%s'  RefID: %08X  BaseID: %08X",
+					(name && name[0]) ? name : "<unnamed>",
+					selected->GetFormID(), base ? base->GetFormID() : 0);
+			}
+			SKSE::log::info("Console {} trigger selected ref {:08X}",
+				side == 0 ? "LEFT" : "RIGHT", s_selectedFormId);
+		}
+
+		InterlockedIncrement(reinterpret_cast<volatile LONG*>(&g_pConsoleLaser->gameSequence));
+		MemoryBarrier();
+		for (int side = 0; side < 2; ++side) {
+			g_pConsoleLaser->hitValid[side] = hitValid[side] ? 1 : 0;
+			g_pConsoleLaser->hitDistanceMeters[side] = hitDistanceMeters[side];
+			g_pConsoleLaser->hitFormId[side] = hitFormId[side];
+		}
+		g_pConsoleLaser->selectedFormId = s_selectedFormId;
+		MemoryBarrier();
+		InterlockedIncrement(reinterpret_cast<volatile LONG*>(&g_pConsoleLaser->gameSequence));
+
+		if (s_diagLogsLeft > 0) {
+			--s_diagLogsLeft;
+			SKSE::log::info(
+				"Console rays: L valid={} hit={:08X} t={:.2f}m | R valid={} hit={:08X} t={:.2f}m",
+				rayValid[0], hitFormId[0], hitDistanceMeters[0],
+				rayValid[1], hitFormId[1], hitDistanceMeters[1]);
 		}
 	}
 
@@ -1472,9 +3002,19 @@ namespace
 			return;
 		std::thread([]() {
 			int rtRefreshTick = 0;
+			int consolePickTick = 0;
 			while (g_laserPumpRunning.load()) {
 				if (g_pTransform && g_pTransform->active)
 					SKSE::GetTaskInterface()->AddTask(LaserCursorPumpOnce);
+				// Match the live controller ray while console is open. When closed,
+				// retain a cheap ~10Hz cleanup tick to restore native pointer state.
+				if (g_consoleOpen.load(std::memory_order_acquire)) {
+					consolePickTick = 0;
+					SKSE::GetTaskInterface()->AddTask(ConsoleWorldPickOnce);
+				} else if (++consolePickTick >= 12) {
+					consolePickTick = 0;
+					SKSE::GetTaskInterface()->AddTask(ConsoleWorldPickOnce);
+				}
 				// ~1/sec: re-capture game render targets in case a render-scale
 				// mod (Community Shaders VR etc.) recreated them
 				if (++rtRefreshTick >= 125) {
@@ -3841,6 +5381,7 @@ uint main() : SV_Target { return 255; }
 			InstallWndProcHook();
 			InstallVirtualKeyboardHook();
 			CreateSharedMemory();
+			CreateConsoleLaserBridge();
 			CreateRenderTargetBridge();
 			InstallShaderAccumulatorHook();
 			CreateStencilStagingTexture();

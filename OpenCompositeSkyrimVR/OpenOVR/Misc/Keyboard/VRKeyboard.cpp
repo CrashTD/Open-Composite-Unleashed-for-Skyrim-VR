@@ -793,6 +793,45 @@ static void SendSingleVK(WORD vk, bool pcMode = false)
 	::SendInput(2, inputs, sizeof(INPUT));
 }
 
+// Send one half of a real PC MODE key hold. Printable keys use the same
+// scancode-only DirectInput path as SendVirtualKey; control/F-keys use VK
+// events so Windows also supplies WM_KEYDOWN/WM_KEYUP to menu consumers.
+// Shift is kept down for the full lifetime of a shifted printable key.
+static void SendPCVirtualKeyState(WORD vk, bool shift, bool scanOnly, bool down)
+{
+	WORD scan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+	WORD shiftScan = (WORD)MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC);
+	std::vector<INPUT> inputs;
+
+	auto append = [&](WORD eventVk, WORD eventScan, bool eventScanOnly, bool eventDown) {
+		INPUT in = {};
+		in.type = INPUT_KEYBOARD;
+		in.ki.wVk = eventScanOnly ? 0 : eventVk;
+		in.ki.wScan = eventScan;
+		in.ki.dwFlags = eventScanOnly ? KEYEVENTF_SCANCODE : 0;
+		if (IsExtendedKey(eventVk))
+			in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+		if (!eventDown)
+			in.ki.dwFlags |= KEYEVENTF_KEYUP;
+		inputs.push_back(in);
+	};
+
+	// Modifier order matters: Shift down before the key, key up before Shift.
+	if (down && shift)
+		append(VK_SHIFT, shiftScan, scanOnly, true);
+	append(vk, scan, scanOnly, down);
+	if (!down && shift)
+		append(VK_SHIFT, shiftScan, scanOnly, false);
+
+	OOVR_LOGF("[VKEMIT] PC hold vk=0x%02X %s shift=%d scanOnly=%d",
+	    vk, down ? "DOWN" : "UP", shift ? 1 : 0, scanOnly ? 1 : 0);
+	EnsureGameForeground();
+	UINT sent = ::SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT));
+	if (sent != inputs.size())
+		OOVR_LOGF("[VKEMIT] PC hold SendInput sent %u/%u events (error=%lu)",
+		    sent, (unsigned)inputs.size(), GetLastError());
+}
+
 // Post a character to the SKSE plugin (OpenCompositeInput) for direct
 // Scaleform injection.  The SKSE plugin's WndProc hook catches this custom
 // message and pushes a GFxCharEvent into the active Scaleform movie,
@@ -1309,40 +1348,44 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		laserSci.arraySize = 1;
 		laserSci.mipCount = 1;
 
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &laserSci, &laserChain[i]));
+		for (int clicked = 0; clicked < 2; clicked++) {
+			OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &laserSci, &laserChain[i][clicked]));
 
-		uint32_t laserImgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(laserChain[i], 0, &laserImgCount, nullptr));
-		std::vector<XrSwapchainImageD3D11KHR> laserImgs(laserImgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(laserChain[i], laserImgCount, &laserImgCount,
-		    (XrSwapchainImageBaseHeader*)laserImgs.data()));
+			uint32_t laserImgCount = 0;
+			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(laserChain[i][clicked], 0, &laserImgCount, nullptr));
+			std::vector<XrSwapchainImageD3D11KHR> laserImgs(laserImgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(laserChain[i][clicked], laserImgCount, &laserImgCount,
+			    (XrSwapchainImageBaseHeader*)laserImgs.data()));
 
-		// Warm white beam — tapered + tip-faded
-		std::vector<uint32_t> colorPixels;
-		beamtex::Fill(colorPixels, 255, 240, 220, 200);
+			std::vector<uint32_t> colorPixels;
+			if (clicked)
+				beamtex::Fill(colorPixels, 55, 145, 255, 220); // electric blue click
+			else
+				beamtex::Fill(colorPixels, 255, 240, 220, 200); // warm white idle
 
-		D3D11_TEXTURE2D_DESC ltd = {};
-		ltd.Width = beamtex::kW;
-		ltd.Height = beamtex::kH;
-		ltd.MipLevels = 1;
-		ltd.ArraySize = 1;
-		ltd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		ltd.SampleDesc = { 1, 0 };
-		ltd.Usage = D3D11_USAGE_DEFAULT;
+			D3D11_TEXTURE2D_DESC ltd = {};
+			ltd.Width = beamtex::kW;
+			ltd.Height = beamtex::kH;
+			ltd.MipLevels = 1;
+			ltd.ArraySize = 1;
+			ltd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+			ltd.SampleDesc = { 1, 0 };
+			ltd.Usage = D3D11_USAGE_DEFAULT;
 
-		D3D11_SUBRESOURCE_DATA linit = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
-		CComPtr<ID3D11Texture2D> ltex;
-		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&ltd, &linit, &ltex));
+			D3D11_SUBRESOURCE_DATA linit = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
+			CComPtr<ID3D11Texture2D> ltex;
+			OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&ltd, &linit, &ltex));
 
-		XrSwapchainImageAcquireInfo lacq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-		uint32_t lidx = 0;
-		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(laserChain[i], &lacq, &lidx));
-		XrSwapchainImageWaitInfo lwait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-		lwait.timeout = 500000000;
-		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(laserChain[i], &lwait));
-		ctx->CopyResource(laserImgs[lidx].texture, ltex);
-		XrSwapchainImageReleaseInfo lrel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(laserChain[i], &lrel));
+			XrSwapchainImageAcquireInfo lacq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+			uint32_t lidx = 0;
+			OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(laserChain[i][clicked], &lacq, &lidx));
+			XrSwapchainImageWaitInfo lwait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+			lwait.timeout = 500000000;
+			OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(laserChain[i][clicked], &lwait));
+			ctx->CopyResource(laserImgs[lidx].texture, ltex);
+			XrSwapchainImageReleaseInfo lrel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+			OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(laserChain[i][clicked], &lrel));
+		}
 
 		// Initialize the laser composition layer
 		memset(&laserLayer[i], 0, sizeof(laserLayer[i]));
@@ -1350,7 +1393,7 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		laserLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		laserLayer[i].space = xr_gbl->floorSpace;
 		laserLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		laserLayer[i].subImage.swapchain = laserChain[i];
+		laserLayer[i].subImage.swapchain = laserChain[i][0];
 		laserLayer[i].subImage.imageRect.offset = { 0, 0 };
 		laserLayer[i].subImage.imageRect.extent = { beamtex::kW, beamtex::kH };
 		laserLayer[i].subImage.imageArrayIndex = 0;
@@ -1466,6 +1509,7 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 
 VRKeyboard::~VRKeyboard()
 {
+	ReleaseAllHeldPCKeys();
 	g_kbGrabActive = false; // never leave player movement masked if closed mid-grab
 
 	if (crosshairChain != XR_NULL_HANDLE) {
@@ -1477,9 +1521,11 @@ VRKeyboard::~VRKeyboard()
 		consoleChain = XR_NULL_HANDLE;
 	}
 	for (int i = 0; i < 2; i++) {
-		if (laserChain[i] != XR_NULL_HANDLE) {
-			xrDestroySwapchain(laserChain[i]);
-			laserChain[i] = XR_NULL_HANDLE;
+		for (int state = 0; state < 2; state++) {
+			if (laserChain[i][state] != XR_NULL_HANDLE) {
+				xrDestroySwapchain(laserChain[i][state]);
+				laserChain[i][state] = XR_NULL_HANDLE;
+			}
 		}
 	}
 	for (int i = 0; i < 3; i++) {
@@ -1503,6 +1549,39 @@ VRKeyboard::~VRKeyboard()
 	if (kbHwnd)
 		SetPropW(kbHwnd, L"OC_KB_ACTIVE", (HANDLE)0);
 #endif
+}
+
+void VRKeyboard::PressHeldPCKey(int side, int keyId, uint16_t vk, bool shift, bool scanOnly)
+{
+	if (side < 0 || side >= 2 || vk == 0)
+		return;
+
+	// A hand can own only one held key. This also repairs stale state before a
+	// new press following a controller reconnect.
+	ReleaseHeldPCKey(side);
+	heldPCKeys[side] = { vk, keyId, shift, scanOnly };
+#ifdef _WIN32
+	SendPCVirtualKeyState((WORD)vk, shift, scanOnly, true);
+#endif
+}
+
+void VRKeyboard::ReleaseHeldPCKey(int side)
+{
+	if (side < 0 || side >= 2 || heldPCKeys[side].vk == 0)
+		return;
+
+	HeldPCKey held = heldPCKeys[side];
+	heldPCKeys[side] = {};
+	s_pressedKey[side] = -1;
+#ifdef _WIN32
+	SendPCVirtualKeyState((WORD)held.vk, held.shift, held.scanOnly, false);
+#endif
+}
+
+void VRKeyboard::ReleaseAllHeldPCKeys()
+{
+	ReleaseHeldPCKey(0);
+	ReleaseHeldPCKey(1);
 }
 
 wstring VRKeyboard::contents()
@@ -1802,8 +1881,15 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 
 		// Grab bar logic — trigger to drag, toggle to switch head-lock mode
 		for (int side = 0; side < 2; side++) {
-			if (!hasState[side])
+			if (!hasState[side]) {
+				// A missing controller state cannot deliver a release edge. Drop
+				// any synthetic hold immediately so Windows never keeps a key down.
+				ReleaseHeldPCKey(side);
+				lastTriggerState[side] = false;
+				lastButtonState[side] = 0;
+				s_pressedKey[side] = -1;
 				continue;
+			}
 
 			bool trigNow = (states[side].ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)) != 0;
 			bool trigJustPressed = trigNow && !lastTriggerState[side];
@@ -1812,6 +1898,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 
 			// Mode toggle button — switch between VR MODE and PC MODE
 			if (trigJustPressed && laserOnConsole[side] && !grabActive) {
+				ReleaseAllHeldPCKeys();
 				sendInputOnly = !sendInputOnly;
 				OOVR_LOGF("Mode toggle: sendInputOnly=%d (%s)", sendInputOnly, sendInputOnly ? "PC MODE" : "VR MODE");
 				dirty = true;
@@ -2186,6 +2273,11 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 			// InjectThumbstickAsDpad(states[side]); // Disabled — laser pointers handle selection now
 			HandleOverlayInput(side == 0 ? vr::Eye_Left : vr::Eye_Right, states[side], time);
 		}
+	} else {
+		// The input system disappeared while the overlay was alive.
+		ReleaseAllHeldPCKeys();
+		lastTriggerState[0] = lastTriggerState[1] = false;
+		lastButtonState[0] = lastButtonState[1] = 0;
 	}
 
 	if (dirty) {
@@ -2314,8 +2406,12 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 		activeLayers.push_back((XrCompositionLayerBaseHeader*)&consoleLayer);
 	activeLayers.push_back((XrCompositionLayerBaseHeader*)&layer);
 	for (int side = 0; side < 2; side++) {
-		if (laserActive[side])
+		if (laserActive[side]) {
+			// Match the menu pointer: idle is warm white; the complete trigger
+			// hold is electric blue, including PC-mode long key presses.
+			laserLayer[side].subImage.swapchain = laserChain[side][lastTriggerState[side] ? 1 : 0];
 			activeLayers.push_back((XrCompositionLayerBaseHeader*)&laserLayer[side]);
+		}
 	}
 	if (s_targetMode) {
 		for (int i = 0; i < 3; i++) {
@@ -2588,6 +2684,11 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 #undef GET_BTTN
 #undef GET_BTTN_LAST
 
+	// The release belongs to the key chosen on trigger-down, regardless of
+	// where the laser is pointing now.
+	if (!trigger && trigger_last)
+		ReleaseHeldPCKey((int)side);
+
 	if (grip && !grip_last && !grabActive) {
 		// If console overlay is active, close the real console too
 		if (consoleActive) {
@@ -2608,19 +2709,23 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 			SubmitEvent(VREvent_KeyboardClosed, 0);
 		}
 		// When opened via controller shortcut (sendInputOnly), just close — no Escape needed
+		ReleaseAllHeldPCKeys();
 		closed = true;
 		return;
 	}
 
 	if (selected[side] < 0) {
-		s_pressedKey[side] = -1; // No key selected, clear pressed state
+		if (heldPCKeys[side].vk == 0)
+			s_pressedKey[side] = -1; // Preserve the latched PC key while held
 		return; // No key selected — nothing to do
 	}
 
 	const KeyboardLayout::Key& key = layout->GetKeymap()[selected[side]];
 
 	// Track pressed state for visual feedback
-	if (trigger && laserActive[(int)side]) {
+	if (heldPCKeys[side].vk != 0) {
+		s_pressedKey[side] = heldPCKeys[side].keyId;
+	} else if (trigger && laserActive[(int)side]) {
 		s_pressedKey[side] = selected[side];
 	} else {
 		s_pressedKey[side] = -1;
@@ -2644,7 +2749,8 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 		bool trigJustPressed = trigger && !trigger_last;
 		bool shouldFireBackspace = false;
 
-		if (trigJustPressed && onBackspace) {
+		bool useHeldPCKey = sendInputOnly && !consoleActive;
+		if (trigJustPressed && onBackspace && !useHeldPCKey) {
 			shouldFireBackspace = true;
 			backspaceRepeating[side] = true;
 			backspaceRepeatNext[side] = now + 400; // initial delay before repeat
@@ -2654,7 +2760,7 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 				backspaceRepeatNext[side] = now + 100; // repeat interval (faster than arrows)
 			}
 		}
-		if (!trigger || !onBackspace) {
+		if (useHeldPCKey || !trigger || !onBackspace) {
 			backspaceRepeating[side] = false;
 		}
 
@@ -2691,11 +2797,18 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 		if (sendInputMode) {
 			// ── SendInput mode: inject Windows keystrokes + buffer text for GetKeyboardText ──
 #ifdef _WIN32
+			auto sendHoldableControl = [&](WORD vk) {
+				if (sendInputOnly && !consoleActive)
+					PressHeldPCKey((int)side, key.id, vk, false, false);
+				else
+					SendSingleVK(vk, sendInputOnly || consoleActive);
+			};
+
 			if (ch == '\x01' || ch == '\x02') {
 				ECaseMode target = ch == '\x02' ? ECaseMode::LOCK : ECaseMode::SHIFT;
 				caseMode = caseMode == target ? ECaseMode::LOWER : target;
 			} else if (ch == '\b') {
-				SendSingleVK(VK_BACK, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_BACK);
 				if (!consoleActive) PostCharToGame(VK_BACK, 1); // GFxKeyEvent — skip for console (SendInput suffices)
 				// Update internal buffer (game-opened keyboard OR console mode)
 				if ((!sendInputOnly || consoleActive) && cursorPos > 0 && !text.empty()) {
@@ -2719,12 +2832,13 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 					// callback can read GetKeyboardText.
 					SubmitEvent(vr::VREvent_KeyboardDone, 0);
 				}
+				ReleaseAllHeldPCKeys();
 				closed = true;
 			} else if (ch == '\t') {
-				SendSingleVK(VK_TAB, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_TAB);
 				PostCharToGame(VK_TAB, 1); // GFxKeyEvent for Scaleform (SkyUI needs this!)
 			} else if (ch == '\n') {
-				SendSingleVK(VK_RETURN, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_RETURN);
 				if (!consoleActive) PostCharToGame(VK_RETURN, 1); // GFxKeyEvent — skip for console
 				if (consoleActive) {
 					text.clear();
@@ -2732,17 +2846,17 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 					consoleDirty = true;
 				}
 			} else if (ch == '\x04') {
-				SendSingleVK(VK_UP, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_UP);
 				// Arrows produce no WM_CHAR and posted WM_KEYDOWN never reaches
 				// DirectInput, so Scaleform text boxes (console, naming, SkyUI
 				// search) only see arrows via the GFxKeyEvent path. Without it
 				// the caret cannot move and console history is unreachable.
 				PostCharToGame(VK_UP, 1);
 			} else if (ch == '\x05') {
-				SendSingleVK(VK_DOWN, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_DOWN);
 				PostCharToGame(VK_DOWN, 1);
 			} else if (ch == '\x06') {
-				SendSingleVK(VK_LEFT, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_LEFT);
 				PostCharToGame(VK_LEFT, 1);
 				// Keep the keyboard's own preview caret in step
 				if (cursorPos > 0) {
@@ -2750,7 +2864,7 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 					if (consoleActive) consoleDirty = true;
 				}
 			} else if (ch == '\x07') {
-				SendSingleVK(VK_RIGHT, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_RIGHT);
 				PostCharToGame(VK_RIGHT, 1);
 				if (cursorPos < (int)text.size()) {
 					cursorPos++;
@@ -2760,7 +2874,7 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 				// F1-F12 keys: \x10=F1, \x11=F2, ..., \x1B=F12
 				int fNum = (ch - '\x10') + 1;
 				WORD vk = VK_F1 + (fNum - 1);
-				SendSingleVK(vk, sendInputOnly || consoleActive);
+				sendHoldableControl(vk);
 			} else if (ch == '\x0F') {
 				// [M] key — toggle crosshair dot at gaze center
 				crosshairVisible = !crosshairVisible;
@@ -2770,10 +2884,10 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 				s_targetMode = !s_targetMode;
 				OOVR_LOGF("Target mode: %s", s_targetMode ? "ON" : "OFF");
 			} else if (ch == '\x1D') {
-				SendSingleVK(VK_END, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_END);
 			} else if (ch == '\x0E') {
 				// ESC — send to SkyUI/menus to cancel text input (does NOT close keyboard)
-				SendSingleVK(VK_ESCAPE, sendInputOnly || consoleActive);
+				sendHoldableControl(VK_ESCAPE);
 			} else {
 				// Tilde/backtick toggles console INPUT overlay
 				if (ch == L'`' || ch == L'~') {
@@ -2810,8 +2924,10 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 					// WM_CHAR from scancodes is blocked by SKSE WndProc hook
 					// (OC_KB_ACTIVE property) to prevent double entry.
 					VkMapping mapping = CharToVK(ch);
-					if (mapping.vk != 0)
-						SendVirtualKey(mapping.vk, mapping.needsShift, ch, true, sendInputOnly || consoleActive);
+					if (mapping.vk != 0) {
+						PressHeldPCKey((int)side, key.id, mapping.vk, mapping.needsShift, true);
+						PostCharToGame(ch);
+					}
 				}
 				// Buffer character for display (game-opened keyboard OR console mode)
 				// Skip tilde itself — it's a toggle, not console input
@@ -3795,6 +3911,8 @@ void VRKeyboard::SetSendInputOnly(bool enabled)
 {
 	OOVR_LOGF("[VKMODE] SetSendInputOnly(%s) -> %s", enabled ? "true" : "false",
 	    enabled ? "PC MODE (scancodes for MCM/DirectInput)" : "VR MODE (text buffer, no scancodes)");
+	if (sendInputOnly != enabled)
+		ReleaseAllHeldPCKeys();
 	sendInputOnly = enabled;
 	// sendInputMode is always true — keyboard always uses SendInput
 	dirty = true;

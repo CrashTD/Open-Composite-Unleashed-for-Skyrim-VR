@@ -71,6 +71,15 @@ inline XrVector3f LocalForward(int side)
 	return RotateLocalVector(fwd, x, y, z);
 }
 
+// Beam-origin correction in meters along the controller aim pose's local -Y.
+// This moves the rendered beam and the hit-test ray together.
+inline float OriginDown(int side)
+{
+	return side == 0
+	    ? oovr_global_configuration.LeftLaserOriginDown()
+	    : oovr_global_configuration.RightLaserOriginDown();
+}
+
 inline XrVector3f TransformVector(const vr::HmdMatrix34_t& m, const XrVector3f& v)
 {
 	return {

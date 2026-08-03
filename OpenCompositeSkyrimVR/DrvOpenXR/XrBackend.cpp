@@ -32,6 +32,7 @@
 
 #include "../OpenOVR/Misc/NetworkTrackers.h"
 #include "../OpenOVR/Misc/OVRPerfHook.h"
+#include "../OpenOVR/Misc/WalkInPlace.h"
 #include "generated/interfaces/IVRCompositor_018.h"
 
 
@@ -1954,52 +1955,104 @@ void XrBackend::PumpEvents()
 		}
 	}
 
-	// Body trackers: once actions are attached, expose every ini-enabled role
-	// (BaseInput created a space for it) as a generic tracker device at index
-	// 3+. Poses stay invalid until the runtime actually delivers trackers
-	// (VD body tracking / real hardware), which consumers handle gracefully.
-	if (input && sessionState == XR_SESSION_STATE_FOCUSED && bodyTrackers.empty()
-	    && xr_htcxViveTrackers && oovr_global_configuration.BodyTrackersEnabled()
+	// Build raw HTCX role readers after actions are attached. These never become
+	// public devices themselves: the publication pass below gives each physical
+	// pose exactly one stable identity and keeps OCU-NET1/2/3 compatible with
+	// existing SkyrimVR-FBT serial pins in both physical and camera modes.
+	if (input && sessionState == XR_SESSION_STATE_FOCUSED && !bodyTrackersAttempted
 	    && input->AreActionsLoaded()) {
+		bodyTrackersAttempted = true;
+		if (xr_htcxViveTrackers && oovr_global_configuration.BodyTrackersEnabled()) {
+			for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
+				XrSpace space = XR_NULL_HANDLE;
+				input->GetTrackerSpace(i, space);
+				if (space == XR_NULL_HANDLE)
+					continue;
+
+				htcxTrackerSources.push_back(std::make_unique<XrGenericTracker>(i));
+			}
+			if (!htcxTrackerSources.empty())
+				OOVR_LOGF("Body trackers: discovered %d private HTCX role sources",
+				    (int)htcxTrackerSources.size());
+		}
+	}
+
+	// Publish one device per pose source. OCU-NET1/2/3 are the canonical waist,
+	// left-foot and right-foot identities even when OSC is disabled, preserving
+	// existing FBT calibration pins. With OSC active, the remaining camera slots
+	// also mux matching HTCX chest/knee/elbow roles. Physical roles without a
+	// network slot retain their native OCU-* identity. No pose is exposed twice.
+	if (input && sessionState == XR_SESSION_STATE_FOCUSED && !networkTrackersAttempted
+	    && input->AreActionsLoaded()) {
+		networkTrackersAttempted = true;
+		const bool wantOsc = oovr_global_configuration.NetworkTrackersEnabled();
+		bool oscReady = false;
+		const int port = oovr_global_configuration.NetworkTrackerPort();
+		if (wantOsc)
+			oscReady = NetworkTrackerReceiver::Instance().Start(port);
+
+		// OSC slots: waist, feet, knees, elbows, chest. HTCX uses a different
+		// role ordering, so keep the relationship explicit and reviewable.
+		static constexpr int htcxRoleForNetworkSlot[NetworkTrackerReceiver::MAX_TRACKERS] = {
+			0, 1, 2, 4, 5, 6, 7, 3
+		};
+		auto findHtcxRole = [&](int role) -> XrGenericTracker* {
+			for (auto& tracker : htcxTrackerSources) {
+				if (tracker->GetRoleIndex() == role)
+					return tracker.get();
+			}
+			return nullptr;
+		};
+
+		const bool hasCanonicalHtcx = findHtcxRole(0) || findHtcxRole(1) || findHtcxRole(2);
+		const int trackerCount = oscReady ? NetworkTrackerReceiver::MAX_TRACKERS
+		                                  : (hasCanonicalHtcx ? 3 : 0);
+		auto roleUsesNetworkIdentity = [&](int role) {
+			for (int slot = 0; slot < trackerCount; slot++) {
+				if (htcxRoleForNetworkSlot[slot] == role)
+					return true;
+			}
+			return false;
+		};
+
+		// GetDevice enumerates native extras before OCU-NET, so assign those
+		// indices first. Canonical waist/feet are always withheld for NET1..3.
 		vr::TrackedDeviceIndex_t nextIndex = 3;
-		for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
-			XrSpace space = XR_NULL_HANDLE;
-			input->GetTrackerSpace(i, space);
-			if (space == XR_NULL_HANDLE)
+		for (auto& source : htcxTrackerSources) {
+			const int role = source->GetRoleIndex();
+			if (roleUsesNetworkIdentity(role))
 				continue;
-			bodyTrackers.push_back(std::make_unique<XrGenericTracker>(i, nextIndex));
-			input->RegisterBodyTrackerDevice(nextIndex, i); // lets TriggerHapticPulse reach this tracker
+			bodyTrackers.push_back(std::make_unique<XrGenericTracker>(role, nextIndex));
+			input->RegisterBodyTrackerDevice(nextIndex, role);
 			OOVR_LOGF("Body trackers: device %u = %s (%s)", nextIndex,
-			    OCU_TRACKER_ROLES[i].iniName, OCU_TRACKER_ROLES[i].serial);
+			    OCU_TRACKER_ROLES[role].iniName, OCU_TRACKER_ROLES[role].serial);
 			nextIndex++;
 		}
-		if (!bodyTrackers.empty())
-			OOVR_LOGF("Body trackers: exposing %d generic trackers (devices 3-%u)",
-			    (int)bodyTrackers.size(), nextIndex - 1);
-	}
 
-	// Network trackers (VRChat-style OSC: SlimeVR/Standable/phone apps): these
-	// need no OpenXR extension at all, only an open UDP port. Created after
-	// the HTCX block above so the body trackers' device indices are final.
-	// One-shot: a failed bind logs once and stays off for the session.
-	if (input && sessionState == XR_SESSION_STATE_FOCUSED && !networkTrackersAttempted
-	    && oovr_global_configuration.NetworkTrackersEnabled() && input->AreActionsLoaded()) {
-		networkTrackersAttempted = true;
-		int port = oovr_global_configuration.NetworkTrackerPort();
-		if (NetworkTrackerReceiver::Instance().Start(port)) {
-			vr::TrackedDeviceIndex_t nextIndex = 3 + (vr::TrackedDeviceIndex_t)bodyTrackers.size();
-			for (int i = 0; i < NetworkTrackerReceiver::MAX_TRACKERS; i++, nextIndex++)
-				networkTrackers.push_back(std::make_unique<XrNetworkTracker>(i, nextIndex));
-			OOVR_LOGF("Network trackers: listening on UDP %d, exposing %d trackers (devices %u-%u)",
-			    port, NetworkTrackerReceiver::MAX_TRACKERS,
-			    (unsigned)(3 + bodyTrackers.size()), (unsigned)(nextIndex - 1));
-		} else {
-			OOVR_LOGF("Network trackers: could not open UDP port %d — disabled for this session", port);
+		if (trackerCount > 0) {
+			const vr::TrackedDeviceIndex_t networkFirstIndex = nextIndex;
+			for (int i = 0; i < trackerCount; i++, nextIndex++) {
+				const int htcxRole = htcxRoleForNetworkSlot[i];
+				ITrackedDevice* htcxRoleSource = findHtcxRole(htcxRole);
+				networkTrackers.push_back(std::make_unique<XrNetworkTracker>(i, nextIndex, htcxRoleSource));
+				if (htcxRoleSource)
+					input->RegisterBodyTrackerDevice(nextIndex, htcxRole);
+			}
+			if (oscReady) {
+				OOVR_LOGF("Network trackers: listening on UDP %d, exposing %d fused trackers (devices %u-%u)",
+				    port, trackerCount, (unsigned)networkFirstIndex, (unsigned)(nextIndex - 1));
+			} else {
+				OOVR_LOGF("Body trackers: OSC disabled/unavailable; exposing canonical HTCX-backed OCU-NET1-3 (devices %u-%u)",
+				    (unsigned)networkFirstIndex, (unsigned)(nextIndex - 1));
+			}
+		} else if (wantOsc && !oscReady) {
+			OOVR_LOGF("Network trackers: could not open UDP port %d and no HTCX roles are available", port);
 		}
 	}
 
-	// Keep the sender->playspace alignment fresh (EMA of real HMD vs the
-	// head position the sender reports; no-op if it never reports one).
+	// Keep the sender->playspace alignment fresh. The HMD/head pair owns root
+	// translation; controller/wrist samples remain available for diagnostics
+	// but must not drag the lower body around while the arms swing.
 	if (!networkTrackers.empty() && hmd) {
 		vr::TrackedDevicePose_t hp;
 		hmd->GetPose(vr::TrackingUniverseStanding, &hp, ETrackingStateType::TrackingStateType_Now);
@@ -2009,8 +2062,203 @@ void XrBackend::PumpEvents()
 				hp.mDeviceToAbsoluteTracking.m[1][3],
 				hp.mDeviceToAbsoluteTracking.m[2][3],
 			};
-			NetworkTrackerReceiver::Instance().UpdateAlignment(p);
+			float forward[2] = {
+				-hp.mDeviceToAbsoluteTracking.m[0][2],
+				-hp.mDeviceToAbsoluteTracking.m[2][2],
+			};
+			float lp[3], rp[3];
+			float* lPtr = nullptr;
+			float* rPtr = nullptr;
+			vr::TrackedDevicePose_t cp;
+			if (hand_left) {
+				hand_left->GetPose(vr::TrackingUniverseStanding, &cp, ETrackingStateType::TrackingStateType_Now);
+				if (cp.bPoseIsValid) {
+					lp[0] = cp.mDeviceToAbsoluteTracking.m[0][3];
+					lp[1] = cp.mDeviceToAbsoluteTracking.m[1][3];
+					lp[2] = cp.mDeviceToAbsoluteTracking.m[2][3];
+					lPtr = lp;
+				}
+			}
+			if (hand_right) {
+				hand_right->GetPose(vr::TrackingUniverseStanding, &cp, ETrackingStateType::TrackingStateType_Now);
+				if (cp.bPoseIsValid) {
+					rp[0] = cp.mDeviceToAbsoluteTracking.m[0][3];
+					rp[1] = cp.mDeviceToAbsoluteTracking.m[1][3];
+					rp[2] = cp.mDeviceToAbsoluteTracking.m[2][3];
+					rPtr = rp;
+				}
+			}
+			NetworkTrackerReceiver::Instance().UpdateAlignment(p, forward, lPtr, rPtr);
 		}
+	}
+
+	// Walk-in-place locomotion: feed the detector with foot/waist/HMD poses
+	// from whichever tracker source currently has them (network or HTCX).
+	if (oovr_global_configuration.WalkInPlaceEnabled() && hmd && input
+	    && (!networkTrackers.empty() || !bodyTrackers.empty())) {
+		auto poseOf = [](ITrackedDevice* d, float o[3]) {
+			if (!d)
+				return false;
+			vr::TrackedDevicePose_t tp;
+			d->GetPose(vr::TrackingUniverseStanding, &tp, ETrackingStateType::TrackingStateType_Now);
+			if (!tp.bPoseIsValid)
+				return false;
+			o[0] = tp.mDeviceToAbsoluteTracking.m[0][3];
+			o[1] = tp.mDeviceToAbsoluteTracking.m[1][3];
+			o[2] = tp.mDeviceToAbsoluteTracking.m[2][3];
+			return true;
+		};
+		auto controllerSteerPoseOf = [&](ITrackedDevice::HandType hand, float controllerHead[2],
+		    float palmFront[2], float& controllerY) {
+			XrSpace aimSpace = XR_NULL_HANDLE;
+			XrSpace gripSpace = XR_NULL_HANDLE;
+			input->GetHandSpace(hand, aimSpace, true);
+			input->GetHandSpace(hand, gripSpace, false);
+			if (aimSpace == XR_NULL_HANDLE || gripSpace == XR_NULL_HANDLE)
+				return false;
+			vr::TrackedDevicePose_t aimPose{};
+			vr::TrackedDevicePose_t gripPose{};
+			// OpenXR standardizes the aim pose's local -Z as the controller's
+			// pointing ray. That is the physical controller-head direction the
+			// steering gesture asks the user to point outward. Grip +Y is merely
+			// orthogonal to the palm axes and is not the controller head; using it
+			// made Meta Touch outward tilts score negative forever.
+			xr_utils::PoseFromSpace(&aimPose, aimSpace, vr::TrackingUniverseStanding);
+			xr_utils::PoseFromSpace(&gripPose, gripSpace, vr::TrackingUniverseStanding);
+			if (!aimPose.bPoseIsValid || !gripPose.bPoseIsValid)
+				return false;
+			controllerY = gripPose.mDeviceToAbsoluteTracking.m[1][3];
+			controllerHead[0] = -aimPose.mDeviceToAbsoluteTracking.m[0][2];
+			controllerHead[1] = -aimPose.mDeviceToAbsoluteTracking.m[2][2];
+			// OpenXR grip +X is away from the left palm but into the right palm.
+			// Mirror the right axis so both vectors point out through the palm.
+			float palmSign = hand == ITrackedDevice::HAND_LEFT ? 1.0f : -1.0f;
+			palmFront[0] = palmSign * gripPose.mDeviceToAbsoluteTracking.m[0][0];
+			palmFront[1] = palmSign * gripPose.mDeviceToAbsoluteTracking.m[2][0];
+			return true;
+		};
+
+		// Feet: network slots (1=left ankle, 2=right ankle), falling back to
+		// HTCX roles (1=left foot, 2=right foot).
+		XrNetworkTracker* nLFoot = networkTrackers.size() > 1 ? networkTrackers[1].get() : nullptr;
+		XrNetworkTracker* nRFoot = networkTrackers.size() > 2 ? networkTrackers[2].get() : nullptr;
+		ITrackedDevice* nLKnee = networkTrackers.size() > 3 ? networkTrackers[3].get() : nullptr;
+		ITrackedDevice* nRKnee = networkTrackers.size() > 4 ? networkTrackers[4].get() : nullptr;
+		ITrackedDevice* hLFoot = nullptr;
+		ITrackedDevice* hRFoot = nullptr;
+		for (auto& bt : htcxTrackerSources) {
+			switch (bt->GetRoleIndex()) {
+			case 1: hLFoot = bt.get(); break;
+			case 2: hRFoot = bt.get(); break;
+			}
+		}
+
+		float lPos[3] = {}, rPos[3] = {}, lkPos[3] = {}, rkPos[3] = {};
+		float hLPos[3] = {}, hRPos[3] = {};
+		float lcHead[2] = {}, rcHead[2] = {};
+		float lcPalm[2] = {}, rcPalm[2] = {};
+		float lcY = 0.0f, rcY = 0.0f;
+		auto networkFootPoseOf = [](XrNetworkTracker* d, float o[3]) {
+			if (!d)
+				return false;
+			vr::TrackedDevicePose_t tp;
+			d->GetPoseForLocomotion(vr::TrackingUniverseStanding, &tp, ETrackingStateType::TrackingStateType_Now);
+			if (!tp.bPoseIsValid)
+				return false;
+			o[0] = tp.mDeviceToAbsoluteTracking.m[0][3];
+			o[1] = tp.mDeviceToAbsoluteTracking.m[1][3];
+			o[2] = tp.mDeviceToAbsoluteTracking.m[2][3];
+			return true;
+		};
+		// True HTCX feet are precise 6DoF inputs, so prefer them. Camera OSC
+		// remains the automatic fallback and continues supplying knees/arms.
+		bool hLV = poseOf(hLFoot, hLPos);
+		bool hRV = poseOf(hRFoot, hRPos);
+		bool lV = hLV;
+		bool rV = hRV;
+		if (hLV)
+			std::copy(hLPos, hLPos + 3, lPos);
+		else
+			lV = networkFootPoseOf(nLFoot, lPos);
+		if (hRV)
+			std::copy(hRPos, hRPos + 3, rPos);
+		else
+			rV = networkFootPoseOf(nRFoot, rPos);
+		bool trustedHardwareFeet = hLV && hRV;
+		bool lkV = poseOf(nLKnee, lkPos);
+		bool rkV = poseOf(nRKnee, rkPos);
+		NetTrackerFrameSample activeTrackerFrame;
+		bool continuous3DGait = NetworkTrackerReceiver::Instance().GetTrackerFrame(
+		    activeTrackerFrame, 1500)
+		    && (activeTrackerFrame.flags & NetTrackerFrame_Continuous3D) != 0;
+		NetCameraLegSample cameraLegs[2] = {};
+		bool cameraLegV[2] = {
+			NetworkTrackerReceiver::Instance().GetCameraLeg(0, cameraLegs[0], 500),
+			NetworkTrackerReceiver::Instance().GetCameraLeg(1, cameraLegs[1], 500),
+		};
+		for (int side = 0; side < 2; ++side) {
+			cameraLegV[side] = cameraLegV[side]
+			    && (!activeTrackerFrame.everSeen
+			        || (cameraLegs[side].sourceEpoch == activeTrackerFrame.sourceEpoch
+			            && cameraLegs[side].frameGeneration == activeTrackerFrame.generation));
+			// Keep a coherent Invalid packet visible so WIP can time out a
+			// prior kick latch, but never promote a zero-confidence state into
+			// walking or action intent.
+			if (cameraLegV[side]
+			    && cameraLegs[side].state != NetCameraLegState::Invalid
+			    && cameraLegs[side].confidence < 0.08f)
+				cameraLegs[side].state = NetCameraLegState::Invalid;
+		}
+		// World3D geometry alone cannot distinguish a deliberate kick from a
+		// gait half-cycle. Its fresh semantic leg stream is therefore part of the
+		// camera gait contract. A complete HTCX/Vive foot pair remains its own
+		// trusted source and deliberately bypasses all camera-only arbitration.
+		bool cameraSemanticGait = continuous3DGait && !trustedHardwareFeet;
+
+		// Arm cadence comes from the same camera skeleton as feet/knees. The
+		// Configurator sends a shoulder+elbow+wrist phase plus both hand heights;
+		// Quest controller position is intentionally not part of the walking gate.
+		NetSkeletonArmsSample skeletonArms;
+		bool skeletonArmsV = NetworkTrackerReceiver::Instance().GetSkeletonArms(skeletonArms)
+		    && NetworkTrackerReceiver::NowMs() - skeletonArms.lastUpdateMs <= 1500
+		    && (!activeTrackerFrame.everSeen
+		        || (skeletonArms.sourceEpoch == activeTrackerFrame.sourceEpoch
+		            && skeletonArms.frameGeneration == activeTrackerFrame.generation));
+		float skeletonArmPhase = 0.0f;
+		float skeletonHandY[2] = {};
+		if (skeletonArmsV) {
+			float alignScale = NetworkTrackerReceiver::Instance().GetAlignmentScale();
+			float alignOffset[3] = {};
+			NetworkTrackerReceiver::Instance().GetAlignmentOffset(alignOffset);
+			skeletonArmPhase = skeletonArms.armPhase * alignScale;
+			skeletonHandY[0] = skeletonArms.handY[0] * alignScale + alignOffset[1];
+			skeletonHandY[1] = skeletonArms.handY[1] * alignScale + alignOffset[1];
+		}
+
+		// HMD direction plus controller ORIENTATION for the optional palm-turn
+		// gesture. Controller position no longer participates in walking cadence.
+		vr::TrackedDevicePose_t hp2;
+		hmd->GetPose(vr::TrackingUniverseStanding, &hp2, ETrackingStateType::TrackingStateType_Now);
+		bool hV = hp2.bPoseIsValid;
+		float hmdY = hV ? hp2.mDeviceToAbsoluteTracking.m[1][3] : 0.0f;
+		float hmdForwardX = hV ? -hp2.mDeviceToAbsoluteTracking.m[0][2] : 0.0f;
+		float hmdForwardZ = hV ? -hp2.mDeviceToAbsoluteTracking.m[2][2] : 0.0f;
+		bool lcV = controllerSteerPoseOf(ITrackedDevice::HAND_LEFT, lcHead, lcPalm, lcY);
+		bool rcV = controllerSteerPoseOf(ITrackedDevice::HAND_RIGHT, rcHead, rcPalm, rcY);
+		bool quickStartArmed = input->HasWalkInPlaceActivationButton() &&
+		    input->IsWalkInPlaceActivationHeld();
+
+		WalkInPlace::Instance().Update(lV, lV ? lPos[1] : 0, rV, rV ? rPos[1] : 0,
+		    lkV, lkPos[1], rkV, rkPos[1],
+		    hLV, hRV,
+		    cameraSemanticGait,
+		    cameraLegV[0], cameraLegs[0].state,
+		    cameraLegV[1], cameraLegs[1].state,
+		    hV, hmdY, hmdForwardX, hmdForwardZ,
+		    skeletonArmsV, skeletonArmPhase, skeletonHandY[0], skeletonHandY[1],
+		    lcV, lcHead[0], lcHead[1], lcPalm[0], lcPalm[1], lcY,
+		    rcV, rcHead[0], rcHead[1], rcPalm[0], rcPalm[1], rcY,
+		    quickStartArmed);
 	}
 	// Poll for OpenXR events
 	// TODO filter by session?
@@ -2131,6 +2379,13 @@ void XrBackend::OnSessionCreated()
 
 void XrBackend::PrepareForSessionShutdown()
 {
+	// Body-tracker actions live in the instance-owned legacy action set, while
+	// their XrSpaces belong to this session. Destroy only the spaces here;
+	// published device objects and device->role haptic routing remain stable and
+	// will resolve the replacement spaces dynamically after the next bind.
+	if (BaseInput* input = GetUnsafeBaseInput())
+		input->PrepareForSessionShutdown();
+
 	for (std::unique_ptr<Compositor>& c : compositors) {
 		c.reset();
 	}

@@ -450,17 +450,24 @@ static bool TryLoadSteamVrModel(const string& rawName, RenderModel_t** renderMod
 	// mirrors automatically (x-offset, yaw and roll negated).
 	{
 		bool leftHand = base.find("left") != string::npos;
+		bool indexModel = base.rfind("valve_controller_knu_", 0) == 0;
 		float mirror = leftHand ? -1.0f : 1.0f;
 		constexpr float d2r = 3.14159265f / 180.0f;
+		// The user's measured renderModel* trim belongs to Touch/Quest. Index
+		// has its own identity-based family so changing hardware cannot carry
+		// Meta's mesh correction into Valve's correctly authored model.
+		float rotX = indexModel ? oovr_global_configuration.IndexRenderModelRotX() : oovr_global_configuration.RenderModelRotX();
+		float rotY = indexModel ? oovr_global_configuration.IndexRenderModelRotY() : oovr_global_configuration.RenderModelRotY();
+		float rotZ = indexModel ? oovr_global_configuration.IndexRenderModelRotZ() : oovr_global_configuration.RenderModelRotZ();
+		float offX = indexModel ? oovr_global_configuration.IndexRenderModelOffX() : oovr_global_configuration.RenderModelOffX();
+		float offY = indexModel ? oovr_global_configuration.IndexRenderModelOffY() : oovr_global_configuration.RenderModelOffY();
+		float offZ = indexModel ? oovr_global_configuration.IndexRenderModelOffZ() : oovr_global_configuration.RenderModelOffZ();
+		float rmScale = indexModel ? oovr_global_configuration.IndexRenderModelScale() : oovr_global_configuration.RenderModelScale();
 		mat4 trim(1.0f);
-		trim = glm::translate(trim, vec3(
-		    oovr_global_configuration.RenderModelOffX() * mirror,
-		    oovr_global_configuration.RenderModelOffY(),
-		    oovr_global_configuration.RenderModelOffZ()));
-		trim *= mat4(glm::rotate(oovr_global_configuration.RenderModelRotY() * mirror * d2r, vec3(0, 1, 0)));
-		trim *= mat4(glm::rotate(oovr_global_configuration.RenderModelRotX() * d2r, vec3(1, 0, 0)));
-		trim *= mat4(glm::rotate(oovr_global_configuration.RenderModelRotZ() * mirror * d2r, vec3(0, 0, 1)));
-		float rmScale = oovr_global_configuration.RenderModelScale();
+		trim = glm::translate(trim, vec3(offX * mirror, offY, offZ));
+		trim *= mat4(glm::rotate(rotY * mirror * d2r, vec3(0, 1, 0)));
+		trim *= mat4(glm::rotate(rotX * d2r, vec3(1, 0, 0)));
+		trim *= mat4(glm::rotate(rotZ * mirror * d2r, vec3(0, 0, 1)));
 		if (rmScale > 0.1f && rmScale < 10.0f && rmScale != 1.0f)
 			trim *= mat4(glm::scale(glm::mat4(1.0f), vec3(rmScale)));
 		// Trim applies in DEVICE space (left of the hand transform): X=right,

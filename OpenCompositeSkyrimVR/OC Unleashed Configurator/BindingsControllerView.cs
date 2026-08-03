@@ -235,6 +235,7 @@ namespace OpenCompositeConfigurator
 
             // Gestures tab: hold-button options follow the controller model
             RefreshGestureHoldOptions();
+            RefreshWalkActivationOptions();
         }
 
         // VR Keyboard Shortcut picture (Settings tab): model-aware positions

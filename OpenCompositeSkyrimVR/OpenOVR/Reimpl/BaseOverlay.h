@@ -7,6 +7,7 @@
 #include <mutex>
 #include <queue>
 #include <set>
+#include <string>
 #include <vector>
 
 enum OOVR_VROverlayInputMethod {
@@ -192,6 +193,33 @@ private:
 	// Cached copy of the keyboard contents, available after it is closed
 	std::string keyboardCache;
 
+	// OpenVR clients are allowed to request a keyboard from any thread. SkyUI VR
+	// does exactly that from its polling worker. D3D11 immediate-context work is
+	// not safe there while Skyrim/Streamline/the compositor are rendering, so the
+	// API call only publishes this request. _BuildLayers consumes it on the one
+	// compositor thread that owns keyboard GPU creation and destruction.
+	struct PendingKeyboardRequest {
+		EGamepadTextInputMode inputMode;
+		EGamepadTextInputLineMode lineInputMode;
+		std::string description;
+		uint32_t charMax;
+		std::string existingText;
+		bool minimalMode;
+		uint64_t userValue;
+		VRKeyboard::eventDispatch_t eventDispatch;
+		OverlayData* owner;
+	};
+	std::mutex pendingKeyboardMutex;
+	std::unique_ptr<PendingKeyboardRequest> pendingKeyboardRequest;
+	void ProcessPendingKeyboardRequest();
+
+	// Overlay clients may destroy the temporary owner overlay from a polling
+	// worker immediately after receiving KeyboardDone. The keyboard and overlay
+	// own compositor/OpenXR resources, so destroy both on the compositor thread.
+	std::mutex pendingOverlayDestroyMutex;
+	std::vector<OverlayData*> pendingOverlayDestroys;
+	void ProcessPendingOverlayDestroys();
+
 
 	// MCM Menu Laser pointer system
 	std::unique_ptr<VRMenuLaser> menuLaser;
@@ -200,7 +228,7 @@ private:
 	    EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode,
 	    const char* pchDescription, uint32_t unCharMax, const char* pchExistingText,
 	    bool bUseMinimalMode, uint64_t uUserValue,
-	    VRKeyboard::eventDispatch_t eventDispatch);
+	    VRKeyboard::eventDispatch_t eventDispatch, OverlayData* owner = nullptr);
 
 public:
 	// Destructor, since we have a map of pointers

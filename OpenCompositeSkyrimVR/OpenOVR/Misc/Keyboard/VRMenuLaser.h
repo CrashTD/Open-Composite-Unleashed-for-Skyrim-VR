@@ -22,6 +22,15 @@ public:
 	// only the rendering is suppressed. Both default to visible.
 	void SetRenderHand(int side, bool show) { renderHand[side] = show; }
 
+	// MapMenu keeps Skyrim's native pointer input. OCU only supplies the visual.
+	// Its endpoint comes from Skyrim's depth-aware native pointer, not the flat
+	// Scaleform plane, so mountains and floating icons retain their real depth.
+	void SetMapVisualMode(bool enabled) { mapVisualMode = enabled; }
+	void SetMapVisualHit(bool valid, const XrVector3f& point) {
+		mapVisualHitValid = valid;
+		mapVisualHitPoint = point;
+	}
+
 	// Toggle debug quad visibility and set its opacity (0-100)
 	void SetShowDebugQuad(bool show) { showDebugQuad = show; }
 	void SetDebugQuadOpacity(int percent) { debugOpacityPercent = percent; }
@@ -40,8 +49,19 @@ public:
 	    XrTime predictedTime,
 	    const bool keyboardHitSide[2]);
 
+	// Console mode has no UI quad. It renders each valid controller ray through
+	// the 3D scene, stopping at the Havok hit distance returned by SKSE and
+	// placing a world-space dot there. Both hands stay visible unless the
+	// keyboard currently owns that hand.
+	const std::vector<XrCompositionLayerBaseHeader*>& UpdateWorld(
+	    XrTime predictedTime,
+	    const bool keyboardHitSide[2],
+	    const bool worldHitSide[2],
+	    const float worldHitDistanceMeters[2]);
+
 	// Query results after Update()
 	bool IsHit(int side) const { return hitActive[side]; }
+	bool IsRayValid(int side) const { return rayValid[side]; }
 	float GetHitU(int side) const { return hitU[side]; }
 	float GetHitV(int side) const { return hitV[side]; }
 	bool IsTriggerPressed(int side) const { return triggerState[side] && !triggerLast[side]; }
@@ -64,12 +84,12 @@ private:
 	ID3D11Device* dev;
 	ID3D11DeviceContext* ctx = nullptr;
 
-	// Beam layers (one per hand)
-	XrSwapchain beamChain[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
+	// Beam layers (one per hand, normal/clicked color variants)
+	XrSwapchain beamChain[2][2] = {};
 	XrCompositionLayerQuad beamLayer[2] = {};
 
-	// Cursor dot layers (one per hand)
-	XrSwapchain dotChain[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
+	// Cursor dot layers (one per hand, normal/clicked color variants)
+	XrSwapchain dotChain[2][2] = {};
 	XrCompositionLayerQuad dotLayer[2] = {};
 
 	// Debug quad overlay — semi-transparent rectangle showing the menu hit area
@@ -84,11 +104,15 @@ private:
 	XrExtent2Df menuSize = { 0, 0 };
 	bool menuValid = false;
 	bool showDebugQuad = true;
+	bool mapVisualMode = false;
+	bool mapVisualHitValid = false;
+	XrVector3f mapVisualHitPoint = {};
 	int debugOpacityPercent = 20;
 	int debugColorR = 30, debugColorG = 100, debugColorB = 30; // fill color (default green)
 
 	// Per-hand hit state
 	bool hitActive[2] = {};
+	bool rayValid[2] = {};
 	float hitU[2] = {}, hitV[2] = {};
 
 	// Per-hand render visibility (pointer-ownership model: only the hand
@@ -128,6 +152,8 @@ private:
 
 	// Position cursor dot at the hit point on the menu surface
 	void UpdateDot(int side, const XrVector3f& hitPoint);
+	void UpdateWorldDot(int side, const XrVector3f& hitPoint,
+	    const XrQuaternionf& headOrientation, const XrVector3f& rayDir);
 
 	// Billboard orientation — Y-axis along beam, facing viewer
 	static XrQuaternionf BeamOrientation(const XrVector3f& dir,

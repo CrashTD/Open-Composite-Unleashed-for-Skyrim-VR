@@ -5,7 +5,8 @@
 #include "../OpenOVR/Misc/BodyTrackerRoles.h"
 
 /**
- * A body tracker exposed to the game as TrackedDeviceClass_GenericTracker.
+ * A raw HTCX body-tracker role reader. Public instances are exposed to the
+ * game as TrackedDeviceClass_GenericTracker; private instances feed OCU-NET.
  *
  * Poses come from XR_HTCX_vive_tracker_interaction role paths, which both
  * Virtual Desktop (VDXR body tracking, no hardware needed) and SteamVR's
@@ -15,6 +16,10 @@
  */
 class XrGenericTracker : public XrTrackedDevice {
 public:
+	// Private pose source used by the OCU-NET mux. It deliberately has no
+	// OpenVR device index and is therefore not advertised to the game.
+	explicit XrGenericTracker(int roleIndex);
+
 	// roleIndex indexes OCU_TRACKER_ROLES; deviceIndex is the OpenVR slot (3+)
 	XrGenericTracker(int roleIndex, vr::TrackedDeviceIndex_t deviceIndex);
 
@@ -25,6 +30,9 @@ public:
 	    char* value, uint32_t bufferSize, vr::ETrackedPropertyError* pErrorL) override;
 
 	vr::ETrackedDeviceClass GetTrackedDeviceClass() override;
+
+	// Index into OCU_TRACKER_ROLES (0=waist, 1=left foot, 2=right foot, ...)
+	int GetRoleIndex() const { return roleIndex; }
 
 private:
 	int roleIndex;

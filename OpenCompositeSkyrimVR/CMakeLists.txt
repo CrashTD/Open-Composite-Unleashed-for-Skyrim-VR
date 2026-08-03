@@ -292,6 +292,10 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/OVRPerfHook.h
 	OpenOVR/Misc/NetworkTrackers.cpp
 	OpenOVR/Misc/NetworkTrackers.h
+	OpenOVR/Misc/CameraLegCalibration.cpp
+	OpenOVR/Misc/CameraLegCalibration.h
+	OpenOVR/Misc/WalkInPlace.cpp
+	OpenOVR/Misc/WalkInPlace.h
 	OpenOVR/Misc/xrutil.cpp
 	OpenOVR/Misc/xrmoreutils.cpp
 	OpenOVR/Misc/OneEuroFilterRotation.cpp
@@ -612,3 +616,20 @@ set_target_properties(OCOVR PROPERTIES
 get_target_property(output_dir OCOVR LIBRARY_OUTPUT_DIRECTORY)
 add_custom_command(TARGET OCOVR
 	PRE_LINK COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir})
+
+# Focused deterministic harness for the OSC frame/gait contract and WIP
+# semantic transitions. It is excluded from normal builds and compiles the
+# production sources through narrow test-only hooks (no UDP thread or sleeps).
+if (WIN32)
+	add_executable(OCURuntimeSemanticsSelfTest EXCLUDE_FROM_ALL
+		tests/RuntimeSemanticsSelfTest.cpp
+		OpenOVR/Misc/NetworkTrackers.cpp
+		OpenOVR/Misc/WalkInPlace.cpp)
+	target_compile_definitions(OCURuntimeSemanticsSelfTest PRIVATE
+		OCU_RUNTIME_SELF_TEST)
+	target_include_directories(OCURuntimeSemanticsSelfTest PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR})
+	target_link_libraries(OCURuntimeSemanticsSelfTest PRIVATE ws2_32)
+	set_target_properties(OCURuntimeSemanticsSelfTest PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+endif()

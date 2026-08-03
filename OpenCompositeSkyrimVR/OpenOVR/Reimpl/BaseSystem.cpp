@@ -4,6 +4,7 @@
 #include "BaseInput.h"
 #include "BaseOverlay.h"
 #include "BaseSystem.h"
+#include "../Misc/CameraLegCalibration.h"
 #include "Drivers/Backend.h"
 #include "Misc/Config.h"
 #include "convert.h"
@@ -16,6 +17,8 @@
 // When true for a hand, GetControllerState masks that hand's trigger
 // so the game doesn't process it while the VR keyboard handles it.
 extern bool g_kbLaserConsumesTrigger[2];
+extern bool g_consoleLaserConsumesTrigger[2];
+extern bool g_menuLaserConsumesTrigger[2];
 extern bool g_kbGrabActive;
 
 // Menu laser active flag — set by BaseOverlay::_BuildLayers when a
@@ -335,6 +338,13 @@ ETrackedDeviceClass BaseSystem::GetTrackedDeviceClass(vr::TrackedDeviceIndex_t d
 
 	if (deviceIndex == thirdTouchIndex)
 		return TrackedDeviceClass_GenericTracker;
+
+	// Anything past the hardcoded trio (body trackers, network trackers):
+	// ask the device itself. Without this, tracker consumers like the FBT
+	// mod enumerate our devices as Invalid and find "no trackers".
+	ITrackedDevice* dev = BackendManager::Instance().GetDevice(deviceIndex);
+	if (dev)
+		return dev->GetTrackedDeviceClass();
 
 	return TrackedDeviceClass_Invalid;
 }
@@ -695,9 +705,8 @@ bool BaseSystem::GetControllerState(vr::TrackedDeviceIndex_t controllerDeviceInd
 
 	bool ok = inputSystem->GetLegacyControllerState(controllerDeviceIndex, controllerState);
 
-	// Mask trigger from game when that hand's laser is on the VR keyboard.
-	// Menu quad lasers do NOT consume triggers — the game handles trigger
-	// input for menu navigation through its own controller system.
+	// Mask controller input when a laser owns its synthetic click path. The
+	// keyboard owns several controls; the flat-menu bridge owns only trigger.
 	if (ok && controllerDeviceIndex >= 1 && controllerDeviceIndex <= 2) {
 		int hand = (int)controllerDeviceIndex - 1;
 		if (g_kbLaserConsumesTrigger[hand]) {
@@ -715,6 +724,29 @@ bool BaseSystem::GetControllerState(vr::TrackedDeviceIndex_t controllerDeviceInd
 				vr::ButtonMaskFromId(vr::k_EButton_ApplicationMenu);
 			controllerState->ulButtonPressed &= ~fullMask;
 			controllerState->ulButtonTouched &= ~fullMask;
+			controllerState->rAxis[1].x = 0.0f;
+			controllerState->rAxis[1].y = 0.0f;
+		} else if (g_menuLaserConsumesTrigger[hand]) {
+			// SKSE injects the Scaleform mouse down/up at the laser target.
+			// Suppress Skyrim's simultaneous native Accept on the focused row.
+			uint64_t triggerMask = vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger);
+			controllerState->ulButtonPressed &= ~triggerMask;
+			controllerState->ulButtonTouched &= ~triggerMask;
+			controllerState->rAxis[1].x = 0.0f;
+			controllerState->rAxis[1].y = 0.0f;
+		}
+	}
+
+	// While the console is open, the 3D world-laser bridge owns trigger
+	// selection. Mask Skyrim's native flat-screen pointer click so it cannot
+	// immediately replace the Havok-selected reference with the wrong target.
+	if (ok && controllerDeviceIndex >= 1 && controllerDeviceIndex <= 2) {
+		int hand = (int)controllerDeviceIndex - 1;
+		if (g_consoleLaserConsumesTrigger[hand]) {
+			uint64_t triggerMask =
+			    vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger);
+			controllerState->ulButtonPressed &= ~triggerMask;
+			controllerState->ulButtonTouched &= ~triggerMask;
 			controllerState->rAxis[1].x = 0.0f;
 			controllerState->rAxis[1].y = 0.0f;
 		}
@@ -737,6 +769,19 @@ bool BaseSystem::GetControllerState(vr::TrackedDeviceIndex_t controllerDeviceInd
 		controllerState->rAxis[0].y = 0.0f;
 		controllerState->rAxis[1].x = 0.0f; // trigger axis
 		controllerState->rAxis[1].y = 0.0f;
+	}
+
+	// Camera-foot calibration owns both sticks and its modifier buttons. It reads
+	// the raw BaseInput state directly, so the game-facing legacy state can be
+	// completely neutralized without starving the calibration tool itself.
+	if (ok && CameraLegCalibration::CapturesInput()
+	    && controllerDeviceIndex >= 1 && controllerDeviceIndex <= 2) {
+		controllerState->ulButtonPressed = 0;
+		controllerState->ulButtonTouched = 0;
+		for (auto& axis : controllerState->rAxis) {
+			axis.x = 0.0f;
+			axis.y = 0.0f;
+		}
 	}
 
 	return ok;

@@ -40,3 +40,10 @@ build-deploy-openvr-api.ps1
 /OpenCompositeSkyrimVR/build_codex_check_vs
 /.codex-build-ocsvr/DrvOpenXR.dir/RelWithDebInfo
 /.codex-build-ocsvr
+
+# Configurator publish bundles (build artifacts)
+ConfiguratorPublish-*/
+
+# Body tracking runtime output
+world3d_diag.csv
+BodyTracking/Captures/

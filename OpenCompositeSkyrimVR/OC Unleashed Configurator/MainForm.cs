@@ -205,6 +205,10 @@ namespace OpenCompositeConfigurator
         private NumericUpDown _nudLeftLaserRotY = null!;
         private NumericUpDown _nudLeftLaserRotZ = null!;
         private CheckBox _chkRightLaserRotation = null!;
+        // Menu laser quad grid toggle: self-saving (writes menu_quad_settings.ini
+        // directly, hot-reloaded by the DLL ~1s) — excluded from dirty-tracking.
+        private CheckBox _chkShowQuadGrid = null!;
+        private bool _suppressQuadGridWrite;
         private NumericUpDown _nudRightLaserRotX = null!;
         private NumericUpDown _nudRightLaserRotY = null!;
         private NumericUpDown _nudRightLaserRotZ = null!;
@@ -1518,6 +1522,15 @@ namespace OpenCompositeConfigurator
                 };
                 ay += 28;
 
+                _chkShowQuadGrid = MakeCheckBox("Show menu laser calibration grid (applies live in-game, about 1 second)", ax1, ay);
+                _chkShowQuadGrid.CheckedChanged += (s, e) =>
+                {
+                    if (!_suppressQuadGridWrite)
+                        SetMenuQuadFlag("show_calibration_quad", _chkShowQuadGrid.Checked);
+                };
+                _pnlAxisAdjust.Controls.Add(_chkShowQuadGrid);
+                ay += 28;
+
                 _pnlAxisAdjust.Controls.Add(MakeSeparator(ax1, ay, rightEdge - leftMargin));
                 ay += 12;
 
@@ -1801,7 +1814,7 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(_chkDisableMouse);
 
-            _btnSaveBindings = MakeButton("Save All Bindings", rightEdge - 200, y, 210, 26);
+            _btnSaveBindings = MakeButton("Save All Bindings", rightEdge - 210, y, 210, 26);
             _btnSaveBindings.BackColor = Color.FromArgb(40, 120, 40);
             _btnSaveBindings.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
             _btnSaveBindings.Click += BtnSaveBindings_Click;
@@ -3971,6 +3984,61 @@ namespace OpenCompositeConfigurator
             return "";
         }
 
+        // menu_quad_settings.ini lives next to opencomposite.ini in the mod root
+        // (persistent copy) AND in the game dir (the copy the DLL hot-reloads ~1s
+        // while the game runs; Root Builder sweeps it back on exit). Write both so
+        // a toggle is live mid-game and survives the exit sweep. Targeted line
+        // edits only — the file carries the user's calibration comments.
+        private IEnumerable<string> GetMenuQuadIniPaths()
+        {
+            string root = GetInstalledRootDir();
+            if (!string.IsNullOrEmpty(root))
+            {
+                string p = Path.Combine(root, "menu_quad_settings.ini");
+                if (File.Exists(p)) yield return p;
+            }
+            if (!string.IsNullOrEmpty(_gameDir))
+            {
+                string p = Path.Combine(_gameDir, "menu_quad_settings.ini");
+                if (File.Exists(p)) yield return p;
+            }
+        }
+
+        private bool GetMenuQuadFlag(string key, bool fallback)
+        {
+            foreach (string path in GetMenuQuadIniPaths())
+            {
+                try
+                {
+                    foreach (string line in File.ReadLines(path))
+                    {
+                        string t = line.TrimStart();
+                        if (t.StartsWith(key + "=", StringComparison.OrdinalIgnoreCase))
+                            return t.Substring(key.Length + 1).Trim() != "0";
+                    }
+                }
+                catch { }
+            }
+            return fallback;
+        }
+
+        private void SetMenuQuadFlag(string key, bool on)
+        {
+            string value = key + "=" + (on ? "1" : "0");
+            foreach (string path in GetMenuQuadIniPaths())
+            {
+                try
+                {
+                    var lines = File.ReadAllLines(path).ToList();
+                    int idx = lines.FindIndex(l => l.TrimStart().StartsWith(key + "=", StringComparison.OrdinalIgnoreCase));
+                    if (idx >= 0) lines[idx] = value;
+                    else lines.Add(value);
+                    File.WriteAllLines(path, lines);
+                }
+                catch { }
+            }
+        }
+
         private string DescribeIniSaveLocations(IReadOnlyCollection<string> savePaths)
         {
             return "installed OCU mod folder";
@@ -5778,10 +5846,17 @@ namespace OpenCompositeConfigurator
             int c1 = leftMargin + 6;
             int c2 = leftMargin + 300;
 
+            var btnHapticsSave = MakeButton("Save opencomposite.ini", rightEdge - 200, y - 4, 200, 30);
+            btnHapticsSave.BackColor = Color.FromArgb(40, 120, 40);
+            btnHapticsSave.ForeColor = Color.White;
+            btnHapticsSave.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+            btnHapticsSave.Click += BtnSave_Click;
+            container.Controls.Add(btnHapticsSave);
+
             var lblIntro = new Label
             {
                 Location = new Point(leftMargin, y),
-                Size = new Size(rightEdge - leftMargin, 24),
+                Size = new Size(rightEdge - leftMargin - 210, 24),
                 Text = "Controller rumble settings. The master switch gates everything, including rumble the game itself triggers.",
                 ForeColor = Color.FromArgb(150, 200, 250),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
@@ -6233,8 +6308,10 @@ namespace OpenCompositeConfigurator
             ReadFromIni();
             _isLoading = false;
 
-            // Write defaults to both ini locations
-            WriteToIni();
+            // Write defaults to both ini locations. Master Reset is the one
+            // save that intentionally produces a clean file, so skip the
+            // merge-from-disk (which would resurrect the old contents).
+            WriteToIni(mergeFromDisk: false);
             foreach (string path in GetOpenCompositeIniSavePaths(createDirectories: true))
                 _ini.Save(path);
 
@@ -6444,6 +6521,13 @@ namespace OpenCompositeConfigurator
             {
                 if (c == _tabKeyboard) continue;
                 if (c == _tabGestures) continue; // own save flow, not part of the ini
+                if (c == _chkShowQuadGrid) continue; // self-saving, applies instantly
+                // Body Tracking self-savers (persist to ui.json on Start/close;
+                // not part of the ini). Only "Send trackers to the game" and
+                // "Enable Full-Body Walking" genuinely need Save.
+                if (c == _cmbBodyCamera || c == _txtBodyCamUrl || c == _chkBodyMirror
+                    || c == _chkBodyStream || c == _cmbBodyDevice || c == _cmbBodyPoseSource
+                    || c == _nudBodyOffX || c == _nudBodyOffY) continue;
                 switch (c)
                 {
                     case CheckBox cb:     cb.CheckedChanged += (s, e) => MarkDirty(); break;
@@ -6650,6 +6734,9 @@ namespace OpenCompositeConfigurator
             _chkCombatHapticBow.Checked = ParseBool(_ini.Get("", "combatHapticBow", "true"));
             _chkCombatHapticMagic.Checked = ParseBool(_ini.Get("", "combatHapticMagic", "true"));
             _chkNetTrackersEnabled.Checked = ParseBool(_ini.Get("", "networkTrackersEnabled", "false"));
+            _chkCameraLegCalibration.Checked = ParseBool(_ini.Get("", "cameraLegCalibrationEnabled", "true"));
+            _chkWalkInPlace.Checked = ParseBool(_ini.Get("", "walkInPlaceEnabled", "false"));
+            SelectWalkActivation(_ini.Get("", "walkInPlaceActivation", "none"));
             if (int.TryParse(_ini.Get("", "combatHapticStrength", "80"), out int chs))
                 _nudCombatHapticStrength.Value = Math.Clamp(chs, 0, 100);
             if (TryParseIniFloat(_ini.Get("", "leftDeadZoneSize", "0.0"), out float ldz))
@@ -6728,6 +6815,10 @@ namespace OpenCompositeConfigurator
             _nudRightLaserRotX.Enabled = _chkRightLaserRotation.Checked;
             _nudRightLaserRotY.Enabled = _chkRightLaserRotation.Checked;
             _nudRightLaserRotZ.Enabled = _chkRightLaserRotation.Checked;
+
+            _suppressQuadGridWrite = true;
+            _chkShowQuadGrid.Checked = GetMenuQuadFlag("show_calibration_quad", true);
+            _suppressQuadGridWrite = false;
 
             // FSR settings
             _chkFsrEnabled.Checked = ParseBool(_ini.Get("", "fsrEnabled", "false"));
@@ -6894,9 +6985,26 @@ namespace OpenCompositeConfigurator
             _isLoading = false;
         }
 
-        private void WriteToIni()
+        private void WriteToIni(bool mergeFromDisk = true)
         {
-            _ini.Reset();
+            // Save = fresh disk content + UI values laid on top. Rebuilding
+            // from UI state alone (the old Reset() here) destroyed every key
+            // the Configurator doesn't model — hand-added DLL calibration
+            // (renderModel* trim, laserOriginDown), [combos], comments — on
+            // every Save ("config-eater"). Reloading first also picks up keys
+            // added to the file while the Configurator was open.
+            if (mergeFromDisk)
+            {
+                string diskPath = GetOpenCompositeIniLoadPath();
+                if (!string.IsNullOrEmpty(diskPath) && File.Exists(diskPath))
+                    _ini.Load(diskPath);
+                else
+                    _ini.Reset();
+            }
+            else
+            {
+                _ini.Reset();
+            }
 
             _ini.Set("keyboard", "shortcutEnabled", _chkShortcutEnabled.Checked ? "true" : "false");
 
@@ -6965,6 +7073,9 @@ namespace OpenCompositeConfigurator
                 _ini.Set("", "combatHapticBow", _chkCombatHapticBow.Checked ? "true" : "false");
                 _ini.Set("", "combatHapticMagic", _chkCombatHapticMagic.Checked ? "true" : "false");
                 _ini.Set("", "networkTrackersEnabled", _chkNetTrackersEnabled.Checked ? "true" : "false");
+                _ini.Set("", "cameraLegCalibrationEnabled", _chkCameraLegCalibration.Checked ? "true" : "false");
+                _ini.Set("", "walkInPlaceEnabled", _chkWalkInPlace.Checked ? "true" : "false");
+                _ini.Set("", "walkInPlaceActivation", WalkActivationKey());
                 _ini.Set("", "combatHapticStrength", ((int)_nudCombatHapticStrength.Value).ToString());
                 _ini.Set("", "leftDeadZoneSize", _nudLeftDeadZone.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
                 _ini.Set("", "rightDeadZoneSize", _nudRightDeadZone.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));

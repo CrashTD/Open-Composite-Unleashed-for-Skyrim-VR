@@ -101,6 +101,20 @@ private:
 	bool sendInputMode = true;  // Always SendInput — keyboard tied to Windows keyboard
 	bool sendInputOnly = false; // true when opened via controller shortcut (no text buffer)
 
+	// PC MODE keys stay down until the same controller's trigger is released.
+	// Retaining the layout id also keeps the pressed visual latched if the
+	// laser drifts onto another key while the trigger is held.
+	struct HeldPCKey {
+		uint16_t vk = 0;
+		int keyId = -1;
+		bool shift = false;
+		bool scanOnly = false;
+	};
+	HeldPCKey heldPCKeys[2];
+	void PressHeldPCKey(int side, int keyId, uint16_t vk, bool shift, bool scanOnly);
+	void ReleaseHeldPCKey(int side);
+	void ReleaseAllHeldPCKeys();
+
 	// Grab bar — trigger on the top strip to grab and reposition the keyboard
 	static constexpr int GRAB_BAR_HEIGHT = 52; // pixels at top of texture
 	static constexpr int TOGGLE_BTN_WIDTH = 120; // headlock toggle button width
@@ -134,8 +148,10 @@ private:
 	XrVector3f laserOrigin[2] = {};
 	XrVector3f laserHitPoint[2] = {};
 
-	// Laser beam composition layers (one per hand)
-	XrSwapchain laserChain[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
+	// Laser beam composition layers (one per hand, idle/clicked variants).
+	// Both textures are built up front so press feedback never uploads during a
+	// VR frame. State 0 = warm white; state 1 = electric blue.
+	XrSwapchain laserChain[2][2] = {};
 	XrCompositionLayerQuad laserLayer[2] = {};
 
 	// All layers returned by Update (keyboard + laser beams)

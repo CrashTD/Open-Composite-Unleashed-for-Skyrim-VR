@@ -258,6 +258,8 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, rightLaserXRotation);
 		CFGOPT(float, rightLaserYRotation);
 		CFGOPT(float, rightLaserZRotation);
+		CFGOPT(float, leftLaserOriginDown);
+		CFGOPT(float, rightLaserOriginDown);
 		CFGOPT(float, leftXPosition);
 		CFGOPT(float, leftYPosition);
 		CFGOPT(float, leftZPosition);
@@ -271,6 +273,13 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, renderModelOffY);
 		CFGOPT(float, renderModelOffZ);
 		CFGOPT(float, renderModelScale);
+		CFGOPT(float, indexRenderModelRotX);
+		CFGOPT(float, indexRenderModelRotY);
+		CFGOPT(float, indexRenderModelRotZ);
+		CFGOPT(float, indexRenderModelOffX);
+		CFGOPT(float, indexRenderModelOffY);
+		CFGOPT(float, indexRenderModelOffZ);
+		CFGOPT(float, indexRenderModelScale);
 		CFGOPT(bool, renderModelAdjust);
 		CFGOPT(float, leftDeadZoneSize);
 		CFGOPT(float, leftDeadZoneXSize);
@@ -330,6 +339,10 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(string, bodyTrackerRoles);
 		CFGOPT(bool, networkTrackersEnabled);
 		CFGOPT(int, networkTrackerPort);
+		CFGOPT(bool, cameraLegCalibrationEnabled);
+		CFGOPT(bool, walkInPlaceEnabled);
+		CFGOPT(float, walkInPlaceSpeed);
+		CFGOPT(string, walkInPlaceActivation);
 		CFGOPT(bool, combatHapticShield);
 		CFGOPT(bool, combatHapticWeapon);
 		CFGOPT(bool, combatHapticBow);

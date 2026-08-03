@@ -5,6 +5,7 @@
 #include "../BaseCommon.h"
 
 #include "Drivers/Backend.h"
+#include <atomic>
 #include <array>
 #include <map>
 #include <optional>
@@ -328,11 +329,23 @@ public:
 	virtual EVRInputError GetBindingVariant(vr::VRInputValueHandle_t ulDevicePath, char* pchVariantArray, uint32_t unVariantArraySize);
 
 public: // INTERNAL FUNCTIONS
+	// Walk-in-place intent is also sampled by the tracker frame pump so a
+	// configured hold control can safely relax only the first-step gate.
+	bool HasWalkInPlaceActivationButton() const;
+	bool IsWalkInPlaceActivationHeld() const;
+	// Camera-fed feet should yield to VRIK's normal leg animation while
+	// artificial locomotion is active. Physical HTCX trackers are untouched.
+	bool ShouldReleaseNetworkFeetForLocomotion() const;
+
 	/**
 	 * Bind all the inputs to the current OpenXR session. This must be called after swapping the session to keep
 	 * the inputs working.
 	 */
 	void BindInputsForSession();
+	// Called before xrDestroySession. Actions/action sets are instance-owned and
+	// survive an ordinary restart; tracker action spaces are session-owned and
+	// must be destroyed and recreated for the replacement session.
+	void PrepareForSessionShutdown();
 
 	/**
 	 * Similar to setting the manifest, but doesn't actually load one. Equivalent to passing in a blank manifest.
@@ -720,6 +733,8 @@ private:
 	XrAction bodyTrackerHaptics[14] = {}; // vibration outputs; null if runtime rejected them
 	std::map<vr::TrackedDeviceIndex_t, int> bodyTrackerDeviceRoles; // OpenVR device index -> role
 	void CreateBodyTrackerActions();
+	void DestroyBodyTrackerSpaces();
+	void ResetBodyTrackerActionHandles();
 
 	/**
 	 * The list of subaction paths anything can be bound to - this basically just means 'everything' and contains
@@ -739,6 +754,13 @@ private:
 
 	void LoadDpadAction(const InteractionProfile& profile, const std::string& importBasePath, const std::string& inputName, const std::string& subMode, Action* action, std::vector<XrActionSuggestedBinding>& bindings);
 	void CreateLegacyActions();
+	float GetWalkInPlaceStickY() const;
+	float GetWalkInPlaceTurnX() const;
+	static uint64_t InputNowMs();
+	void RememberPhysicalMove(float y);
+	std::atomic<float> physicalMoveY{ 0.0f };
+	std::atomic<uint64_t> physicalMoveSampleMs{ 0 };
+	mutable std::atomic<uint64_t> networkFeetReleaseUntilMs{ 0 };
 
 	/**
 	 * Convert a tracked device index to 0=left 1=right -1=other

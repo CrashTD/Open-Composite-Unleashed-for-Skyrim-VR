@@ -46,6 +46,8 @@ public:
 	float RightLaserXRotation() const { return rightLaserXRotation; }
 	float RightLaserYRotation() const { return rightLaserYRotation; }
 	float RightLaserZRotation() const { return rightLaserZRotation; }
+	float LeftLaserOriginDown() const { return leftLaserOriginDown; }
+	float RightLaserOriginDown() const { return rightLaserOriginDown; }
 	float LeftXPosition() const { return leftXPosition; }
 	float LeftYPosition() const { return leftYPosition; }
 	float LeftZPosition() const { return leftZPosition; }
@@ -59,6 +61,13 @@ public:
 	float RenderModelOffY() const { return renderModelOffY; }
 	float RenderModelOffZ() const { return renderModelOffZ; }
 	float RenderModelScale() const { return renderModelScale; }
+	float IndexRenderModelRotX() const { return indexRenderModelRotX; }
+	float IndexRenderModelRotY() const { return indexRenderModelRotY; }
+	float IndexRenderModelRotZ() const { return indexRenderModelRotZ; }
+	float IndexRenderModelOffX() const { return indexRenderModelOffX; }
+	float IndexRenderModelOffY() const { return indexRenderModelOffY; }
+	float IndexRenderModelOffZ() const { return indexRenderModelOffZ; }
+	float IndexRenderModelScale() const { return indexRenderModelScale; }
 	bool RenderModelAdjust() const { return renderModelAdjust; }
 	float LeftDeadZoneSize() const { return leftDeadZoneSize; }
 	float LeftDeadZoneXSize() const { return leftDeadZoneXSize; }
@@ -103,6 +112,10 @@ public:
 	const std::string& BodyTrackerRoles() const { return bodyTrackerRoles; }
 	bool NetworkTrackersEnabled() const { return networkTrackersEnabled; }
 	int NetworkTrackerPort() const { return networkTrackerPort; }
+	bool CameraLegCalibrationEnabled() const { return cameraLegCalibrationEnabled; }
+	bool WalkInPlaceEnabled() const { return walkInPlaceEnabled; }
+	float WalkInPlaceSpeed() const { return walkInPlaceSpeed; }
+	const std::string& WalkInPlaceActivation() const { return walkInPlaceActivation; }
 	bool CombatHapticShield() const { return combatHapticShield; }
 	bool CombatHapticWeapon() const { return combatHapticWeapon; }
 	bool CombatHapticBow() const { return combatHapticBow; }
@@ -297,6 +310,8 @@ private:
 	float rightLaserXRotation = 0.0f;
 	float rightLaserYRotation = 0.0f;
 	float rightLaserZRotation = 0.0f;
+	float leftLaserOriginDown = 0.0f;
+	float rightLaserOriginDown = 0.0f;
 
 	float leftXPosition = 0.0f;
 	float leftYPosition = 0.0f;
@@ -314,6 +329,15 @@ private:
 	float renderModelOffY = 0.0f;
 	float renderModelOffZ = 0.0f;
 	float renderModelScale = 1.0f; // uniform; Valve models are true 1:1
+	// Index has an independent identity trim. Never inherit the calibrated
+	// Touch/Quest renderModel* values when the active profile is Knuckles.
+	float indexRenderModelRotX = 0.0f;
+	float indexRenderModelRotY = 0.0f;
+	float indexRenderModelRotZ = 0.0f;
+	float indexRenderModelOffX = 0.0f;
+	float indexRenderModelOffY = 0.0f;
+	float indexRenderModelOffZ = 0.0f;
+	float indexRenderModelScale = 1.0f;
 	bool renderModelAdjust = false; // live stick-driven pose trim (calibration mode)
 
 
@@ -466,6 +490,12 @@ private:
 	// Off by default: opening a UDP port should be a user choice.
 	bool networkTrackersEnabled = false;
 	int networkTrackerPort = 9000; // the de-facto default OSC tracker port
+	bool cameraLegCalibrationEnabled = true; // arm live camera-foot trim controls
+
+	// Walk-in-place locomotion driven from the body-tracker feed.
+	bool walkInPlaceEnabled = false;
+	float walkInPlaceSpeed = 1.0f;
+	std::string walkInPlaceActivation = "none"; // none or l_/r_ + trigger, grip, a, b, stick, trackpad
 
 	// Combat haptics: the SKSE plugin reports game hit events through the
 	// OCU_CombatHaptic export; these gate which ones vibrate the controller.

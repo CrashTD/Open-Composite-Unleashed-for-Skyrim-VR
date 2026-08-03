@@ -59,9 +59,14 @@ private:
 	std::unique_ptr<XrHMD> hmd = std::make_unique<XrHMD>();
 	std::unique_ptr<XrController> hand_left;
 	std::unique_ptr<XrController> hand_right;
-	std::vector<std::unique_ptr<XrGenericTracker>> bodyTrackers; // ini-enabled roles, devices 3+
-	std::vector<std::unique_ptr<XrNetworkTracker>> networkTrackers; // OSC-fed, devices after bodyTrackers
-	bool networkTrackersAttempted = false; // one-shot: don't retry a failed UDP bind every pump
+	// Unadvertised HTCX role readers used as raw inputs by the network/camera
+	// mux. GetDevice never returns these, so a physical tracker has one public
+	// identity and canonical waist/foot serials remain OCU-NET1/2/3.
+	std::vector<std::unique_ptr<XrGenericTracker>> htcxTrackerSources;
+	std::vector<std::unique_ptr<XrGenericTracker>> bodyTrackers; // public native roles not represented by an OCU-NET slot
+	std::vector<std::unique_ptr<XrNetworkTracker>> networkTrackers; // canonical HTCX/OSC mux devices after bodyTrackers
+	bool bodyTrackersAttempted = false;
+	bool networkTrackersAttempted = false; // one-shot device publication and optional UDP bind
 
 	void CheckOrInitCompositors(const vr::Texture_t* tex);
 	std::unique_ptr<Compositor> compositors[XruEyeCount];

@@ -1,10 +1,12 @@
 #include "generated/interfaces/vrtypes.h"
 #include "Misc/BodyTrackerRoles.h"
+#include "Misc/WalkInPlace.h"
 #include "logging.h"
 #include "openxr/openxr.h"
 #include "stdafx.h"
 #define BASE_IMPL
 #include "BaseInput.h"
+#include "../Misc/CameraLegCalibration.h"
 #include <string>
 
 #include <convert.h>
@@ -12,6 +14,8 @@
 #include "Drivers/Backend.h"
 #include "generated/static_bases.gen.h"
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cmath>
 #include <codecvt>
 #include <fstream>
@@ -39,6 +43,129 @@ using namespace vr;
 #include "Misc/android_api.h"
 
 SmoothInput BaseInput::smoothInput(oovr_global_configuration.InputWindowSize());
+
+uint64_t BaseInput::InputNowMs()
+{
+	using namespace std::chrono;
+	return (uint64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+void BaseInput::RememberPhysicalMove(float y)
+{
+	physicalMoveY.store(y);
+	physicalMoveSampleMs.store(InputNowMs());
+}
+
+bool BaseInput::HasWalkInPlaceActivationButton() const
+{
+	std::string selected = oovr_global_configuration.WalkInPlaceActivation();
+	std::transform(selected.begin(), selected.end(), selected.begin(),
+	    [](unsigned char c) { return (char)std::tolower(c); });
+	if (selected.rfind("l_", 0) == 0 || selected.rfind("r_", 0) == 0)
+		selected = selected.substr(2);
+	return selected == "grip" || selected == "trigger" || selected == "a" ||
+	    selected == "b" || selected == "stick" || selected == "trackpad" ||
+	    selected == "primary" || selected == "secondary" || selected == "thumbstick";
+}
+
+bool BaseInput::IsWalkInPlaceActivationHeld() const
+{
+	std::string selected = oovr_global_configuration.WalkInPlaceActivation();
+	std::transform(selected.begin(), selected.end(), selected.begin(),
+	    [](unsigned char c) { return (char)std::tolower(c); });
+	if (selected.empty() || selected == "none")
+		return true;
+
+	int requiredHand = -1;
+	if (selected.rfind("l_", 0) == 0) {
+		requiredHand = 0;
+		selected = selected.substr(2);
+	} else if (selected.rfind("r_", 0) == 0) {
+		requiredHand = 1;
+		selected = selected.substr(2);
+	}
+	// Legacy hand-agnostic names remain readable; all new Configurator saves
+	// use the exact physical hand/button ids shared with the Gestures page.
+	if (selected == "primary") selected = "a";
+	else if (selected == "secondary") selected = "b";
+	else if (selected == "thumbstick") selected = "stick";
+
+	auto readBool = [](XrAction action) {
+		if (action == XR_NULL_HANDLE)
+			return false;
+		XrActionStateGetInfo info{ XR_TYPE_ACTION_STATE_GET_INFO };
+		info.action = action;
+		XrActionStateBoolean state{ XR_TYPE_ACTION_STATE_BOOLEAN };
+		XrResult result = xrGetActionStateBoolean(xr_session.get(), &info, &state);
+		return XR_SUCCEEDED(result) && state.isActive && state.currentState;
+	};
+
+	for (const LegacyControllerActions& ctrl : legacyControllers) {
+		if (requiredHand >= 0 && (int)ctrl.handType != requiredHand)
+			continue;
+		XrAction action = XR_NULL_HANDLE;
+		if (selected == "grip") action = ctrl.gripClick;
+		else if (selected == "trigger") action = ctrl.triggerClick;
+		else if (selected == "a") action = ctrl.btnA;
+		else if (selected == "b") action = ctrl.menu;
+		else if (selected == "stick") action = ctrl.stickBtn;
+		else if (selected == "trackpad") {
+			action = ctrl.trackPadClick;
+			// The Vive profile exposes its physical trackpad through the legacy
+			// Axis0/stick-click slot. Other profiles (Index/WMR) have a distinct
+			// trackpad action, so only apply this alias to an actual Vive wand.
+			ITrackedDevice* device = BackendManager::Instance().GetDeviceByHand(ctrl.handType);
+			const InteractionProfile* profile = device ? device->GetInteractionProfile() : nullptr;
+			if (profile && profile->GetPath() == "/interaction_profiles/htc/vive_controller")
+				action = ctrl.stickBtn;
+		}
+		else return true; // Unknown values preserve the backwards-compatible always-on behavior.
+		if (readBool(action))
+			return true;
+	}
+	return false;
+}
+
+bool BaseInput::ShouldReleaseNetworkFeetForLocomotion() const
+{
+	uint64_t now = InputNowMs();
+	uint64_t sampled = physicalMoveSampleMs.load();
+	bool physicalStick = sampled != 0 && now - sampled < 250 && std::abs(physicalMoveY.load()) > 0.12f;
+	bool syntheticGait = std::abs(GetWalkInPlaceStickY()) > 0.03f;
+	if (physicalStick || syntheticGait)
+		networkFeetReleaseUntilMs.store(now + 300);
+	return now < networkFeetReleaseUntilMs.load();
+}
+
+// Convert the cadence engine's normalized 0..1 speed into the stick range
+// Skyrim actually treats as locomotion. The activation control gates only the
+// synthetic output; cadence keeps tracking while released, so holding the
+// configured button during an established gait responds immediately.
+float BaseInput::GetWalkInPlaceStickY() const
+{
+	if (!IsWalkInPlaceActivationHeld())
+		return 0.0f;
+	float raw = WalkInPlace::Instance().AxisY();
+	float mag = std::abs(raw);
+	if (mag < 0.03f)
+		return 0.0f;
+	// Skyrim treats the movement stick as two practical animation bands. Keep
+	// ordinary gait safely in the walking band; once the skeleton's measured
+	// run cadence latches, drive a real full-stick run instead of hovering in
+	// the analog grey zone between animations.
+	if (WalkInPlace::Instance().IsRunning())
+		return std::copysign(1.0f, raw);
+	// Leave real room below an ordinary walk while preserving a broad analog
+	// ramp. A lazy gait now sits near 0.30-0.40 instead of being forced to 0.40+
+	// immediately; the separate run latch still jumps decisively to 1.0.
+	float walkAxis = std::clamp(0.18f + 0.85f * mag, 0.30f, 0.76f);
+	return std::copysign(walkAxis, raw);
+}
+
+float BaseInput::GetWalkInPlaceTurnX() const
+{
+	return IsWalkInPlaceActivationHeld() ? WalkInPlace::Instance().TurnX() : 0.0f;
+}
 
 // Trackpad state exported for the VR keyboard swipe shortcut and the gesture
 // recognizer (BaseOverlay reads these each frame). Zero on controllers
@@ -376,11 +503,16 @@ EVRInputError BaseInput::SetActionManifestPath(const char* pchActionManifestPath
 			return vr::VRInputError_None;
 
 		OOVR_LOG("Received another manifest! Restarting session to reattach inputs...");
+		// The legacy action set owns the HTCX actions. Tear down its session-owned
+		// spaces first, then forget the child action handles after destroying the
+		// set so CreateBodyTrackerActions can rebuild them in the replacement set.
+		DestroyBodyTrackerSpaces();
 		for (std::unique_ptr<ActionSet>& as : actionSets.GetItems()) {
 			OOVR_FAILED_XR_ABORT(xrDestroyActionSet(as->xr));
 		}
 		OOVR_FAILED_XR_ABORT(xrDestroyActionSet(legacyInputsSet));
 		legacyInputsSet = XR_NULL_HANDLE;
+		ResetBodyTrackerActionHandles();
 		actions.Reset();
 		actionSets.Reset();
 		DpadBindingInfo::parents.clear();
@@ -695,6 +827,29 @@ void BaseInput::LoadEmptyManifestIfRequired(bool allowSessionRestart)
 	// Attach everything to the current session
 	restartingSession = false;
 	BindInputsForSession();
+}
+
+void BaseInput::DestroyBodyTrackerSpaces()
+{
+	for (XrSpace& space : bodyTrackerSpaces) {
+		if (space != XR_NULL_HANDLE)
+			OOVR_FAILED_XR_SOFT_ABORT(xrDestroySpace(space));
+		space = XR_NULL_HANDLE;
+	}
+}
+
+void BaseInput::ResetBodyTrackerActionHandles()
+{
+	std::fill(std::begin(bodyTrackerActions), std::end(bodyTrackerActions), XR_NULL_HANDLE);
+	std::fill(std::begin(bodyTrackerHaptics), std::end(bodyTrackerHaptics), XR_NULL_HANDLE);
+}
+
+void BaseInput::PrepareForSessionShutdown()
+{
+	// XrAction and XrActionSet belong to the instance and remain valid across
+	// xrDestroySession. XrSpace belongs to the session, so destroy it while the
+	// old session is still alive and force BindInputsForSession to recreate it.
+	DestroyBodyTrackerSpaces();
 }
 
 void BaseInput::BindInputsForSession()
@@ -1377,8 +1532,23 @@ EVRInputError BaseInput::GetDigitalActionData(VRActionHandle_t action, InputDigi
 		pActionData->activeOrigin = activeOriginFromSubaction(act, allSubactionPathNames[i].c_str());
 	}
 
+	// Skyrim consumes the action API, not only GetControllerState. Keep the
+	// movement/turn stick touch action asserted while synthetic gait locomotion is live.
+	if (oovr_global_configuration.WalkInPlaceEnabled() &&
+	    ((lowerStr(act->fullName) == "/actions/legacy/in/left_axis0_touch" && std::abs(GetWalkInPlaceStickY()) > 0.0f) ||
+	        (lowerStr(act->fullName) == "/actions/legacy/in/right_axis0_touch" && std::abs(GetWalkInPlaceTurnX()) > 0.0f))) {
+		pActionData->bState = true;
+		pActionData->bActive = true;
+	}
+
 	// Note it's possible we didn't set any output if this action isn't bound to anything, just leave the
 	//  struct at it's default values.
+	if (CameraLegCalibration::CapturesInput()) {
+		pActionData->bState = false;
+		pActionData->bChanged = false;
+		pActionData->bActive = false;
+		pActionData->activeOrigin = 0;
+	}
 
 	return VRInputError_None;
 }
@@ -1387,6 +1557,10 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
     VRInputValueHandle_t ulRestrictToDevice)
 {
 	GET_ACTION_FROM_HANDLE(act, action);
+	const bool isSkyrimLeftMoveAction =
+	    lowerStr(act->fullName) == "/actions/legacy/in/left_axis0_value";
+	const bool isSkyrimRightTurnAction =
+	    lowerStr(act->fullName) == "/actions/legacy/in/right_axis0_value";
 
 	ZeroMemory(pActionData, unActionDataSize);
 	OOVR_FALSE_ABORT(unActionDataSize == sizeof(*pActionData));
@@ -1444,6 +1618,35 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 		case ActionType::Vector2: {
 			XrActionStateVector2f state = { XR_TYPE_ACTION_STATE_VECTOR2F };
 			OOVR_FAILED_XR_ABORT(xrGetActionStateVector2f(xr_session.get(), &getInfo, &state));
+			if (i == 0 && isSkyrimLeftMoveAction)
+				RememberPhysicalMove(CameraLegCalibration::CapturesInput()
+				        ? 0.0f
+				        : (state.isActive ? state.currentState.y : 0.0f));
+
+			// The game reads this Vector2 action directly. The legacy controller
+			// state injection below never reaches it, which previously produced a
+			// nonzero WIP log while Skyrim itself still saw a zero movement stick.
+			bool wipInjected = false;
+			bool turnInjected = false;
+			float wip = 0.0f;
+			float wipTurn = 0.0f;
+			if (i == 0 && isSkyrimLeftMoveAction && oovr_global_configuration.WalkInPlaceEnabled()) {
+				wip = GetWalkInPlaceStickY();
+				if (std::abs(wip) > std::abs(state.currentState.y)) {
+					state.currentState.y = wip;
+					state.isActive = XR_TRUE;
+					wipInjected = true;
+				}
+			}
+			if (i == 1 && isSkyrimRightTurnAction && oovr_global_configuration.WalkInPlaceEnabled()) {
+				wipTurn = GetWalkInPlaceTurnX();
+				float physicalTurnDeadzone = std::max(0.05f, std::abs(oovr_global_configuration.RightDeadZoneSize()));
+				if (std::abs(state.currentState.x) <= physicalTurnDeadzone && std::abs(wipTurn) > 0.0f) {
+					state.currentState.x = wipTurn;
+					state.isActive = XR_TRUE;
+					turnInjected = true;
+				}
+			}
 
 			float lengthSq = state.currentState.x * state.currentState.x + state.currentState.y * state.currentState.y;
 			if (lengthSq < maxLengthSq || !state.isActive)
@@ -1475,6 +1678,22 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 
 			act->previousState.x = state.currentState.x;
 			act->previousState.y = state.currentState.y;
+			if (wipInjected) {
+				static uint64_t s_lastWipActionLog = 0;
+				uint64_t now = GetTickCount64();
+				if (now - s_lastWipActionLog > 1000) {
+					s_lastWipActionLog = now;
+					OOVR_LOGF("WIP ACTION: %s injected left move y=%.3f", act->fullName.c_str(), wip);
+				}
+			}
+			if (turnInjected) {
+				static uint64_t s_lastWipTurnLog = 0;
+				uint64_t now = GetTickCount64();
+				if (now - s_lastWipTurnLog > 1000) {
+					s_lastWipTurnLog = now;
+					OOVR_LOGF("WIP ACTION: %s injected right turn x=%.3f", act->fullName.c_str(), wipTurn);
+				}
+			}
 			break;
 		}
 		case ActionType::Vector3:
@@ -1484,6 +1703,17 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 			OOVR_ABORTF("Invalid action type %d for action %s", act->type, act->fullName.c_str());
 			break;
 		}
+	}
+
+	if (CameraLegCalibration::CapturesInput()) {
+		pActionData->x = 0.0f;
+		pActionData->y = 0.0f;
+		pActionData->z = 0.0f;
+		pActionData->deltaX = 0.0f;
+		pActionData->deltaY = 0.0f;
+		pActionData->deltaZ = 0.0f;
+		pActionData->bActive = false;
+		pActionData->activeOrigin = 0;
 	}
 
 	return VRInputError_None;
@@ -2590,6 +2820,29 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 	if (std::abs(thumbstick.y) <= deadZoneYSize || std::abs(thumbstick.y) <= deadZoneSize) {
 		thumbstick.y = 0.0f;
 	}
+	if (hand == 0)
+		RememberPhysicalMove(CameraLegCalibration::CapturesInput() ? 0.0f : thumbstick.y);
+
+	// Walk-in-place locomotion: stepping (body trackers) synthesizes forward/
+	// backward on the LEFT stick. A real stick push always overrides. The
+	// touch flag comes with it — input paths can ignore axis values that
+	// arrive without Axis0 registering as touched.
+	if (hand == 0 && oovr_global_configuration.WalkInPlaceEnabled()
+	    && !CameraLegCalibration::CapturesInput()) {
+		float wip = GetWalkInPlaceStickY();
+		if (std::abs(wip) > std::abs(thumbstick.y)) {
+			thumbstick.y = wip;
+			state->ulButtonTouched |= ButtonMaskFromId(vr::k_EButton_SteamVR_Touchpad);
+		}
+	}
+	if (hand == 1 && oovr_global_configuration.WalkInPlaceEnabled()
+	    && !CameraLegCalibration::CapturesInput()) {
+		float wipTurn = GetWalkInPlaceTurnX();
+		if (std::abs(thumbstick.x) < 0.05f && std::abs(wipTurn) > 0.0f) {
+			thumbstick.x = wipTurn;
+			state->ulButtonTouched |= ButtonMaskFromId(vr::k_EButton_SteamVR_Touchpad);
+		}
+	}
 
 	VRControllerAxis_t& trigger = state->rAxis[1];
 	float rawTriggerValue = readFloat(ctrl.trigger);
@@ -2694,66 +2947,76 @@ int BaseInput::DeviceIndexToHandId(vr::TrackedDeviceIndex_t idx)
 
 void BaseInput::CreateBodyTrackerActions()
 {
+	// Tracker actions survive session replacement, but their XrSpaces do not.
+	// PrepareForSessionShutdown normally zeroes these; this also makes a repeated
+	// bind defensive instead of retaining a space from the wrong session.
+	DestroyBodyTrackerSpaces();
+
 	if (!xr_htcxViveTrackers || !oovr_global_configuration.BodyTrackersEnabled())
 		return;
 
 	// Parse the enabled role list: "waist,left_foot,right_foot" (default) or "all"
 	const std::string& roleList = oovr_global_configuration.BodyTrackerRoles();
-	bool all = (roleList == "all");
+	const bool all = (roleList == "all");
+	auto roleEnabled = [&](int role) {
+		if (all)
+			return true;
+		const std::string needle = OCU_TRACKER_ROLES[role].iniName;
+		const std::string padded = "," + roleList + ",";
+		return padded.find("," + needle + ",") != std::string::npos;
+	};
 
 	std::vector<XrActionSuggestedBinding> bindings;
 	std::vector<XrActionSuggestedBinding> hapticBindings;
+	bool needsBindingSuggestion = false;
 	for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
-		if (bodyTrackerActions[i] != XR_NULL_HANDLE)
-			continue; // already created
+		if (!roleEnabled(i))
+			continue;
 
-		if (!all) {
-			// Match iniName as a whole item in the comma list
-			std::string needle = OCU_TRACKER_ROLES[i].iniName;
-			std::string padded = "," + roleList + ",";
-			if (padded.find("," + needle + ",") == std::string::npos)
-				continue;
+		const bool createdPoseAction = bodyTrackerActions[i] == XR_NULL_HANDLE;
+		if (createdPoseAction) {
+			needsBindingSuggestion = true;
+			XrActionCreateInfo info = { XR_TYPE_ACTION_CREATE_INFO };
+			info.actionType = XR_ACTION_TYPE_POSE_INPUT;
+			strcpy_arr(info.actionName, OCU_TRACKER_ROLES[i].actionName);
+			strcpy_arr(info.localizedActionName, OCU_TRACKER_ROLES[i].localizedName);
+			OOVR_FAILED_XR_ABORT(xrCreateAction(legacyInputsSet, &info, &bodyTrackerActions[i]));
 		}
-
-		XrActionCreateInfo info = { XR_TYPE_ACTION_CREATE_INFO };
-		info.actionType = XR_ACTION_TYPE_POSE_INPUT;
-		strcpy_arr(info.actionName, OCU_TRACKER_ROLES[i].actionName);
-		strcpy_arr(info.localizedActionName, OCU_TRACKER_ROLES[i].localizedName);
-		OOVR_FAILED_XR_ABORT(xrCreateAction(legacyInputsSet, &info, &bodyTrackerActions[i]));
 
 		XrPath path;
 		OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, OCU_TRACKER_ROLES[i].xrPath, &path));
 		bindings.push_back({ bodyTrackerActions[i], path });
 
-		XrActionSpaceCreateInfo spaceInfo = { XR_TYPE_ACTION_SPACE_CREATE_INFO };
-		spaceInfo.action = bodyTrackerActions[i];
-		spaceInfo.poseInActionSpace.orientation.w = 1.0f;
-		OOVR_FAILED_XR_ABORT(xrCreateActionSpace(xr_session.get(), &spaceInfo, &bodyTrackerSpaces[i]));
-
 		// Haptic output for the same role (Vive tracker pogo pin, wearables
-		// bridged as trackers). Role path is ".../input/grip/pose"; the
-		// haptic lives at ".../output/haptic" on the same user path.
-		XrActionCreateInfo hinfo = { XR_TYPE_ACTION_CREATE_INFO };
-		hinfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
-		std::string hapticName = std::string(OCU_TRACKER_ROLES[i].actionName) + "-haptic";
-		std::string hapticLocalized = std::string(OCU_TRACKER_ROLES[i].localizedName) + " Haptic";
-		strcpy_arr(hinfo.actionName, hapticName.c_str());
-		strcpy_arr(hinfo.localizedActionName, hapticLocalized.c_str());
-		OOVR_FAILED_XR_ABORT(xrCreateAction(legacyInputsSet, &hinfo, &bodyTrackerHaptics[i]));
+		// bridged as trackers). Create it only with a new pose action. If an
+		// existing pose has no haptic, the runtime rejected that output earlier.
+		if (createdPoseAction) {
+			XrActionCreateInfo hinfo = { XR_TYPE_ACTION_CREATE_INFO };
+			hinfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+			std::string hapticName = std::string(OCU_TRACKER_ROLES[i].actionName) + "-haptic";
+			std::string hapticLocalized = std::string(OCU_TRACKER_ROLES[i].localizedName) + " Haptic";
+			strcpy_arr(hinfo.actionName, hapticName.c_str());
+			strcpy_arr(hinfo.localizedActionName, hapticLocalized.c_str());
+			OOVR_FAILED_XR_ABORT(xrCreateAction(legacyInputsSet, &hinfo, &bodyTrackerHaptics[i]));
+		}
 
-		std::string rolePath = OCU_TRACKER_ROLES[i].xrPath;
-		size_t inputPos = rolePath.find("/input/");
-		if (inputPos != std::string::npos) {
-			std::string hapticPath = rolePath.substr(0, inputPos) + "/output/haptic";
-			XrPath hpath;
-			OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, hapticPath.c_str(), &hpath));
-			hapticBindings.push_back({ bodyTrackerHaptics[i], hpath });
+		if (bodyTrackerHaptics[i] != XR_NULL_HANDLE) {
+			std::string rolePath = OCU_TRACKER_ROLES[i].xrPath;
+			size_t inputPos = rolePath.find("/input/");
+			if (inputPos != std::string::npos) {
+				std::string hapticPath = rolePath.substr(0, inputPos) + "/output/haptic";
+				XrPath hpath;
+				OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, hapticPath.c_str(), &hpath));
+				hapticBindings.push_back({ bodyTrackerHaptics[i], hpath });
+			}
 		}
 	}
 
 	if (bindings.empty())
 		return;
 
+	bool hapticsLive = !hapticBindings.empty();
+	if (needsBindingSuggestion) {
 	XrPath profilePath;
 	OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, "/interaction_profiles/htc/vive_tracker_htcx", &profilePath));
 
@@ -2770,7 +3033,6 @@ void BaseInput::CreateBodyTrackerActions()
 	suggested.countSuggestedBindings = (uint32_t)combined.size();
 	XrResult res = xrSuggestInteractionProfileBindings(xr_instance, &suggested);
 
-	bool hapticsLive = !hapticBindings.empty();
 	if (XR_FAILED(res) && !hapticBindings.empty()) {
 		OOVR_LOGF("Body trackers: suggestion with haptics failed (%d), retrying pose-only", res);
 		for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
@@ -2788,13 +3050,23 @@ void BaseInput::CreateBodyTrackerActions()
 	if (XR_FAILED(res)) {
 		// Non-fatal: runtime advertised HTCX but rejected the profile — trackers stay dead
 		OOVR_LOGF("Body trackers: xrSuggestInteractionProfileBindings failed (%d), trackers disabled", res);
-		for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
-			bodyTrackerSpaces[i] = XR_NULL_HANDLE;
-		}
 		return;
 	}
+	}
 
-	OOVR_LOGF("Body trackers: created %d tracker pose actions (roles: %s, haptics: %s)",
+	// XrActions are instance/action-set owned and may already exist from the
+	// previous session. XrSpaces are session owned, so recreate every enabled
+	// role against the current session on every successful bind.
+	for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
+		if (!roleEnabled(i) || bodyTrackerActions[i] == XR_NULL_HANDLE)
+			continue;
+		XrActionSpaceCreateInfo spaceInfo = { XR_TYPE_ACTION_SPACE_CREATE_INFO };
+		spaceInfo.action = bodyTrackerActions[i];
+		spaceInfo.poseInActionSpace.orientation.w = 1.0f;
+		OOVR_FAILED_XR_ABORT(xrCreateActionSpace(xr_session.get(), &spaceInfo, &bodyTrackerSpaces[i]));
+	}
+
+	OOVR_LOGF("Body trackers: prepared %d tracker action spaces (roles: %s, haptics: %s)",
 	    (int)bindings.size(), roleList.c_str(), hapticsLive ? "yes" : "no");
 }
 

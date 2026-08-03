@@ -27,16 +27,26 @@ using glm::vec3;
 
 using namespace vr;
 
-// Global flag: laser dot is on a menu surface and consuming trigger input.
-// When true, BaseSystem::GetControllerState() masks the trigger button
-// so the game doesn't double-process it (prevents the same menu from
-// being opened multiple times). Only active when the laser is actually
-// hitting the menu quad — trigger works normally when not pointing at it.
+// Implemented by the D3D11 compositor bridge; sourced from Skyrim's real
+// MenuOpenCloseEvent rather than a guessed keyboard toggle.
+extern int OCBridge_ConsoleState();
+
+// Global menu-laser activity flag retained for renderer/status plumbing.
+// Actual trigger ownership is per hand below.
 // Per-hand flag: keyboard laser is hitting the keyboard quad for this hand.
 // When true, BaseSystem::GetControllerState() masks the trigger so the game
 // doesn't see it — only the keyboard processes it. Index 0=left, 1=right.
 // The keyboard itself uses GetUnmaskedControllerState() so it still sees triggers.
 bool g_kbLaserConsumesTrigger[2] = { false, false };
+// Console world lasers own the trigger even when they are not over a flat UI
+// surface. Skyrim's native console pointer projects onto an invisible screen
+// and otherwise selects a different reference than the visible 3D ray.
+bool g_consoleLaserConsumesTrigger[2] = { false, false };
+// Flat-menu laser owns the trigger only for the hand currently hitting the
+// menu quad. The SKSE bridge injects the corresponding Scaleform mouse click;
+// letting Skyrim also see the physical trigger double-activates the focused
+// inventory row when the laser click was intended for a top tab.
+bool g_menuLaserConsumesTrigger[2] = { false, false };
 
 // When true, the keyboard is being grab-moved. BaseSystem::GetControllerState() masks
 // thumbstick locomotion + action buttons on BOTH hands so the player doesn't walk/turn/
@@ -44,7 +54,7 @@ bool g_kbLaserConsumesTrigger[2] = { false, false };
 // keyboard reads GetUnmaskedControllerState() so its own depth/pinch sticks still work.
 bool g_kbGrabActive = false;
 
-bool g_menuLaserActive = false; // True while the menu laser hits the quad — BaseSystem masks the trigger
+bool g_menuLaserActive = false; // True while either menu laser hits the quad
 
 // [EXPERIMENTAL — DISABLED] Custom Windows message for laser→Scaleform injection
 // static constexpr UINT WM_OC_LASER = WM_APP + 0x4F44;
@@ -57,7 +67,7 @@ bool g_menuLaserActive = false; // True while the menu laser hits the quad — B
 #pragma pack(push, 1)
 struct OCMenuTransform {
 	static constexpr uint32_t MAGIC = 0x54434D4F; // 'OCMT'
-	static constexpr uint32_t VERSION = 2;
+	static constexpr uint32_t VERSION = 5;
 
 	uint32_t magic;
 	uint32_t version;
@@ -73,7 +83,7 @@ struct OCMenuTransform {
 	bool     hasPerspective;
 	float    perspectiveMatrix[4][4];
 
-	// v2: UI plane ground truth (SKSE -> DLL), OpenXR floor space, Y-up meters.
+	// v2: UI plane ground truth (SKSE -> DLL), app tracking space, Y-up meters.
 	// Quad convention matches VRMenuLaser: +X right, +Y up, +Z toward viewer.
 	uint8_t  uiPlaneValid;
 	float    uiPlanePos[3];
@@ -99,13 +109,62 @@ struct OCMenuTransform {
 	uint8_t  laserShowCursor; // 1 = SKSE may show the 2D arrow (diagnostic only;
 	                          // default 0 — the laser dot IS the pointer)
 
-	uint8_t  reserved[15];
+	// v3: Skyrim HMD pose in the same RoomNode-local metric frame as uiPlane.
+	uint8_t  roomHmdValid;
+	float    roomHmdPos[3];
+	float    roomHmdQuat[4];
+
+	uint8_t  mapPointerValid;
+	float    mapPointerHitPos[3];
+
+	// v5: physical OpenXR hand that owns the published trigger edge.
+	// 0 = left, 1 = right, 0xFF = unavailable/legacy runtime.
+	uint8_t  laserHand;
+	uint8_t  reserved[1];
 };
 #pragma pack(pop)
+static_assert(sizeof(OCMenuTransform) == 270);
+
+// Dedicated bidirectional bridge for console world-space picking. Keep this
+// separate from OCMenuTransform: normal menu calibration is locked and has a
+// different lifetime/ownership model. Runtime fields are written only by OC;
+// hit fields are written only by the SKSE game-thread raycaster.
+#pragma pack(push, 1)
+struct OCConsoleLaserBridge {
+	static constexpr uint32_t MAGIC = 0x524C434F; // 'OCLR'
+	static constexpr uint32_t VERSION = 1;
+
+	uint32_t magic;
+	uint32_t version;
+	uint32_t byteSize;
+
+	uint32_t runtimeSequence;          // OC writer: odd while writing
+	uint32_t frameSequence;
+	uint32_t triggerPressSequence[2];
+	uint8_t  rayValid[2];
+	uint8_t  runtimePad[2];
+	float    rayOriginFromHmd[2][3];   // OpenXR app-space delta, meters
+	float    rayDirection[2][3];       // OpenXR app-space unit direction
+
+	uint32_t gameSequence;             // SKSE writer: odd while writing
+	uint32_t hitFormId[2];
+	uint8_t  hitValid[2];              // Physics hit, including static terrain
+	uint8_t  gamePad[2];
+	float    hitDistanceMeters[2];
+	uint32_t selectedFormId;
+	uint8_t  reserved[12];
+};
+#pragma pack(pop)
+static_assert(offsetof(OCConsoleLaserBridge, runtimeSequence) % 4 == 0);
+static_assert(offsetof(OCConsoleLaserBridge, gameSequence) % 4 == 0);
+static_assert(sizeof(OCConsoleLaserBridge) == 120);
 
 static HANDLE           s_hMapFile = nullptr;
 static OCMenuTransform* s_pTransform = nullptr;
 static bool             s_sharedMemTried = false;
+static HANDLE                s_hConsoleLaserMap = nullptr;
+static OCConsoleLaserBridge* s_pConsoleLaser = nullptr;
+static bool                  s_consoleLaserMapTried = false;
 
 // Called from DLL_PROCESS_DETACH to release shared memory mapping
 void CleanupOverlaySharedMemory()
@@ -118,7 +177,16 @@ void CleanupOverlaySharedMemory()
 		CloseHandle(s_hMapFile);
 		s_hMapFile = nullptr;
 	}
+	if (s_pConsoleLaser) {
+		UnmapViewOfFile(s_pConsoleLaser);
+		s_pConsoleLaser = nullptr;
+	}
+	if (s_hConsoleLaserMap) {
+		CloseHandle(s_hConsoleLaserMap);
+		s_hConsoleLaserMap = nullptr;
+	}
 	s_sharedMemTried = false;
+	s_consoleLaserMapTried = false;
 }
 
 static void OpenSharedMemory()
@@ -148,6 +216,66 @@ static void OpenSharedMemory()
 	OOVR_LOG("Shared memory connected to SKSE plugin");
 }
 
+static void OpenConsoleLaserBridge()
+{
+	if (s_pConsoleLaser)
+		return;
+
+	static int retryCounter = 0;
+	if (s_consoleLaserMapTried && (++retryCounter % 180) != 0)
+		return;
+	s_consoleLaserMapTried = true;
+
+	s_hConsoleLaserMap = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE,
+	    L"Local\\OpenCompositeConsoleLaser");
+	if (!s_hConsoleLaserMap)
+		return;
+
+	s_pConsoleLaser = static_cast<OCConsoleLaserBridge*>(
+	    MapViewOfFile(s_hConsoleLaserMap, FILE_MAP_ALL_ACCESS, 0, 0,
+	        sizeof(OCConsoleLaserBridge)));
+	if (!s_pConsoleLaser) {
+		CloseHandle(s_hConsoleLaserMap);
+		s_hConsoleLaserMap = nullptr;
+		return;
+	}
+
+	if (s_pConsoleLaser->magic != OCConsoleLaserBridge::MAGIC ||
+	    s_pConsoleLaser->version != OCConsoleLaserBridge::VERSION ||
+	    s_pConsoleLaser->byteSize < sizeof(OCConsoleLaserBridge)) {
+		OOVR_LOG("Console laser bridge rejected: incompatible SKSE plugin");
+		UnmapViewOfFile(s_pConsoleLaser);
+		s_pConsoleLaser = nullptr;
+		CloseHandle(s_hConsoleLaserMap);
+		s_hConsoleLaserMap = nullptr;
+		return;
+	}
+
+	OOVR_LOG("Console laser bridge connected to SKSE plugin");
+}
+
+static bool ReadConsoleLaserHits(bool hitValid[2], float hitDistance[2], uint32_t hitFormId[2])
+{
+	if (!s_pConsoleLaser)
+		return false;
+	for (int attempt = 0; attempt < 3; ++attempt) {
+		uint32_t seq1 = s_pConsoleLaser->gameSequence;
+		if (seq1 & 1)
+			continue;
+		MemoryBarrier();
+		for (int side = 0; side < 2; ++side) {
+			hitValid[side] = s_pConsoleLaser->hitValid[side] != 0;
+			hitDistance[side] = s_pConsoleLaser->hitDistanceMeters[side];
+			hitFormId[side] = s_pConsoleLaser->hitFormId[side];
+		}
+		MemoryBarrier();
+		uint32_t seq2 = s_pConsoleLaser->gameSequence;
+		if (seq1 == seq2)
+			return true;
+	}
+	return false;
+}
+
 // Read the shared memory with seqlock protection. Returns true if valid data.
 static bool ReadMenuTransform(OCMenuTransform& out)
 {
@@ -162,7 +290,8 @@ static bool ReadMenuTransform(OCMenuTransform& out)
 		memcpy(&out, s_pTransform, sizeof(OCMenuTransform));
 
 		uint32_t seq2 = s_pTransform->updateCounter;
-		if (seq1 == seq2 && out.magic == OCMenuTransform::MAGIC)
+		if (seq1 == seq2 && out.magic == OCMenuTransform::MAGIC &&
+		    out.version == OCMenuTransform::VERSION)
 			return true;
 	}
 	return false;
@@ -228,6 +357,8 @@ static bool GetMenuProfile(const char* menuName, float& dist, float& w, float& h
 
 // The menu laser renderer — created when a tracked menu opens, destroyed on close
 static std::unique_ptr<VRMenuLaser> menuLaser;
+// Independent from the calibrated menu renderer by design.
+static std::unique_ptr<VRMenuLaser> consoleLaser;
 #endif // _WIN32
 
 // Reloadable keyboard shortcut settings (updated by file watcher)
@@ -607,6 +738,7 @@ class BaseOverlay::OverlayData {
 public:
 	const string key;
 	string name;
+	bool destroyQueued = false;
 	HmdColor_t colour;
 
 	float widthMeters = 1; // default 1 meter
@@ -1851,6 +1983,18 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 	}
 #endif
 
+	// A client can destroy the keyboard's temporary owner overlay from its polling
+	// worker as soon as it receives KeyboardDone. Perform that teardown before any
+	// keyboard update, on this compositor thread, so its swapchain cannot be freed
+	// concurrently with VRKeyboard::Update().
+	ProcessPendingOverlayDestroys();
+
+	// Game/SkyUI keyboard requests can arrive on arbitrary OpenVR client threads.
+	// Consume them only here, on the compositor thread, after the frame's normal
+	// D3D11 state handoff. This prevents concurrent immediate-context access in
+	// nvwgf2umx.dll while Skyrim and Streamline are submitting work.
+	ProcessPendingKeyboardRequest();
+
 	// Controller shortcut to open a SendInput-only keyboard (configurable via opencomposite.ini)
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
 	// Initialize shortcut settings from config on first run
@@ -2233,6 +2377,105 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 	// Gesture trail overlay: renders while drawing and through the
 	// breathe-and-dissolve after release
 	gestures::AppendTrailLayer(layerHeaders);
+
+	// Console world-space laser path. This is intentionally outside the menu
+	// quad block below: the console's native cursor lives on an invisible flat
+	// screen, while these rays remain valid throughout the full 3D scene.
+	{
+		static bool s_consoleWasOpen = false;
+		const bool consoleOpen = OCBridge_ConsoleState() == 1;
+		if (consoleOpen) {
+			OpenConsoleLaserBridge();
+			ID3D11Device* laserDev = BaseCompositor::dxcomp ?
+			    BaseCompositor::dxcomp->GetDevice() : nullptr;
+			if (!consoleLaser && laserDev && reinterpret_cast<uintptr_t>(laserDev) > 0xFFFF) {
+				consoleLaser = std::make_unique<VRMenuLaser>(laserDev);
+				consoleLaser->SetShowDebugQuad(false);
+				OOVR_LOG("Console world lasers created (two-hand, Havok hit feedback)");
+			}
+
+			if (consoleLaser) {
+				bool hitValid[2] = { false, false };
+				float hitDistance[2] = { 0.0f, 0.0f };
+				uint32_t hitFormId[2] = { 0, 0 };
+				ReadConsoleLaserHits(hitValid, hitDistance, hitFormId);
+				bool keyboardHit[2] = {
+					g_kbLaserConsumesTrigger[0],
+					g_kbLaserConsumesTrigger[1]
+				};
+				const auto& worldLayers = consoleLaser->UpdateWorld(
+				    xr_gbl->nextPredictedFrameTime, keyboardHit,
+				    hitValid, hitDistance);
+				for (auto* layer : worldLayers)
+					layerHeaders.push_back(layer);
+
+				// Publish HMD-relative OpenXR rays. SKSE reconstructs them through
+				// RoomNode into game-world coordinates, so stick rotation and
+				// locomotion are both preserved without any flat-screen mapping.
+				if (s_pConsoleLaser) {
+					XrSpace appSpace = xr_space_from_ref_space_type(
+					    GetUnsafeBaseSystem()->currentSpace);
+					XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
+					XrResult headResult = xrLocateSpace(xr_gbl->viewSpace, appSpace,
+					    xr_gbl->nextPredictedFrameTime, &headLoc);
+					bool headValid = XR_SUCCEEDED(headResult) &&
+					    (headLoc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+					    (headLoc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+
+					InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+					    &s_pConsoleLaser->runtimeSequence));
+					MemoryBarrier();
+					s_pConsoleLaser->frameSequence++;
+					for (int side = 0; side < 2; ++side) {
+						bool valid = headValid && consoleLaser->IsRayValid(side) &&
+						    !keyboardHit[side];
+						s_pConsoleLaser->rayValid[side] = valid ? 1 : 0;
+						if (!valid)
+							continue;
+						XrVector3f origin = consoleLaser->GetRayOrigin(side);
+						XrVector3f direction = consoleLaser->GetRayDir(side);
+						s_pConsoleLaser->rayOriginFromHmd[side][0] = origin.x - headLoc.pose.position.x;
+						s_pConsoleLaser->rayOriginFromHmd[side][1] = origin.y - headLoc.pose.position.y;
+						s_pConsoleLaser->rayOriginFromHmd[side][2] = origin.z - headLoc.pose.position.z;
+						s_pConsoleLaser->rayDirection[side][0] = direction.x;
+						s_pConsoleLaser->rayDirection[side][1] = direction.y;
+						s_pConsoleLaser->rayDirection[side][2] = direction.z;
+						if (consoleLaser->IsTriggerPressed(side))
+							s_pConsoleLaser->triggerPressSequence[side]++;
+					}
+					MemoryBarrier();
+					InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+					    &s_pConsoleLaser->runtimeSequence));
+				}
+			}
+
+			const bool ownsConsoleInput = consoleLaser && s_pConsoleLaser;
+			g_consoleLaserConsumesTrigger[0] = ownsConsoleInput;
+			g_consoleLaserConsumesTrigger[1] = ownsConsoleInput;
+			if (!s_consoleWasOpen)
+				OOVR_LOG("Console world-laser mode entered; native console trigger selection masked");
+			s_consoleWasOpen = true;
+		} else {
+			g_consoleLaserConsumesTrigger[0] = false;
+			g_consoleLaserConsumesTrigger[1] = false;
+			if (s_pConsoleLaser && s_consoleWasOpen) {
+				InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+				    &s_pConsoleLaser->runtimeSequence));
+				MemoryBarrier();
+				s_pConsoleLaser->rayValid[0] = 0;
+				s_pConsoleLaser->rayValid[1] = 0;
+				s_pConsoleLaser->frameSequence++;
+				MemoryBarrier();
+				InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+				    &s_pConsoleLaser->runtimeSequence));
+			}
+			if (consoleLaser) {
+				consoleLaser.reset();
+				OOVR_LOG("Console world lasers destroyed");
+			}
+			s_consoleWasOpen = false;
+		}
+	}
 #endif
 
 // =========================================================================
@@ -2267,10 +2510,11 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 	static bool  s_mqEnableLaser = false; // master gate: enable_laser=1 in ini
 	static bool  s_mqAlwaysShow = false; // calibration: quad stays up at ALL times (always_show_quad=1)
 	// Live trim applied to the ADOPTED game plane (meters, hot-reload ~1s).
-	// User's 2026-07-25 in-headset estimate: down 2 cell heights (~0.18m),
-	// back half a cell (~0.04m). plane_scale multiplies quad width+height.
-	static float s_mqPlaneShiftDown = 0.18f;
-	static float s_mqPlaneShiftBack = 0.04f;
+	// Locked in-headset calibration, 2026-07-28, after RoomNode-HMD to
+	// OpenXR-Stage origin correction: 2.5mm down and 20mm behind the raw mesh.
+	// plane_scale multiplies quad width+height.
+	static float s_mqPlaneShiftDown = 0.0025f;
+	static float s_mqPlaneShiftBack = 0.020f;
 	static float s_mqPlaneShiftRight = 0.0f;
 	static float s_mqPlaneScale = 1.0f;
 	static float s_mqDist = 0.85f;
@@ -2286,8 +2530,9 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 	static bool  s_mqHeadLocked = false;
 	static bool  s_mqThumbstickAdjust = false; // Toggleable from desktop calibrator
 	// Mouse cursor calibration: offset + scale to align Scaleform cursor with VR laser
-	static float s_mqMouseOffsetX = 0.0f; // fraction of screen width (positive = shift cursor right)
-	static float s_mqMouseOffsetY = 0.0f; // fraction of screen height (positive = shift cursor down)
+	// Locked 2026-07-28 after full near/far/left/right in-headset validation.
+	static float s_mqMouseOffsetX = -0.00333f; // fraction of screen width (positive = shift cursor right)
+	static float s_mqMouseOffsetY = -0.0065f;  // fraction of screen height (positive = shift cursor down)
 	static float s_mqMouseScaleX = 1.0f;  // UV scale multiplier for X
 	static float s_mqMouseScaleY = 1.0f;  // UV scale multiplier for Y
 	// Quad mode flags — controlled from Menu Quad Calibrator app
@@ -2412,7 +2657,6 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 		// down after ~15 frames without one (tolerates transient seqlock
 		// read misses mid-menu).
 		static int s_noMenuNameFrames = 0;
-		static int s_planeStarvedFrames = 0;
 		if (menuActive && !alwaysShow) {
 			OpenSharedMemory();
 			OCMenuTransform mxGate = {};
@@ -2430,15 +2674,11 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				s_noMenuNameFrames = 0;
 			else if (readOk)
 				s_noMenuNameFrames++;
-			if (!pumpPresent || planeLive)
-				s_planeStarvedFrames = 0;
-			else
-				s_planeStarvedFrames++;
 			if (!menuLaser) {
-				if (!named || (pumpPresent && !planeLive))
+				if (!named)
 					menuActive = false; // loading screen / plain pause / StatsMenu — stay dormant
-			} else if (s_noMenuNameFrames > 15 || (pumpPresent && s_planeStarvedFrames > 30)) {
-				menuActive = false; // menu closed (or plane export stopped) — tear down
+			} else if (s_noMenuNameFrames > 15) {
+				menuActive = false; // menu closed — tear down
 			}
 		}
 
@@ -2462,7 +2702,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 
 				// Log head pose at menu open
 				XrSpaceLocation openHead = { XR_TYPE_SPACE_LOCATION };
-				xrLocateSpace(xr_gbl->viewSpace, xr_gbl->floorSpace,
+				xrLocateSpace(xr_gbl->viewSpace, xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace),
 				    xr_gbl->nextPredictedFrameTime, &openHead);
 				OOVR_LOGF("CAL MENU-OPEN head(%.4f, %.4f, %.4f) orient(%.4f, %.4f, %.4f, %.4f)",
 				    openHead.pose.position.x,
@@ -2526,7 +2766,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 
 				// Compute menu quad from head position + settings
 				XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
-				xrLocateSpace(xr_gbl->viewSpace, xr_gbl->floorSpace,
+				xrLocateSpace(xr_gbl->viewSpace, xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace),
 				    xr_gbl->nextPredictedFrameTime, &headLoc);
 
 				XrVector3f headPos = headLoc.pose.position;
@@ -2587,6 +2827,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				quadPose.orientation = quadOrient;
 
 				XrExtent2Df quadSize = { s_mqWidthScale, s_mqHeightScale };
+				const bool physicalBookMode = strcmp(s_lastMenuName, "Book Menu") == 0;
+				bool liveSharedPlaneAdopted = false;
 
 				// v2 GROUND TRUTH: if the SKSE plugin is exporting the game's
 				// real uiNode plane, use it instead of the head-anchored guess.
@@ -2605,14 +2847,60 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					    mxPlane.uiPlaneHeight > 0.01f && mxPlane.uiPlaneHeight < 20.0f) {
 						XrVector3f p = { mxPlane.uiPlanePos[0], mxPlane.uiPlanePos[1], mxPlane.uiPlanePos[2] };
 						XrQuaternionf q = { mxPlane.uiPlaneQuat[0], mxPlane.uiPlaneQuat[1],
-							mxPlane.uiPlaneQuat[2], mxPlane.uiPlaneQuat[3] };
+						    mxPlane.uiPlaneQuat[2], mxPlane.uiPlaneQuat[3] };
 						float qn = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
 						bool posSane = std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
 						    fabsf(p.x) < 15.0f && p.y > -2.0f && p.y < 8.0f && fabsf(p.z) < 15.0f;
 						bool quatSane = std::isfinite(qn) && fabsf(qn - 1.0f) < 0.05f;
 						if (posSane && quatSane) {
+							liveSharedPlaneAdopted = true;
 							// Renormalize anyway — belt and suspenders
 							q.x /= qn; q.y /= qn; q.z /= qn; q.w /= qn;
+
+							// v3: map Skyrim RoomNode space into the live OpenXR Stage
+							// origin through the HMD pose common to both frames.
+							if (mxPlane.version >= 3 && mxPlane.roomHmdValid) {
+								XrVector3f roomHmd = { mxPlane.roomHmdPos[0], mxPlane.roomHmdPos[1], mxPlane.roomHmdPos[2] };
+								XrQuaternionf roomHmdQ = { mxPlane.roomHmdQuat[0], mxPlane.roomHmdQuat[1],
+								    mxPlane.roomHmdQuat[2], mxPlane.roomHmdQuat[3] };
+								float hqn = sqrtf(roomHmdQ.x * roomHmdQ.x + roomHmdQ.y * roomHmdQ.y +
+								    roomHmdQ.z * roomHmdQ.z + roomHmdQ.w * roomHmdQ.w);
+								bool hmdSane = std::isfinite(roomHmd.x) && std::isfinite(roomHmd.y) && std::isfinite(roomHmd.z) &&
+								    fabsf(roomHmd.x) < 20.0f && roomHmd.y > -5.0f && roomHmd.y < 10.0f &&
+								    fabsf(roomHmd.z) < 20.0f && std::isfinite(hqn) && hqn > 0.95f && hqn < 1.05f;
+								if (hmdSane) {
+									roomHmdQ.x /= hqn; roomHmdQ.y /= hqn; roomHmdQ.z /= hqn; roomHmdQ.w /= hqn;
+									XrVector3f roomFwd;
+									rotate_vector_by_quaternion({ 0, 0, -1 }, roomHmdQ, roomFwd);
+									// RoomNode and OpenXR Stage axes are already parallel. The
+									// UprightHmdNode yaw is frozen/stale in Skyrim while the OpenXR
+									// HMD yaw is live; subtracting them makes the quad orbit in the
+									// opposite direction on every head turn. Correct origin only.
+									float yawDelta = 0.0f;
+									XrQuaternionf roomToStage = { 0.0f, sinf(yawDelta * 0.5f), 0.0f, cosf(yawDelta * 0.5f) };
+									XrVector3f roomRelative = { p.x - roomHmd.x, p.y - roomHmd.y, p.z - roomHmd.z };
+									XrVector3f stageRelative;
+									rotate_vector_by_quaternion(roomRelative, roomToStage, stageRelative);
+									XrVector3f rawRoomPlane = p;
+									p = { headPos.x + stageRelative.x, headPos.y + stageRelative.y, headPos.z + stageRelative.z };
+
+									auto quatMul = [](const XrQuaternionf& a, const XrQuaternionf& b) -> XrQuaternionf {
+										return {
+										    a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+										    a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+										    a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+										    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+										};
+									};
+									q = quatMul(roomToStage, q);
+									if (s_planeAdoptLogsLeft > 0) {
+										OOVR_LOGF("Menu plane Room->Stage: roomPlane=(%.3f,%.3f,%.3f) roomHmd=(%.3f,%.3f,%.3f) stageHmd=(%.3f,%.3f,%.3f) yawDelta=%.2fdeg mapped=(%.3f,%.3f,%.3f)",
+										    rawRoomPlane.x, rawRoomPlane.y, rawRoomPlane.z,
+										    roomHmd.x, roomHmd.y, roomHmd.z, headPos.x, headPos.y, headPos.z,
+										    yawDelta * 180.0f / 3.14159265f, p.x, p.y, p.z);
+									}
+								}
+							}
 
 							// FACE-THE-VIEWER GUARD (2026-07-25): the game's uiNode
 							// rotation contains a reflection; the rebuilt basis can leave
@@ -2644,7 +2932,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							// quad's own axes and scale its extent. The visible menu
 							// image doesn't sit exactly on the uiNode geometry, the
 							// user dials these in-headset against the numbered grid.
-							{
+							if (!physicalBookMode) {
 								XrVector3f upN, rightN;
 								rotate_vector_by_quaternion({ 0, 1, 0 }, q, upN);
 								rotate_vector_by_quaternion({ 1, 0, 0 }, q, rightN);
@@ -2655,7 +2943,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 
 							quadPose.position = p;
 							quadPose.orientation = q;
-							float ps = (s_mqPlaneScale > 0.1f && s_mqPlaneScale < 10.0f) ? s_mqPlaneScale : 1.0f;
+							float ps = physicalBookMode ? 1.0f :
+							    ((s_mqPlaneScale > 0.1f && s_mqPlaneScale < 10.0f) ? s_mqPlaneScale : 1.0f);
 							quadSize = { mxPlane.uiPlaneWidth * ps, mxPlane.uiPlaneHeight * ps };
 							if (s_planeAdoptLogsLeft > 0) {
 								s_planeAdoptLogsLeft--;
@@ -2685,6 +2974,22 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				}
 
 				menuLaser->SetMenuQuad(quadPose, quadSize);
+				// Low-rate live transform trace. This makes physical translation
+				// failures measurable: head, rendered quad, and their relative vector
+				// are captured in the same OpenXR reference space every two seconds.
+				static ULONGLONG s_nextMenuTrackLog = 0;
+				ULONGLONG trackNow = GetTickCount64();
+				if (s_mqShowDebug && trackNow >= s_nextMenuTrackLog) {
+					s_nextMenuTrackLog = trackNow + 2000;
+					OOVR_LOGF("MENU TRACK LIVE menu=%s space=%d head=(%.4f,%.4f,%.4f) quad=(%.4f,%.4f,%.4f) rel=(%.4f,%.4f,%.4f) size=(%.4f,%.4f)",
+					    s_lastMenuName, (int)GetUnsafeBaseSystem()->currentSpace,
+					    headPos.x, headPos.y, headPos.z,
+					    quadPose.position.x, quadPose.position.y, quadPose.position.z,
+					    quadPose.position.x - headPos.x,
+					    quadPose.position.y - headPos.y,
+					    quadPose.position.z - headPos.z,
+					    quadSize.width, quadSize.height);
+				}
 				// Quad visibility depends on mode checkboxes from Calibrator app:
 				// - show_profile_quad=1: pink profile quads (analysis mode)
 				// - show_calibration_quad=1: green calibration quad (adjustment mode)
@@ -2749,39 +3054,81 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					}
 				}
 
-				// Suppress laser beams/dots for menus that have their own pointer
-				// or 3D perspective content (Sovngarde bug)
-				bool suppressLaser = (strcmp(s_lastMenuName, "MapMenu") == 0)
-				    || (strcmp(s_lastMenuName, "StatsMenu") == 0)
+				// MapMenu keeps Skyrim's native pointer INPUT but replaces only its
+				// faint red geometry with our beam. Other special 3D menus remain
+				// completely suppressed (Sovngarde protection).
+				bool mapVisualOnly = strcmp(s_lastMenuName, "MapMenu") == 0;
+				menuLaser->SetMapVisualMode(mapVisualOnly);
+				bool mapHitValid = false;
+				XrVector3f mapHit = {};
+				if (mapVisualOnly) {
+					OCMenuTransform mxMap = {};
+					if (ReadMenuTransform(mxMap) && mxMap.version >= 4 &&
+					    mxMap.mapPointerValid && mxMap.roomHmdValid) {
+						XrVector3f roomHit = { mxMap.mapPointerHitPos[0], mxMap.mapPointerHitPos[1], mxMap.mapPointerHitPos[2] };
+						XrVector3f roomHmd = { mxMap.roomHmdPos[0], mxMap.roomHmdPos[1], mxMap.roomHmdPos[2] };
+						mapHit = {
+							headPos.x + roomHit.x - roomHmd.x,
+							headPos.y + roomHit.y - roomHmd.y,
+							headPos.z + roomHit.z - roomHmd.z
+						};
+						const float dx = mapHit.x - headPos.x;
+						const float dy = mapHit.y - headPos.y;
+						const float dz = mapHit.z - headPos.z;
+						const float distance = sqrtf(dx * dx + dy * dy + dz * dz);
+						mapHitValid = std::isfinite(mapHit.x) && std::isfinite(mapHit.y) &&
+						    std::isfinite(mapHit.z) && std::isfinite(distance) &&
+						    distance > 0.03f && distance < 5.0f;
+					}
+				}
+				menuLaser->SetMapVisualHit(mapHitValid, mapHit);
+				bool hardSuppressLaser = (strcmp(s_lastMenuName, "StatsMenu") == 0)
 				    || (strcmp(s_lastMenuName, "Loading Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Main Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Mist Menu") == 0);
+				const bool physicalBookPending = physicalBookMode && !liveSharedPlaneAdopted;
+				const bool suppressLaser = hardSuppressLaser || physicalBookPending;
 
 				// Pointer ownership: the hand that last pulled trigger on the
 				// quad owns the beam (native VR feel — one laser, no 2D cursor).
 				// The other hand still tracks invisibly so it can claim the
 				// pointer with a click. Default owner: right hand.
 				static int s_activeLaserHand = 1;
+				if (mapVisualOnly)
+					s_activeLaserHand = 1; // Skyrim's native map pointer is right-hand owned.
 				menuLaser->SetRenderHand(0, s_activeLaserHand == 0);
 				menuLaser->SetRenderHand(1, s_activeLaserHand == 1);
 
 				bool kbHit[2] = { g_kbLaserConsumesTrigger[0], g_kbLaserConsumesTrigger[1] };
-				if (!suppressLaser) {
+				if (!hardSuppressLaser) {
 					const auto& menuLayers = menuLaser->Update(xr_gbl->nextPredictedFrameTime, kbHit);
-					for (auto* l : menuLayers)
-						layerHeaders.push_back(l);
+					// Keep controller edge state warm while the physical book plane is
+					// settling, but do not render or interact with the fallback quad.
+					if (!physicalBookPending) {
+						for (auto* l : menuLayers)
+							layerHeaders.push_back(l);
+					}
 				}
 
 				// Hand switch: a trigger press while pointing at the quad claims
 				// the pointer (takes effect this frame for input, next frame for
 				// the beam visual — imperceptible).
-				for (int side = 0; side < 2; side++) {
+				for (int side = 0; !mapVisualOnly && side < 2; side++) {
 					if (side != s_activeLaserHand && menuLaser->IsHit(side) && menuLaser->IsTriggerPressed(side))
 						s_activeLaserHand = side;
 				}
 
-				// Set g_menuLaserActive if either hand is hitting the quad (but not for suppressed menus)
-				g_menuLaserActive = !suppressLaser && (menuLaser->IsHit(0) || menuLaser->IsHit(1));
+				// MapMenu is visual-only: never claim or mask its native input.
+				// For flat menus, own the physical trigger whenever a calibrated
+				// controller ray exists, even during a one-frame off-quad transition.
+				// Otherwise Skyrim can see the same trigger that our Scaleform bridge
+				// handles and activate the newly opened row underneath it.
+				g_menuLaserActive = !suppressLaser && !mapVisualOnly &&
+				    (menuLaser->IsHit(0) || menuLaser->IsHit(1));
+				for (int side = 0; side < 2; side++) {
+					g_menuLaserConsumesTrigger[side] = !suppressLaser && !mapVisualOnly &&
+					    !kbHit[side] && menuLaser->IsRayValid(side);
+				}
 
 				// ── In-VR Quad Adjustment (thumbstick click toggles) ──
 				// Left thumbstick click toggles adjustment mode.
@@ -2794,19 +3141,87 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				static ULONGLONG s_adjustLastSave = 0;
 
 				// Left thumbstick click toggles local adjustment mode
-				if (menuLaser->IsThumbstickPressed(0)) {
+				if (!mapVisualOnly && menuLaser->IsThumbstickPressed(0)) {
 					s_adjustModeLocal = !s_adjustModeLocal;
 					OOVR_LOGF("Menu quad adjustment mode: %s", s_adjustModeLocal ? "ON" : "OFF");
 				}
 
 				// Active if either local toggle OR ini toggle is on
-				bool s_adjustMode = s_adjustModeLocal || s_mqThumbstickAdjust;
+				bool s_adjustMode = !mapVisualOnly && (s_adjustModeLocal || s_mqThumbstickAdjust);
 
 				// X button cycles right-stick parameter
 				if (s_adjustMode && menuLaser->IsXButtonPressed(0)) {
 					s_rightStickParam = (s_rightStickParam + 1) % 3;
 					const char* names[] = { "Width", "Height", "Opacity" };
 					OOVR_LOGF("Right stick adjusts: %s", names[s_rightStickParam]);
+				}
+
+				// Explicit four-click mouse calibration. The LEFT controller's X
+				// button is the only confirmation button; the right controller's A
+				// button is deliberately never used. Sequence:
+				//   1 right laser at intended target, 2 right laser at visible mouse,
+				//   3 left laser at intended target,  4 left laser at visible mouse.
+				// A held button records once because IsXButtonPressed is edge based.
+				// We log the reverse correction instead of changing the live mapping
+				// so both hands can be compared before committing an offset/scale fix.
+				static int s_mouseCalStep = 0;
+				static char s_mouseCalMenu[64] = {};
+				static float s_mouseCalTargetU[2] = {};
+				static float s_mouseCalTargetV[2] = {};
+				if (!mapVisualOnly && !s_adjustMode && menuLaser->IsXButtonPressed(0)) {
+					if (strcmp(s_mouseCalMenu, s_lastMenuName) != 0) {
+						s_mouseCalStep = 0;
+						snprintf(s_mouseCalMenu, sizeof(s_mouseCalMenu), "%s", s_lastMenuName);
+						s_activeLaserHand = 1;
+						OOVR_LOGF("MOUSE CAL: new menu '%s'; sequence reset, RIGHT TARGET expected", s_lastMenuName);
+					}
+
+					const int calSide = (s_mouseCalStep < 2) ? 1 : 0;
+					const bool targetStep = ((s_mouseCalStep & 1) == 0);
+					const char* handName = calSide == 0 ? "LEFT" : "RIGHT";
+					if (suppressLaser || !menuLaser->IsHit(calSide)) {
+						OOVR_LOGF("MOUSE CAL %d/4 %s %s: X IGNORED -- that laser is not hitting the menu quad",
+						    s_mouseCalStep + 1, handName, targetStep ? "TARGET" : "MOUSE");
+					} else {
+						const float rawU = menuLaser->GetHitU(calSide);
+						const float rawV = menuLaser->GetHitV(calSide);
+						const float adjU = rawU * s_mqMouseScaleX + s_mqMouseOffsetX;
+						const float adjV = rawV * s_mqMouseScaleY + s_mqMouseOffsetY;
+						const XrVector3f rayO = menuLaser->GetRayOrigin(calSide);
+						const XrVector3f rayD = menuLaser->GetRayDir(calSide);
+
+						if (targetStep) {
+							s_mouseCalTargetU[calSide] = rawU;
+							s_mouseCalTargetV[calSide] = rawV;
+							OOVR_LOGF("MOUSE CAL %d/4 %s TARGET CAPTURED: menu=%s raw=(%.6f,%.6f) adjusted=(%.6f,%.6f) t=%.4f rayO=(%.4f,%.4f,%.4f) rayD=(%.4f,%.4f,%.4f)",
+							    s_mouseCalStep + 1, handName, s_lastMenuName, rawU, rawV, adjU, adjV,
+							    menuLaser->GetHitT(calSide), rayO.x, rayO.y, rayO.z, rayD.x, rayD.y, rayD.z);
+						} else {
+							const float deltaU = rawU - s_mouseCalTargetU[calSide];
+							const float deltaV = rawV - s_mouseCalTargetV[calSide];
+							// With the current normalized Scaleform convention, translating
+							// the command opposite the observed visual error gives the
+							// one-point reverse correction. Multiple pairs expose scale/pose
+							// errors instead of incorrectly baking them into an offset.
+							const float proposedOffsetX = s_mqMouseOffsetX - deltaU;
+							const float proposedOffsetY = s_mqMouseOffsetY - deltaV;
+							OOVR_LOGF("MOUSE CAL %d/4 %s MOUSE CAPTURED: menu=%s raw=(%.6f,%.6f) adjusted=(%.6f,%.6f) target=(%.6f,%.6f) visualDelta=(%+.6f,%+.6f) pixels2048=(%+.1f,%+.1f) REVERSE_OFFSETS=(%.6f,%.6f) current=(%.6f,%.6f)",
+							    s_mouseCalStep + 1, handName, s_lastMenuName, rawU, rawV, adjU, adjV,
+							    s_mouseCalTargetU[calSide], s_mouseCalTargetV[calSide], deltaU, deltaV,
+							    deltaU * 2048.0f, deltaV * 2048.0f, proposedOffsetX, proposedOffsetY,
+							    s_mqMouseOffsetX, s_mqMouseOffsetY);
+						}
+
+						s_mouseCalStep++;
+						if (s_mouseCalStep == 2) {
+							s_activeLaserHand = 0;
+							OOVR_LOG("MOUSE CAL: RIGHT pair complete; visible laser switched to LEFT -- LEFT TARGET expected");
+						} else if (s_mouseCalStep >= 4) {
+							s_mouseCalStep = 0;
+							s_activeLaserHand = 1;
+							OOVR_LOG("MOUSE CAL: BOTH HANDS complete; sequence reset and visible laser switched to RIGHT");
+						}
+					}
 				}
 
 				if (s_adjustMode) {
@@ -2874,18 +3289,21 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							// MUST persist every key the watcher parses — a rewrite
 							// that drops enable_laser/show_sf_cursor silently kills
 							// the laser system on the next file reload.
-							fprintf(sf, "[menu_quad]\nenable_laser=%d\ndistance=%.2f\nwidth_scale=%.2f\nheight_scale=%.2f\n"
+							fprintf(sf, "[menu_quad]\nenable_laser=%d\nalways_show_quad=%d\ndistance=%.2f\nwidth_scale=%.2f\nheight_scale=%.2f\n"
 							    "y_offset=%.2f\nx_offset=%.2f\nyaw_degrees=%d\npitch_degrees=%d\n"
 							    "roll_degrees=%d\nopacity=%d\nshow_debug=%d\nhead_locked=%d\nthumbstick_adjust=%d\n"
+							    "plane_shift_down=%.3f\nplane_shift_back=%.3f\nplane_shift_right=%.3f\nplane_scale=%.3f\n"
 							    "mouse_offset_x=%.3f\nmouse_offset_y=%.3f\nmouse_scale_x=%.3f\nmouse_scale_y=%.3f\n"
 							    "show_calibration_quad=%d\nshow_profile_quad=%d\nshow_sf_cursor=%d\n",
 							    s_mqEnableLaser ? 1 : 0,
+							    s_mqAlwaysShow ? 1 : 0,
 							    s_mqDist, s_mqWidthScale, s_mqHeightScale,
 							    s_mqYOffset, s_mqXOffset,
 							    (int)(s_mqYawOffset * 180.0f / 3.14159265f),
 							    (int)(s_mqPitchOffset * 180.0f / 3.14159265f),
 							    (int)(s_mqRollOffset * 180.0f / 3.14159265f),
 							    s_mqOpacity, s_mqShowDebug ? 1 : 0, s_mqHeadLocked ? 1 : 0, s_mqThumbstickAdjust ? 1 : 0,
+							    s_mqPlaneShiftDown, s_mqPlaneShiftBack, s_mqPlaneShiftRight, s_mqPlaneScale,
 							    s_mqMouseOffsetX, s_mqMouseOffsetY, s_mqMouseScaleX, s_mqMouseScaleY,
 							    s_mqShowCalibQuad ? 1 : 0, s_mqShowProfileQuad ? 1 : 0, s_mqShowSfCursor ? 1 : 0);
 							fclose(sf);
@@ -2903,10 +3321,13 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				if (s_pTransform) {
 					bool wroteHit = false;
 					int side = s_activeLaserHand;
-					if (!suppressLaser && menuLaser->IsHit(side)) {
+					s_pTransform->laserHand = static_cast<uint8_t>(side);
+					if (!suppressLaser && !mapVisualOnly && menuLaser->IsHit(side)) {
 						// Calibration trims retained (default identity)
-						float adjU = menuLaser->GetHitU(side) * s_mqMouseScaleX + s_mqMouseOffsetX;
-						float adjV = menuLaser->GetHitV(side) * s_mqMouseScaleY + s_mqMouseOffsetY;
+						float adjU = physicalBookMode ? menuLaser->GetHitU(side) :
+						    menuLaser->GetHitU(side) * s_mqMouseScaleX + s_mqMouseOffsetX;
+						float adjV = physicalBookMode ? menuLaser->GetHitV(side) :
+						    menuLaser->GetHitV(side) * s_mqMouseScaleY + s_mqMouseOffsetY;
 						adjU = adjU < 0.0f ? 0.0f : (adjU > 1.0f ? 1.0f : adjU);
 						adjV = adjV < 0.0f ? 0.0f : (adjV > 1.0f ? 1.0f : adjV);
 						s_pTransform->laserU = adjU;
@@ -2914,10 +3335,13 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						s_pTransform->laserActive = 1;
 						if (menuLaser->IsTriggerPressed(side))
 							s_pTransform->laserPressSeq++;
-						if (menuLaser->IsTriggerReleased(side))
-							s_pTransform->laserReleaseSeq++;
 						wroteHit = true;
 					}
+					// A held drag can leave the quad before the trigger comes up. Publish
+					// that owning-hand release even without a current hit so SKSE can
+					// always close the exact interaction that received DOWN.
+					if (!suppressLaser && !mapVisualOnly && menuLaser->IsTriggerReleased(side))
+						s_pTransform->laserReleaseSeq++;
 					if (!wroteHit)
 						s_pTransform->laserActive = 0;
 					s_pTransform->laserShowCursor = s_mqShowSfCursor ? 1 : 0;
@@ -2931,9 +3355,13 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				menuLaser.reset();
 			}
 			g_menuLaserActive = false;
+			g_menuLaserConsumesTrigger[0] = false;
+			g_menuLaserConsumesTrigger[1] = false;
 			s_profileActive = false; // Allow file watcher to update quad dims again
 			if (s_pTransform && s_pTransform->laserActive)
 				s_pTransform->laserActive = 0; // let SKSE release a held click
+			if (s_pTransform)
+				s_pTransform->laserHand = 0xFF;
 		}
 	}
 #endif // _WIN32 (menu laser system)
@@ -3052,6 +3480,28 @@ EVROverlayError BaseOverlay::CreateOverlay(const char* pchOverlayKey, const char
 }
 EVROverlayError BaseOverlay::DestroyOverlay(VROverlayHandle_t ulOverlayHandle)
 {
+	// SkyUI destroys its temporary keyboard overlay from a polling worker. Keep
+	// both the overlay and keyboard alive until _BuildLayers can tear them down
+	// on the compositor thread that owns their D3D/OpenXR resources.
+	{
+		std::lock_guard<std::mutex> lock(pendingOverlayDestroyMutex);
+		OverlayData* queuedOverlay = (OverlayData*)ulOverlayHandle;
+		if (!queuedOverlay || !validOverlays.count(queuedOverlay) ||
+		    !overlays.count(queuedOverlay->key))
+			return VROverlayError_InvalidHandle;
+
+		if (!queuedOverlay->destroyQueued) {
+			queuedOverlay->destroyQueued = true;
+			pendingOverlayDestroys.push_back(queuedOverlay);
+			OOVR_LOGF("DestroyOverlay queued for compositor thread: key='%s' overlay=0x%llX callerTid=%lu",
+			    queuedOverlay->key.c_str(),
+			    (unsigned long long)(uintptr_t)queuedOverlay,
+			    (unsigned long)GetCurrentThreadId());
+		}
+	}
+	return VROverlayError_None;
+
+#if 0 // Historical worker-thread destruction retained for reference only.
 	USEH();
 
 	if (highQualityOverlay == ulOverlayHandle)
@@ -3100,6 +3550,7 @@ EVROverlayError BaseOverlay::DestroyOverlay(VROverlayHandle_t ulOverlayHandle)
 #endif
 
 	return VROverlayError_None;
+#endif
 }
 EVROverlayError BaseOverlay::SetHighQualityOverlay(VROverlayHandle_t ulOverlayHandle)
 {
@@ -3941,8 +4392,43 @@ TrackedDeviceIndex_t BaseOverlay::GetPrimaryDashboardDevice()
 }
 EVROverlayError BaseOverlay::ShowKeyboardWithDispatch(EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode,
     const char* pchDescription, uint32_t unCharMax, const char* pchExistingText, bool bUseMinimalMode, uint64_t uUserValue,
-    VRKeyboard::eventDispatch_t eventDispatch)
+    VRKeyboard::eventDispatch_t eventDispatch, OverlayData* owner)
 {
+	// OpenVR clients may call this from any thread. SkyUI VR calls it from its
+	// keyboard-polling worker, where touching the shared D3D11 immediate context
+	// races Skyrim/Streamline and crashes inside nvwgf2umx.dll. Copy the request;
+	// _BuildLayers performs every GPU operation on the compositor thread.
+	auto queuedRequest = std::make_unique<PendingKeyboardRequest>();
+	queuedRequest->inputMode = eInputMode;
+	queuedRequest->lineInputMode = eLineInputMode;
+	queuedRequest->description = pchDescription ? pchDescription : "";
+	queuedRequest->charMax = unCharMax;
+	queuedRequest->existingText = pchExistingText ? pchExistingText : "";
+	queuedRequest->minimalMode = bUseMinimalMode;
+	queuedRequest->userValue = uUserValue;
+	queuedRequest->eventDispatch = eventDispatch;
+	queuedRequest->owner = owner;
+
+	bool alreadyPending = false;
+	{
+		std::lock_guard<std::mutex> lock(pendingKeyboardMutex);
+		alreadyPending = pendingKeyboardRequest != nullptr;
+		if (!alreadyPending)
+			pendingKeyboardRequest = std::move(queuedRequest);
+	}
+
+	if (alreadyPending) {
+		// Never strand the second caller in a paused UI state.
+		SubmitPlaceholderKeyboardEvent(VREvent_KeyboardDone, eventDispatch, uUserValue);
+		OOVR_LOG("Keyboard request completed without opening: another request is pending");
+	} else {
+		OOVR_LOGF("Keyboard request queued for compositor thread (callerTid=%lu owner=0x%llX)",
+		    (unsigned long)GetCurrentThreadId(),
+		    (unsigned long long)(uintptr_t)owner);
+	}
+	return VROverlayError_None;
+
+#if 0 // Historical unsafe implementation retained for reference; never compile it.
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
 	if (!BaseCompositor::dxcomp) {
 		// Game hasn't submitted a frame yet — can't create keyboard without D3D11 device.
@@ -3995,6 +4481,120 @@ EVROverlayError BaseOverlay::ShowKeyboardWithDispatch(EGamepadTextInputMode eInp
 #endif
 
 	return VROverlayError_None;
+#endif
+}
+
+void BaseOverlay::ProcessPendingOverlayDestroys()
+{
+	std::vector<OverlayData*> destroys;
+	{
+		std::lock_guard<std::mutex> lock(pendingOverlayDestroyMutex);
+		if (pendingOverlayDestroys.empty())
+			return;
+		destroys.swap(pendingOverlayDestroys);
+	}
+
+	for (OverlayData* overlay : destroys) {
+		// A not-yet-created keyboard request may target this overlay. Complete it
+		// while the dispatch target still exists, then discard the request.
+		std::unique_ptr<PendingKeyboardRequest> canceledRequest;
+		{
+			std::lock_guard<std::mutex> lock(pendingKeyboardMutex);
+			if (pendingKeyboardRequest && pendingKeyboardRequest->owner == overlay)
+				canceledRequest = std::move(pendingKeyboardRequest);
+		}
+		if (canceledRequest) {
+			keyboardCache = canceledRequest->existingText;
+			SubmitPlaceholderKeyboardEvent(VREvent_KeyboardDone,
+			    canceledRequest->eventDispatch, canceledRequest->userValue);
+			OOVR_LOGF("Canceled queued keyboard for destroyed overlay '%s'",
+			    overlay->key.c_str());
+		}
+
+		// VRKeyboard destruction releases its swapchain and D3D resources. This is
+		// now guaranteed to run on the same thread as VRKeyboard::Update().
+		if (keyboard && keyboardOwner == overlay) {
+			OOVR_LOGF("Closing keyboard with owner '%s' on compositor thread (tid=%lu)",
+			    overlay->key.c_str(), (unsigned long)GetCurrentThreadId());
+			HideKeyboard();
+		} else if (keyboardOwner == overlay) {
+			keyboardOwner = nullptr;
+		}
+
+		if (highQualityOverlay == (VROverlayHandle_t)overlay)
+			highQualityOverlay = vr::k_ulOverlayHandleInvalid;
+
+		// destroyQueued prevents a second worker call from entering this queue.
+		// Validate by pointer before touching the key in case shutdown already
+		// removed the object.
+		{
+			std::lock_guard<std::mutex> lock(pendingOverlayDestroyMutex);
+			if (!validOverlays.count(overlay))
+				continue;
+			OOVR_LOGF("Destroying overlay on compositor thread: key='%s' overlay=0x%llX",
+			    overlay->key.c_str(), (unsigned long long)(uintptr_t)overlay);
+			overlays.erase(overlay->key);
+			validOverlays.erase(overlay);
+			delete overlay;
+		}
+	}
+}
+
+void BaseOverlay::ProcessPendingKeyboardRequest()
+{
+	std::unique_ptr<PendingKeyboardRequest> request;
+	{
+		std::lock_guard<std::mutex> lock(pendingKeyboardMutex);
+		if (!pendingKeyboardRequest)
+			return;
+		request = std::move(pendingKeyboardRequest);
+	}
+
+	// Do not replace live keyboard GPU resources mid-frame. Completing with the
+	// unchanged text releases the requesting UI's input pause safely.
+	if (keyboard) {
+		keyboardCache = request->existingText;
+		SubmitPlaceholderKeyboardEvent(VREvent_KeyboardDone, request->eventDispatch, request->userValue);
+		OOVR_LOG("Queued keyboard completed without opening: keyboard already active");
+		return;
+	}
+
+	if (request->lineInputMode != k_EGamepadTextInputLineModeSingleLine) {
+		keyboardCache = request->existingText;
+		SubmitPlaceholderKeyboardEvent(VREvent_KeyboardDone, request->eventDispatch, request->userValue);
+		OOVR_LOGF("Queued keyboard completed without opening: unsupported line mode %d", request->lineInputMode);
+		return;
+	}
+
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
+	ID3D11Device* skDev = BaseCompositor::dxcomp ? BaseCompositor::dxcomp->GetDevice() : nullptr;
+	if (!skDev || reinterpret_cast<uintptr_t>(skDev) <= 0xFFFF) {
+		keyboardCache = request->existingText;
+		SubmitPlaceholderKeyboardEvent(VREvent_KeyboardDone, request->eventDispatch, request->userValue);
+		OOVR_LOG("Queued keyboard completed without opening: D3D11 device unavailable");
+		return;
+	}
+
+	try {
+		keyboard = std::make_unique<VRKeyboard>(skDev, request->userValue, request->charMax,
+		    request->minimalMode, request->eventDispatch,
+		    (VRKeyboard::EGamepadTextInputMode)request->inputMode);
+		keyboard->contents(VRKeyboard::CHAR_CONV.from_bytes(request->existingText));
+		keyboardOwner = request->owner;
+		OOVR_LOGF("Queued keyboard created on compositor thread (tid=%lu owner=0x%llX)",
+		    (unsigned long)GetCurrentThreadId(),
+		    (unsigned long long)(uintptr_t)keyboardOwner);
+	} catch (const std::exception& e) {
+		OOVR_LOGF("Keyboard creation failed on compositor thread: %s", e.what());
+		keyboard.reset();
+		keyboardOwner = nullptr;
+		keyboardCache = request->existingText;
+		SubmitPlaceholderKeyboardEvent(VREvent_KeyboardDone, request->eventDispatch, request->userValue);
+	}
+#else
+	keyboardCache = request->existingText;
+	SubmitPlaceholderKeyboardEvent(VREvent_KeyboardDone, request->eventDispatch, request->userValue);
+#endif
 }
 
 /** Placeholder method for submitting a KeyboardDone event when asked to show the keyboard since it is not implemented yet. **/
@@ -4043,10 +4643,8 @@ EVROverlayError BaseOverlay::ShowKeyboardForOverlay(VROverlayHandle_t ulOverlayH
 		overlay->eventQueue.push(ev);
 	};
 
-	EVROverlayError err = ShowKeyboardWithDispatch(eInputMode, eLineInputMode, pchDescription, unCharMax, pchExistingText, bUseMinimalMode, uUserValue, dispatch);
-	if (err == VROverlayError_None && keyboard)
-		keyboardOwner = overlay;
-	return err;
+	return ShowKeyboardWithDispatch(eInputMode, eLineInputMode, pchDescription,
+	    unCharMax, pchExistingText, bUseMinimalMode, uUserValue, dispatch, overlay);
 }
 EVROverlayError BaseOverlay::ShowKeyboardForOverlay(VROverlayHandle_t ulOverlayHandle, EGamepadTextInputMode eInputMode,
     EGamepadTextInputLineMode eLineInputMode, uint32_t unFlags, const char* pchDescription, uint32_t unCharMax,
@@ -4060,10 +4658,8 @@ EVROverlayError BaseOverlay::ShowKeyboardForOverlay(VROverlayHandle_t ulOverlayH
 	};
 
 	bool bUseMinimalMode = (unFlags & 1) != 0;
-	EVROverlayError err = ShowKeyboardWithDispatch(eInputMode, eLineInputMode, pchDescription, unCharMax, pchExistingText, bUseMinimalMode, uUserValue, dispatch);
-	if (err == VROverlayError_None && keyboard)
-		keyboardOwner = overlay;
-	return err;
+	return ShowKeyboardWithDispatch(eInputMode, eLineInputMode, pchDescription,
+	    unCharMax, pchExistingText, bUseMinimalMode, uUserValue, dispatch, overlay);
 }
 uint32_t BaseOverlay::GetKeyboardText(char* pchText, uint32_t cchText)
 {
