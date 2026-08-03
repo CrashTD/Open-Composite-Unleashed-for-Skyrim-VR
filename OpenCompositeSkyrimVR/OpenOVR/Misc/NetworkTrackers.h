@@ -274,6 +274,12 @@ private:
 	// not redefine the length that the VRIK foot target is expected to reach.
 	bool rawStandingLegReachValid[2] = {};
 	float rawStandingLegReach[2] = {};
+	// Per-side resting ankle height above the heel/toe ground point. The ankle
+	// landmark sits 8-12 cm above the sole, so any lift gate measured against
+	// the sole-level floor reads a planted foot as permanently lifted unless
+	// this offset is subtracted.
+	bool rawAnkleOffsetValid[2] = {};
+	float rawAnkleOffset[2] = {};
 	bool rawFilterValid[9] = {}; // head root + eight body-relative trackers
 	float rawFiltered[9][3] = {};
 	bool rawYawValid = false;

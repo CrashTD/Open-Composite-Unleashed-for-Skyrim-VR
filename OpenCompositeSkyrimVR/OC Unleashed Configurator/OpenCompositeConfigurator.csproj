@@ -53,6 +53,7 @@
     <None Include="BodyTracking\MediaPipe\v0.10.35\win-x64\libmediapipe.dll" TargetPath="libmediapipe.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="BodyTracking\MediaPipe\v0.10.35\win-x64\opencv_world3410.dll" TargetPath="opencv_world3410.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="BodyTracking\MediaPipe\v0.10.35\pose_landmarker_full.task" TargetPath="BodyTracking\MediaPipe\v0.10.35\pose_landmarker_full.task" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="BodyTracking\MediaPipe\v0.10.35\pose_landmarker_lite.task" TargetPath="BodyTracking\MediaPipe\v0.10.35\pose_landmarker_lite.task" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="BodyTracking\MediaPipe\v0.10.35\MEDIAPIPE-LICENSE.txt" TargetPath="BodyTracking\MediaPipe\v0.10.35\MEDIAPIPE-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="BodyTracking\MediaPipe\v0.10.35\OPENCV-LICENSE.txt" TargetPath="BodyTracking\MediaPipe\v0.10.35\OPENCV-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

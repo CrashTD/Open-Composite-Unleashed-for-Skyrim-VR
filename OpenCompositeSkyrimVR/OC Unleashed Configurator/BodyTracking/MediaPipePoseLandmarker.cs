@@ -26,6 +26,11 @@ namespace OpenCompositeConfigurator.BodyTracking
         public const string NativeLibrarySha256 = "8B272582856968B7C2B28B082ABE245799D3EE9243722D13A08DBCBEDBE7D0AD";
         public const string OpenCvNativeLibrarySha256 = "B925E1955AF1718ED1AE10D1F3F1DB57E5AB8C4865729E4748D0BA721EDCA687";
         public const string PoseModelSha256 = "4EAA5EB7A98365221087693FCC286334CF0858E2EB6E15B506AA4A7ECDCEC4AD";
+        // pose_landmarker_lite float16 from the official MediaPipe model zoo.
+        // Roughly 3-5x faster than full on CPU; full-model CPU inference was
+        // measured at ~7 fps live, which is below what the leg classifier and
+        // foot filters can tolerate.
+        public const string PoseLiteModelSha256 = "59929E1D1EE95287735DDD833B19CF4AC46D29BC7AFDDBBF6753C459690D574A";
         public const int RgbChannelCount = 3;
 
         private const int NativeRgbFormat = 1;
@@ -48,7 +53,7 @@ namespace OpenCompositeConfigurator.BodyTracking
             ValidateConfidence(options.MinimumTrackingConfidence, nameof(options.MinimumTrackingConfidence));
 
             string modelPath = Path.GetFullPath(options.ModelPath ?? DefaultModelPath);
-            VerifyPinnedFile(modelPath, PoseModelSha256, "MediaPipe pose model");
+            VerifyPinnedFile(modelPath, ExpectedModelSha256(modelPath), "MediaPipe pose model");
 
             _api = NativeApi.Instance;
             IntPtr modelPathUtf8 = Marshal.StringToCoTaskMemUTF8(modelPath);
@@ -97,13 +102,26 @@ namespace OpenCompositeConfigurator.BodyTracking
         public static string DefaultOpenCvNativeLibraryPath =>
             Path.Combine(AppContext.BaseDirectory, "opencv_world3410.dll");
 
-        public static string DefaultModelPath =>
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "BodyTracking",
-                "MediaPipe",
-                "v0.10.35",
-                "pose_landmarker_full.task");
+        public static string DefaultModelPath
+        {
+            get
+            {
+                string modelDirectory = Path.Combine(
+                    AppContext.BaseDirectory,
+                    "BodyTracking",
+                    "MediaPipe",
+                    "v0.10.35");
+                string lite = Path.Combine(modelDirectory, "pose_landmarker_lite.task");
+                return File.Exists(lite)
+                    ? lite
+                    : Path.Combine(modelDirectory, "pose_landmarker_full.task");
+            }
+        }
+
+        private static string ExpectedModelSha256(string modelPath) =>
+            Path.GetFileName(modelPath).Contains("lite", StringComparison.OrdinalIgnoreCase)
+                ? PoseLiteModelSha256
+                : PoseModelSha256;
 
         public string ModelPath { get; }
 
@@ -119,9 +137,10 @@ namespace OpenCompositeConfigurator.BodyTracking
         /// <summary>Verifies and loads the exact pinned DLL and verifies the model.</summary>
         public static void VerifyPinnedAssets(string? modelPath = null)
         {
+            string resolvedModelPath = Path.GetFullPath(modelPath ?? DefaultModelPath);
             VerifyPinnedFile(
-                Path.GetFullPath(modelPath ?? DefaultModelPath),
-                PoseModelSha256,
+                resolvedModelPath,
+                ExpectedModelSha256(resolvedModelPath),
                 "MediaPipe pose model");
             _ = NativeApi.Instance;
         }

@@ -407,6 +407,8 @@ void NetworkTrackerReceiver::ParseRawMediaPipePacket(const char* data, int len)
 		if (rawSourceChanged) {
 			memset(rawStandingLegReachValid, 0, sizeof(rawStandingLegReachValid));
 			memset(rawStandingLegReach, 0, sizeof(rawStandingLegReach));
+			memset(rawAnkleOffsetValid, 0, sizeof(rawAnkleOffsetValid));
+			memset(rawAnkleOffset, 0, sizeof(rawAnkleOffset));
 		}
 	}
 	rawEpochValid = true;
@@ -470,6 +472,28 @@ void NetworkTrackerReceiver::ParseRawMediaPipePacket(const char* data, int len)
 	learnStandingReach(0, L_HIP, L_KNEE, leftFoot, leftFootValid);
 	learnStandingReach(1, R_HIP, R_KNEE, rightFoot, rightFootValid);
 
+	// Learn each ankle's height above its own heel/toe ground point while the
+	// foot is near the floor. Heel and toe rise with the ankle mid-kick, so
+	// learning is restricted to grounded-adjacent frames.
+	auto learnAnkleOffset = [&](int side, const RawBodyVec3& foot,
+	                            bool footValid, float groundY) {
+		if (!footValid || !std::isfinite(groundY))
+			return;
+		if (rawFloorValid && (groundY - rawFloorY) > 0.06f)
+			return;
+		const float offset = foot.y - groundY;
+		if (offset < 0.0f || offset > 0.20f)
+			return;
+		if (!rawAnkleOffsetValid[side]) {
+			rawAnkleOffset[side] = offset;
+			rawAnkleOffsetValid[side] = true;
+		} else {
+			rawAnkleOffset[side] += 0.10f * (offset - rawAnkleOffset[side]);
+		}
+	};
+	learnAnkleOffset(0, leftFoot, leftFootValid, leftGroundY);
+	learnAnkleOffset(1, rightFoot, rightFootValid, rightGroundY);
+
 	// SkyrimVR-FBT receives only waist and foot trackers; it solves the knee
 	// itself. A monocular pose can visibly find a straight kick while shortening
 	// the hip-to-ankle ray enough that FBT must keep the avatar knee bent. Detect
@@ -489,21 +513,36 @@ void NetworkTrackerReceiver::ParseRawMediaPipePacket(const char* data, int len)
 		const float reach = RawLength(displacement);
 		const float maximumReach = RawDistance(hip, knee) + RawDistance(knee, foot);
 		const float reachRatio = maximumReach > 0.20f ? reach / maximumReach : 0.0f;
-		const float lift = foot.y - rawFloorY;
+		// True lift: ankle height above the floor minus the ankle's natural
+		// resting height above the sole. Without the offset a planted foot
+		// reads ~0.10 m of permanent lift and every lift gate is decorative.
+		const float ankleOffset = rawAnkleOffsetValid[side]
+		    ? rawAnkleOffset[side] : 0.09f;
+		const float lift = foot.y - rawFloorY - ankleOffset;
 		const float horizontalReach = std::sqrt(
 		    displacement.x * displacement.x + displacement.z * displacement.z);
-		// The recorded straight-leg holds sit about 0.10-0.11 m above the
-		// estimated floor. Requiring 0.12 m rejected both real kicks and left
-		// MediaPipe's monocular backward-depth solution uncorrected.
 		const bool geometricKick = lift >= 0.075f && horizontalReach >= 0.16f
 		    && reachRatio >= 0.90f && maximumReach >= 0.45f;
+		// The sender may confirm a kick the monocular geometry foreshortens,
+		// but a leg that measures far from straight with its foot near the
+		// floor is classifier jitter, not a strike.
 		const bool senderConfirmedKick = state == NetCameraLegState::KickExtend
-		    && lift >= 0.075f && horizontalReach >= 0.16f;
+		    && lift >= 0.075f && horizontalReach >= 0.16f
+		    && reachRatio >= 0.80f;
 
 		if (!geometricKick && !senderConfirmedKick) {
-			// Reject the sender's occasional ground-level false kick without
-			// disturbing genuine chamber/knee-hold/recovery semantics.
-			if (state == NetCameraLegState::KickExtend && lift < 0.045f)
+			// A leg whose ankle sits at its resting height cannot be
+			// chambering, kicking or recovering. Low-frame-rate camera jitter
+			// makes the sender latch these states while standing, which both
+			// blocks gait arbitration and arms the reach solver. Ground the
+			// contradiction at the wire boundary; WalkStep is left alone
+			// because a casual stride's real lift is only a few centimeters.
+			if (lift < 0.035f
+			    && (state == NetCameraLegState::UndecidedLift
+			        || state == NetCameraLegState::Chamber
+			        || state == NetCameraLegState::KneeHold
+			        || state == NetCameraLegState::KickExtend
+			        || state == NetCameraLegState::Recover))
 				state = NetCameraLegState::Grounded;
 			return;
 		}
@@ -1302,6 +1341,8 @@ void NetworkTrackerReceiver::TestReset()
 	rawFloorY = 0.0f;
 	memset(rawStandingLegReachValid, 0, sizeof(rawStandingLegReachValid));
 	memset(rawStandingLegReach, 0, sizeof(rawStandingLegReach));
+	memset(rawAnkleOffsetValid, 0, sizeof(rawAnkleOffsetValid));
+	memset(rawAnkleOffset, 0, sizeof(rawAnkleOffset));
 	memset(rawFilterValid, 0, sizeof(rawFilterValid));
 	memset(rawFiltered, 0, sizeof(rawFiltered));
 	rawYawValid = false;
