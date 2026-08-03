@@ -1,0 +1,78 @@
+OpenComposite Unleashed for Skyrim VR - Third-party notices
+===========================================================
+
+OCU itself is licensed under the GNU General Public License v3 (GPLv3),
+because it is a derivative of OpenComposite, which is GPLv3. The full text
+is in OpenComposite-OCU-GPLv3.txt. Source code:
+https://github.com/Wondernuttz/Open-Composite-Unleashed-for-Skyrim-VR
+
+Components redistributed with this package
+------------------------------------------
+
+OpenComposite (OpenOVR)
+  License: GPLv3 (OpenComposite-OCU-GPLv3.txt)
+  Source:  https://gitlab.com/znixian/OpenOVR
+
+NVIDIA DLSS (nvngx_dlss.dll)
+  License: NVIDIA RTX SDKs License (NVIDIA-DLSS-LICENSE.txt)
+  Source:  https://github.com/NVIDIA/DLSS
+  This software contains source code provided by NVIDIA Corporation.
+
+NVIDIA NVAPI (statically linked)
+  License: NVIDIA NVAPI license (NVIDIA-NVAPI-LICENSE.txt)
+  Source:  https://developer.nvidia.com/nvapi
+
+AMD FidelityFX / FSR3 (amd_fidelityfx_*.dll)
+  License: MIT (AMD-FidelityFX-MIT.txt)
+  Source:  https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+
+Google MediaPipe Pose Landmarker v0.10.35 (libmediapipe.dll,
+pose_landmarker_full.task, pose_landmarker_lite.task)
+  License: Apache License 2.0 (MediaPipe-Apache2.txt)
+  Source:  https://github.com/google-ai-edge/mediapipe
+  All pose inference runs locally; no camera data leaves the machine.
+
+OpenCV (opencv_world3410.dll, opencv_videoio_ffmpeg dlls)
+  License: see OpenCV-LICENSE.txt
+  Source:  https://opencv.org
+
+OpenCvSharp + OpenCvSharpExtern.dll (camera capture in the Configurator)
+  License: Apache License 2.0
+  Source:  https://github.com/shimat/opencvsharp
+
+Valve OpenVR API headers
+  License: BSD 3-Clause (Valve-OpenVR-BSD3.txt)
+  Source:  https://github.com/ValveSoftware/openvr
+
+Khronos OpenXR SDK
+  License: Apache License 2.0 (OpenXR-SDK-Apache2.txt)
+  Source:  https://github.com/KhronosGroup/OpenXR-SDK
+
+Eigen 3.4
+  License: MPL2 (Eigen-MPL2.txt)
+  Source:  https://eigen.tuxfamily.org
+
+GLM (OpenGL Mathematics)
+  License: MIT / Happy Bunny (GLM-LICENSE.txt)
+  Source:  https://github.com/g-truc/glm
+
+MinHook
+  License: BSD 2-Clause (MinHook-BSD2.txt)
+  Source:  https://github.com/TsudaKageyu/minhook
+
+inih (ini parser)
+  License: New BSD (inih-BSD.txt)
+  Source:  https://github.com/benhoyt/inih
+
+build-util / debug-break helpers
+  Licenses: build-util-LICENSE.txt, debug-break-LICENSE.txt
+
+Oculus VR hand/controller models (assets)
+  License: Creative Commons Attribution 4.0 (Oculus-HandModels-CCBY4.txt)
+
+Microsoft .NET runtime (bundled in the self-contained Configurator exe)
+  License: MIT
+  Source:  https://github.com/dotnet/runtime
+
+Fonts (keyboard skins): MedievalSharp (SIL Open Font License),
+Ubuntu font (Ubuntu Font Licence).

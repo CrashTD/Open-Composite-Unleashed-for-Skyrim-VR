@@ -37,6 +37,7 @@
 
   <ItemGroup>
     <None Include="..\doc\OCU-Setup-Readme.html" Link="Docs\OCU-Setup-Readme.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\doc\Licenses\**\*.*" Link="Docs\Licenses\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\doc\images\**\*.*" Link="Docs\images\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 

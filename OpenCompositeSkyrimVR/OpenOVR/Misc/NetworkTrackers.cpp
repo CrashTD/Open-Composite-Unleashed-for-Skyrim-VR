@@ -544,6 +544,14 @@ void NetworkTrackerReceiver::ParseRawMediaPipePacket(const char* data, int len)
 			        || state == NetCameraLegState::KickExtend
 			        || state == NetCameraLegState::Recover))
 				state = NetCameraLegState::Grounded;
+			else if (state == NetCameraLegState::KickExtend)
+				// A kick label that fails both the geometric and the
+				// sender-confirmed gate is not actionable anywhere: the reach
+				// solver ignores it, so the locomotion arbiter must not wipe
+				// walking cadence for it either. Low-frame-rate walking reads
+				// as KickExtend/Recover almost continuously, and each edge
+				// wiped the step evidence before gait could ever confirm.
+				state = NetCameraLegState::UndecidedLift;
 			return;
 		}
 
