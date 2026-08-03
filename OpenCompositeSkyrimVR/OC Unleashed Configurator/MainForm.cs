@@ -133,6 +133,13 @@ namespace OpenCompositeConfigurator
         private NumericUpDown _nudSuperSample = null!;
         private CheckBox _chkRenderHands = null!;
         private CheckBox _chkHaptics = null!;
+
+        // Developer/tuning surfaces (haptics page, FBT capture recorder, live
+        // triple-A foot trim) are hidden from users but kept in the build.
+        // Create an empty file named "devtools.on" next to the exe to restore
+        // them.
+        internal static readonly bool ShowDevTools =
+            System.IO.File.Exists(System.IO.Path.Combine(AppContext.BaseDirectory, "devtools.on"));
         private NumericUpDown _nudHapticStrength = null!;
         private CheckBox _chkHiddenMesh = null!;
         private CheckBox _chkInvertShaders = null!;
@@ -627,12 +634,13 @@ namespace OpenCompositeConfigurator
             _btnTabHaptics.FlatAppearance.BorderSize = 0;
             _btnTabHaptics.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 55);
             _btnTabHaptics.Click += (s, e) => SwitchTab(4);
+            _btnTabHaptics.Visible = ShowDevTools;
             Controls.Add(_btnTabHaptics);
 
             _btnTabBody = new Button
             {
                 Text = "Body Tracking",
-                Location = new Point(leftMargin + 520, y),
+                Location = new Point(leftMargin + (ShowDevTools ? 520 : 425), y),
                 Size = new Size(115, 30),
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 10f),
@@ -6676,6 +6684,8 @@ namespace OpenCompositeConfigurator
                 _nudSuperSample.Value = (decimal)Math.Clamp(ss, 0.5f, 2.0f);
             _chkRenderHands.Checked = ParseBool(_ini.Get("", "renderCustomHands", "true"));
             _chkHaptics.Checked = ParseBool(_ini.Get("", "haptics", "true"));
+            if (!ShowDevTools)
+                _chkHaptics.Checked = false;
             if (TryParseIniFloat(_ini.Get("", "hapticStrength", "0.1"), out float hs))
                 _nudHapticStrength.Value = (decimal)Math.Clamp(hs, 0f, 1f);
             _chkHiddenMesh.Checked = ParseBool(_ini.Get("", "enableHiddenMeshFix", "true"));
@@ -6735,6 +6745,8 @@ namespace OpenCompositeConfigurator
             _chkCombatHapticMagic.Checked = ParseBool(_ini.Get("", "combatHapticMagic", "true"));
             _chkNetTrackersEnabled.Checked = ParseBool(_ini.Get("", "networkTrackersEnabled", "false"));
             _chkCameraLegCalibration.Checked = ParseBool(_ini.Get("", "cameraLegCalibrationEnabled", "true"));
+            if (!ShowDevTools)
+                _chkCameraLegCalibration.Checked = false;
             _chkWalkInPlace.Checked = ParseBool(_ini.Get("", "walkInPlaceEnabled", "false"));
             SelectWalkActivation(_ini.Get("", "walkInPlaceActivation", "none"));
             if (int.TryParse(_ini.Get("", "combatHapticStrength", "80"), out int chs))

@@ -579,8 +579,13 @@ namespace OpenCompositeConfigurator
             _lblBodyCaptureStatus.ForeColor = Color.FromArgb(175, 165, 190);
             _lblBodyCaptureStatus.Font = new Font("Segoe UI", 8f);
             pnlCapture.Controls.Add(_lblBodyCaptureStatus);
-            container.Controls.Add(pnlCapture);
-            y += 102;
+            // Dev-only: the controls stay constructed (other code references
+            // them) but the panel is only shown with devtools.on present.
+            if (ShowDevTools)
+            {
+                container.Controls.Add(pnlCapture);
+                y += 102;
+            }
 
             // ── FBT mod callout ──
             var pnlFbt = new Panel
@@ -646,7 +651,7 @@ namespace OpenCompositeConfigurator
 
             _chkCameraLegCalibration = MakeCheckBox(
                 "Arm camera-leg calibration controls (Save + game restart required)", 8, 84);
-            _chkCameraLegCalibration.Checked = true;
+            _chkCameraLegCalibration.Checked = ShowDevTools;
             _chkCameraLegCalibration.ForeColor = Color.FromArgb(190, 160, 235);
             pnlLegCal.Controls.Add(_chkCameraLegCalibration);
 
@@ -655,8 +660,11 @@ namespace OpenCompositeConfigurator
             btnResetLegCal.ForeColor = Color.White;
             btnResetLegCal.Click += (s, e) => ResetSavedCameraLegCalibration();
             pnlLegCal.Controls.Add(btnResetLegCal);
-            container.Controls.Add(pnlLegCal);
-            y += 126;
+            if (ShowDevTools)
+            {
+                container.Controls.Add(pnlLegCal);
+                y += 126;
+            }
 
             // ── Full-body walking (walk-in-place locomotion) ──
             var pnlWalk = new Panel

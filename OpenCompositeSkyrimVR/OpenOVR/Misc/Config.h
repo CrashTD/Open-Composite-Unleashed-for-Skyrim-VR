@@ -490,7 +490,7 @@ private:
 	// Off by default: opening a UDP port should be a user choice.
 	bool networkTrackersEnabled = false;
 	int networkTrackerPort = 9000; // the de-facto default OSC tracker port
-	bool cameraLegCalibrationEnabled = true; // arm live camera-foot trim controls
+	bool cameraLegCalibrationEnabled = false; // dev-only: arm live camera-foot trim controls
 
 	// Walk-in-place locomotion driven from the body-tracker feed.
 	bool walkInPlaceEnabled = false;
