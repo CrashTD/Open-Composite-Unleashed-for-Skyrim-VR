@@ -1327,6 +1327,24 @@ namespace OpenCompositeConfigurator
                 cap = int.TryParse(source, out int idx)
                     ? new OpenCvSharp.VideoCapture(idx, OpenCvSharp.VideoCaptureAPIs.DSHOW)
                     : new OpenCvSharp.VideoCapture(source);
+                if (cap.IsOpened() && int.TryParse(source, out _))
+                {
+                    // Without format hints DSHOW negotiates uncompressed YUY2 at
+                    // the camera's maximum resolution, which USB bandwidth caps
+                    // at 5-7.5 fps (measured live: 141 ms frame gaps with only
+                    // ~47 ms pipeline age). MJPG at 720p keeps webcams at their
+                    // full frame rate; MediaPipe downscales internally, so
+                    // capture resolution above 720p adds nothing but latency.
+                    try
+                    {
+                        cap.Set(OpenCvSharp.VideoCaptureProperties.FourCC,
+                            OpenCvSharp.VideoWriter.FourCC('M', 'J', 'P', 'G'));
+                        cap.Set(OpenCvSharp.VideoCaptureProperties.FrameWidth, 1280);
+                        cap.Set(OpenCvSharp.VideoCaptureProperties.FrameHeight, 720);
+                        cap.Set(OpenCvSharp.VideoCaptureProperties.Fps, 30);
+                    }
+                    catch { }
+                }
                 if (!cap.IsOpened())
                 {
                     if (IsBodyCaptureSessionActive(captureGeneration))
