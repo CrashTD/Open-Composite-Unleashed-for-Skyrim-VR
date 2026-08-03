@@ -1115,7 +1115,11 @@ namespace OpenCompositeConfigurator
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 8.5f),
             };
-            _cmbKbTheme.Items.AddRange(new object[] { "Parchment", "SkyUI Dark", "Dwemer", "Sovngarde" });
+            // Only Parchment has passed in-headset review; the other skins
+            // return with devtools.on until they are release-ready.
+            _cmbKbTheme.Items.AddRange(ShowDevTools
+                ? new object[] { "Parchment", "SkyUI Dark", "Dwemer", "Sovngarde" }
+                : new object[] { "Parchment" });
             _cmbKbTheme.SelectedIndex = 0;
             container.Controls.Add(_cmbKbTheme);
             ry += 28;
@@ -1126,8 +1130,11 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(_chkSoundsEnabled);
             ry += 26;
 
-            // Row 4: Volume controls
-            container.Controls.Add(MakeLabel("Master:", rx, ry + 3, 55));
+            // Row 4: Volume controls. AutoSize so DPI scaling can never clip
+            // the label to nothing (reported cut off on a scaled display).
+            var lblKbMasterVol = MakeLabel("Master:", rx, ry + 3, 55);
+            lblKbMasterVol.AutoSize = true;
+            container.Controls.Add(lblKbMasterVol);
             _nudSoundVolume = new NumericUpDown
             {
                 Location = new Point(rx + 55, ry), Width = 55,
@@ -6670,10 +6677,13 @@ namespace OpenCompositeConfigurator
             if (int.TryParse(_ini.Get("keyboard", "displayScale", "100"), out int dsc))
                 _nudDisplayScale.Value = Math.Clamp(dsc, 50, 150);
 
-            _cmbKbTheme.SelectedIndex = _ini.Get("keyboard", "theme", "parchment").ToLowerInvariant() switch
+            int kbThemeIndex = _ini.Get("keyboard", "theme", "parchment").ToLowerInvariant() switch
             {
                 "skyui" => 1, "dwemer" => 2, "sovngarde" => 3, _ => 0
             };
+            // The public build lists Parchment only; clamp so a saved dev
+            // theme cannot index past the shortened list.
+            _cmbKbTheme.SelectedIndex = kbThemeIndex < _cmbKbTheme.Items.Count ? kbThemeIndex : 0;
 
             _chkSoundsEnabled.Checked = ParseBool(_ini.Get("keyboard", "soundsEnabled", "true"));
             if (int.TryParse(_ini.Get("keyboard", "soundVolume", "50"), out int svol))
