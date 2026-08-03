@@ -125,6 +125,7 @@ private:
 	uint64_t handsHighSince = 0; // sustained-raise timer for engaging the latch
 	uint64_t handsBelowSince = 0; // sustained-drop timer for releasing the latch
 	float outSpeed = 0.0f; // smoothed 0..1
+	float recentPeakLift = 0.0f; // decayed max foot lift; amplitude intent for speed
 	bool turnGesture[2] = {}; // left/right palm held near 90 degrees from neutral
 	uint64_t turnGestureSince[2] = {};
 	float turnOut = 0.0f;

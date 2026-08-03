@@ -156,6 +156,7 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 		lastHighFootLiftMs = 0;
 		lastStrongArmMs = 0;
 		lastCameraWalkSemanticMs = 0;
+		recentPeakLift = 0.0f;
 		gaitConfirmed = false;
 		gaitReleaseSinceMs = 0;
 		quickStartUntilMs = 0;
@@ -367,6 +368,7 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 		lastHighFootLiftMs = 0;
 		lastStrongArmMs = 0;
 		lastCameraWalkSemanticMs = 0;
+		recentPeakLift = 0.0f;
 		gaitConfirmed = false;
 		gaitReleaseSinceMs = 0;
 		quickStartUntilMs = 0;
@@ -711,9 +713,10 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 	    now - lastStrongArmMs < 900 && recentHighLift;
 	size_t freshCameraRunSteps = (size_t)std::count_if(stepTimes.begin(), stepTimes.end(),
 	    [&](uint64_t t) { return now - t <= 1550; });
-	// A 600-700 ms half-step is still an ordinary walk. Requiring four fresh
-	// crossings below 560 ms keeps that range out of the run band.
-	bool cameraRunCandidate = freshCameraRunSteps >= 4 && footGap >= 160.0f && footGap <= 560.0f &&
+	// A low-frame-rate camera merges crossings and stretches the measured gap,
+	// so the run gate leans on the high-lift + strong-arm evidence (which
+	// survives low fps) rather than demanding sprint-tight measured cadence.
+	bool cameraRunCandidate = freshCameraRunSteps >= 3 && footGap >= 160.0f && footGap <= 700.0f &&
 	    lastStepMs != 0 && now - lastStepMs < 850 && cameraRunEvidence;
 	bool hardwareRunCandidate = trustedHardwareFeet && nf >= 4 &&
 	    footGap >= 160.0f && footGap <= 650.0f &&
@@ -767,6 +770,17 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 	// above, but changing between the strict arm-crossing path and the slow-foot
 	// fallback must not select two different speed curves. That branch switch
 	// caused a steady ~650 ms gait to jump between roughly 0.18 and 0.49.
+	// Lift amplitude survives a low-frame-rate camera far better than crossing
+	// cadence, which quantizes toward whole frames and collapses a shuffle and
+	// a sprint into similar measured gaps. Blend amplitude into the speed so
+	// gait intensity, not just cadence, sets locomotion power: the slowest
+	// shuffle creeps like a barely-tilted stick and ramps continuously.
+	{
+		float liftNow = std::max(footFilt[0] - baseline[0], footFilt[1] - baseline[1]);
+		recentPeakLift = std::max(recentPeakLift * std::exp(-dt / 1.5f),
+		    std::clamp(liftNow, 0.0f, 0.60f));
+	}
+	float liftIntent = std::clamp((recentPeakLift - 0.02f) / (0.10f - 0.02f), 0.0f, 1.0f);
 	float targetSpeed = 0.0f;
 	if (gaitConfirmed && footGap > 0.0f && runningNow) {
 		float footSps = 1000.0f / std::max(footGap, 1.0f);
@@ -774,14 +788,21 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 		if (trustedHardwareFeet) {
 			targetSpeed = cadenceIntent;
 		} else {
-			float armIntent = std::clamp((armSwingSpeed - 0.45f) / (2.0f - 0.45f), 0.45f, 1.0f);
-			targetSpeed = std::clamp(std::sqrt(cadenceIntent * armIntent), 0.45f, 1.0f);
+			// Camera cadence under-measures a real sprint; a confirmed run's
+			// floor must already feel like running, with arm speed or lift
+			// intensity carrying it to full sprint.
+			float armIntent = std::clamp((armSwingSpeed - 0.45f) / (2.0f - 0.45f), 0.0f, 1.0f);
+			targetSpeed = std::clamp(0.75f + 0.25f * std::max(armIntent, liftIntent),
+			    0.75f, 1.0f);
 		}
 	} else if (gaitConfirmed && footGap > 0.0f) {
 		float footSps = 1000.0f / std::max(footGap, 1.0f);
-		// Broad, continuous walk band: ~1 step/s remains leisurely, while a
-		// fast walk can approach the run transition without crossing it.
-		targetSpeed = std::clamp((footSps - 0.75f) / (3.20f - 0.75f), 0.15f, 0.62f);
+		float cadenceNorm = std::clamp((footSps - 0.75f) / (3.20f - 0.75f), 0.0f, 1.0f);
+		// Continuous walk band from creep to brisk: amplitude leads because a
+		// slow camera reports similar cadence for very different efforts.
+		targetSpeed = std::clamp(
+		    0.14f + 0.50f * (0.45f * cadenceNorm + 0.55f * liftIntent),
+		    0.14f, 0.62f);
 	} else if (quickStartActive) {
 		targetSpeed = 0.15f;
 	}
