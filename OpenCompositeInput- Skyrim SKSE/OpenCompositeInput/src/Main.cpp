@@ -1887,7 +1887,14 @@ namespace
 	{
 		const bool inventory = strcmp(menuName, "InventoryMenu") == 0;
 		const bool magic = strcmp(menuName, "MagicMenu") == 0;
-		if (!inventory && !magic)
+		// ContainerMenu shares the InventoryLists/ItemsList components and the
+		// native AttemptEquip contract. Routing the laser trigger here restores
+		// the VR trigger semantics (equip/read the hovered item, per hand)
+		// instead of the Scaleform mouse click's "take". If a replacer movie
+		// lacks any part of the contract, every probe below fails and the
+		// caller falls back to the mouse click, i.e. today's behaviour.
+		const bool container = strcmp(menuName, "ContainerMenu") == 0;
+		if (!inventory && !magic && !container)
 			return false;
 
 		// SkyUI/Dear Diary and Bethesda's vanilla VR movies expose the same native
