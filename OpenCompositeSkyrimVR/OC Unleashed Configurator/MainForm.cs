@@ -651,6 +651,9 @@ namespace OpenCompositeConfigurator
             _btnTabBody.FlatAppearance.BorderSize = 0;
             _btnTabBody.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 55);
             _btnTabBody.Click += (s, e) => SwitchTab(5);
+            // Camera FBT is shelved from the public build until it passes
+            // in-headset testing; devtools.on restores the tab.
+            _btnTabBody.Visible = ShowDevTools;
             Controls.Add(_btnTabBody);
 
             y += 32;
@@ -6745,9 +6748,16 @@ namespace OpenCompositeConfigurator
             _chkCombatHapticMagic.Checked = ParseBool(_ini.Get("", "combatHapticMagic", "true"));
             _chkNetTrackersEnabled.Checked = ParseBool(_ini.Get("", "networkTrackersEnabled", "false"));
             _chkCameraLegCalibration.Checked = ParseBool(_ini.Get("", "cameraLegCalibrationEnabled", "true"));
-            if (!ShowDevTools)
-                _chkCameraLegCalibration.Checked = false;
             _chkWalkInPlace.Checked = ParseBool(_ini.Get("", "walkInPlaceEnabled", "false"));
+            if (!ShowDevTools)
+            {
+                // Camera FBT and walk-in-place are shelved from the public
+                // build until they pass in-headset testing; a Save writes
+                // them disabled. devtools.on restores the whole surface.
+                _chkCameraLegCalibration.Checked = false;
+                _chkNetTrackersEnabled.Checked = false;
+                _chkWalkInPlace.Checked = false;
+            }
             SelectWalkActivation(_ini.Get("", "walkInPlaceActivation", "none"));
             if (int.TryParse(_ini.Get("", "combatHapticStrength", "80"), out int chs))
                 _nudCombatHapticStrength.Value = Math.Clamp(chs, 0, 100);
