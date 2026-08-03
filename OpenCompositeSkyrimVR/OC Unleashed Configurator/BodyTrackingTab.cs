@@ -1327,6 +1327,7 @@ namespace OpenCompositeConfigurator
                 cap = int.TryParse(source, out int idx)
                     ? new OpenCvSharp.VideoCapture(idx, OpenCvSharp.VideoCaptureAPIs.DSHOW)
                     : new OpenCvSharp.VideoCapture(source);
+                string cameraFormatNote = "";
                 if (cap.IsOpened() && int.TryParse(source, out _))
                 {
                     // Without format hints DSHOW negotiates uncompressed YUY2 at
@@ -1342,6 +1343,26 @@ namespace OpenCompositeConfigurator
                         cap.Set(OpenCvSharp.VideoCaptureProperties.FrameWidth, 1280);
                         cap.Set(OpenCvSharp.VideoCaptureProperties.FrameHeight, 720);
                         cap.Set(OpenCvSharp.VideoCaptureProperties.Fps, 30);
+                        double negotiated = cap.Get(OpenCvSharp.VideoCaptureProperties.Fps);
+                        if (negotiated > 0 && negotiated < 15)
+                        {
+                            // The camera refused 30 fps at 720p; USB bandwidth
+                            // or driver caps often lift at a lower resolution.
+                            cap.Set(OpenCvSharp.VideoCaptureProperties.FrameWidth, 640);
+                            cap.Set(OpenCvSharp.VideoCaptureProperties.FrameHeight, 480);
+                            cap.Set(OpenCvSharp.VideoCaptureProperties.Fps, 30);
+                        }
+                        int fcc = (int)cap.Get(OpenCvSharp.VideoCaptureProperties.FourCC);
+                        string fourcc = new string(new[]
+                        {
+                            (char)(fcc & 255), (char)((fcc >> 8) & 255),
+                            (char)((fcc >> 16) & 255), (char)((fcc >> 24) & 255),
+                        });
+                        cameraFormatNote = string.Format(" | cam {0:F0}x{1:F0}@{2:F0} {3}",
+                            cap.Get(OpenCvSharp.VideoCaptureProperties.FrameWidth),
+                            cap.Get(OpenCvSharp.VideoCaptureProperties.FrameHeight),
+                            cap.Get(OpenCvSharp.VideoCaptureProperties.Fps),
+                            fourcc);
                     }
                     catch { }
                 }
@@ -1409,7 +1430,7 @@ namespace OpenCompositeConfigurator
                                 MinimumLandmarkConfidence = 0.25f,
                                 IncludeAuxiliaryTrackers = true,
                             });
-                        trackingStatusText = "Tracking (World 3D, MediaPipe CPU)";
+                        trackingStatusText = "Tracking (World 3D, MediaPipe CPU)" + cameraFormatNote;
                         BodySetStatus(trackingStatusText, Color.FromArgb(120, 220, 120));
                     }
                     catch (Exception ex)
@@ -1446,12 +1467,40 @@ namespace OpenCompositeConfigurator
                     try
                     {
                         using var g = new OpenCvSharp.Mat();
+                        long fpsProbeStartMs = Environment.TickCount64;
+                        int fpsProbeFrames = 0;
+                        bool exposureOverrideDecided = false;
                         while (IsBodyCaptureSessionActive(captureGeneration))
                         {
                             if (!grabberCapture.Read(g) || g.Empty())
                             {
                                 Thread.Sleep(5);
                                 continue;
+                            }
+                            fpsProbeFrames++;
+                            long probeElapsed = Environment.TickCount64 - fpsProbeStartMs;
+                            if (!exposureOverrideDecided && probeElapsed > 3000)
+                            {
+                                exposureOverrideDecided = true;
+                                double measuredFps = fpsProbeFrames * 1000.0 / probeElapsed;
+                                if (measuredFps < 15.0)
+                                {
+                                    // Delivery is slow despite the negotiated
+                                    // format: the usual culprit is low-light
+                                    // auto-exposure holding the shutter open
+                                    // for 130-200 ms. Cap it at ~1/32 s; the
+                                    // image gets darker but arrives on time.
+                                    // More room light beats this override.
+                                    try
+                                    {
+                                        grabberCapture.Set(OpenCvSharp.VideoCaptureProperties.AutoExposure, 0.25);
+                                        grabberCapture.Set(OpenCvSharp.VideoCaptureProperties.Exposure, -5);
+                                        BodySetStatus(string.Format(
+                                            "Camera delivered {0:F0} fps - forced 1/32s shutter (low light?). Add room light for best tracking.",
+                                            measuredFps), Color.FromArgb(255, 190, 90));
+                                    }
+                                    catch { }
+                                }
                             }
                             var clone = g.Clone();
                             lock (latestLock)
