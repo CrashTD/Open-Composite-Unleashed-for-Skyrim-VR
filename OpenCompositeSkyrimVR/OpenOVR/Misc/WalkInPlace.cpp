@@ -169,6 +169,7 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 	bool cameraLegValid[2] = { lCameraLegValid, rCameraLegValid };
 	NetCameraLegState cameraLegState[2] = { lCameraLegState, rCameraLegState };
 	bool newConfirmedKick = false;
+	bool newConfirmedKickSide[2] = { false, false };
 	if (!trustedHardwareFeet && cameraSemanticGait) {
 		for (int side = 0; side < 2; ++side) {
 			if (!hardwareFoot[side] && cameraLegValid[side]
@@ -214,8 +215,10 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 		bool beginsKick = BeginsConfirmedCameraKick(cameraLegStateInit[side],
 		    lastCameraLegState[side], state, cameraKickLatched[side]);
 		if (IsCameraConfirmedKick(state)) {
-			if (beginsKick)
+			if (beginsKick) {
 				newConfirmedKick = true;
+				newConfirmedKickSide[side] = true;
+			}
 			cameraKickLatched[side] = true;
 			cameraKickLastSeenMs[side] = now;
 			cameraGroundedSinceMs[side] = 0;
@@ -239,10 +242,30 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 	}
 
 	if (newConfirmedKick) {
-		resetCameraGaitEvidence();
-		// The classifier normally supplies Recover for ~450 ms. This tail also
-		// covers a missed packet without admitting the return stroke as a step.
-		feetRecoveryQuarantineUntilMs = std::max(feetRecoveryQuarantineUntilMs, now + 520);
+		// An established rhythm outvotes a single kick label. A walking stride
+		// shares chamber->extend geometry with a strike, so one misclassified
+		// stride must not wipe the cadence proof mid-walk. A standing kick
+		// still resets normally (no fresh gait), and a genuine kick thrown
+		// while walking still resets once the foot climbs above any plausible
+		// stride height.
+		const bool gaitFresh = gaitConfirmed && lastStepMs != 0
+		    && now - lastStepMs <= 900;
+		float kickLift = 0.0f;
+		for (int side = 0; side < 2; ++side)
+			if (newConfirmedKickSide[side])
+				kickLift = std::max(kickLift, footFilt[side] - baseline[side]);
+		if (!gaitFresh || kickLift >= 0.28f) {
+			resetCameraGaitEvidence();
+			// The classifier normally supplies Recover for ~450 ms. This tail also
+			// covers a missed packet without admitting the return stroke as a step.
+			feetRecoveryQuarantineUntilMs = std::max(feetRecoveryQuarantineUntilMs, now + 520);
+		} else {
+			// Rejected stride-as-kick: drop the latch too, or the action gate
+			// would still zero the axis for the rest of the "kick".
+			for (int side = 0; side < 2; ++side)
+				if (newConfirmedKickSide[side])
+					cameraKickLatched[side] = false;
+		}
 	}
 	bool leftAction = !lHardwareFoot && cameraKickLatched[0];
 	bool rightAction = !rHardwareFoot && cameraKickLatched[1];
