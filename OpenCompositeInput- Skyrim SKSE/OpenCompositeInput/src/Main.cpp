@@ -2,6 +2,9 @@
 #include <RE/B/BSInputDeviceManager.h>
 #include <RE/B/BSInputEventQueue.h>
 #include <RE/B/BSOpenVR.h>
+#include <RE/B/BSEffectShaderMaterial.h>
+#include <RE/B/BSEffectShaderProperty.h>
+#include <RE/B/ButtonEvent.h>
 #include <RE/B/BSVirtualKeyboardDevice.h>
 #include <RE/B/BSWin32VirtualKeyboardDevice.h>
 #include <RE/B/BSTEvent.h>
@@ -31,11 +34,13 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <RE/C/CollisionLayers.h>   // Console ref pick: LOS collision layer
 #include <RE/T/TESHavokUtilities.h> // Console ref pick: collidable -> TESObjectREFR
 #include <RE/T/TESObjectCELL.h>     // Console ref pick: cell -> bhkWorld
+#include <RE/T/ThumbstickEvent.h>
 #include <RE/N/NiCamera.h>
 #include <RE/N/NiRTTI.h>
 #include <RE/P/PlayerCamera.h>
 #include <RE/P/PlayerCharacter.h>
 #include <RE/R/Renderer.h>
+#include <RE/S/State.h>             // Map beam: engine-owned default white texture
 // BSShaderAccumulator: use raw offsets to avoid header dependency issues.
 // VTable REL::VariantID(304459, 254680, 0x18fd880)
 // firstPerson bool at offset 0x128
@@ -63,7 +68,10 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <algorithm> // laser cursor pump: std::clamp
 #include <array>
 #include <chrono> // gesture concentration-spell burst pacing
+#include <cmath>
 #include <cstddef>
+#include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <thread> // gesture concentration-spell burst
 #include <utility>
@@ -151,7 +159,7 @@ struct OCMenuTransform {
 	// v5: physical OpenXR hand that owns the published trigger edge.
 	// 0 = left, 1 = right, 0xFF = unavailable/legacy runtime.
 	uint8_t  laserHand;
-	uint8_t  reserved[1];
+	uint8_t  laserTriggerHeld;
 };
 #pragma pack(pop)
 static_assert(sizeof(OCMenuTransform) == 270);
@@ -977,6 +985,7 @@ namespace
 		"Lockpicking Menu",
 		"Training Menu",
 		"MessageBoxMenu",
+		"RaceSex Menu", // vanilla/RaceMenu character creation
 		"CustomMenu", // SkyUI MCM host
 		// StatsMenu excluded — Sovngarde constellation bug
 	};
@@ -990,11 +999,77 @@ namespace
 	// alphabetically during their hand-off even when Magic was actually on top.
 	std::vector<std::string> g_trackedMenuOpenOrder;
 	std::atomic<bool> g_consoleOpen{ false }; // game-thread event, scheduler read
+	// Observe native menu controls without consuming them. The pump uses this
+	// serial as a sticky last-input arbiter; a resting laser ray is not intent.
+	std::atomic<std::uint64_t> g_controllerMenuIntentSerial{ 0 };
 	// Incremented for every tracked-menu stack change. The pump is normally
 	// queued only while a menu is active, so it cannot depend on observing an
 	// inactive tick to distinguish closing and reopening the same menu.
 	std::uint32_t g_menuPlaneGeneration = 0;
 	bool g_statsMenuOpen = false; // StatsMenu opens ON TOP of TweenMenu — laser must go dormant
+
+	class MenuInputIntentWatcher : public RE::BSTEventSink<RE::InputEvent*>
+	{
+	public:
+		static MenuInputIntentWatcher* GetSingleton()
+		{
+			static MenuInputIntentWatcher singleton;
+			return &singleton;
+		}
+
+		RE::BSEventNotifyControl ProcessEvent(
+		    RE::InputEvent* const* a_events,
+		    RE::BSTEventSource<RE::InputEvent*>* /*a_source*/) override
+		{
+			if (!a_events || !*a_events)
+				return RE::BSEventNotifyControl::kContinue;
+
+			bool controllerIntent = false;
+			for (auto event = *a_events; event && !controllerIntent; event = event->next) {
+				const auto device = event->GetDevice();
+				const bool controllerDevice = device == RE::INPUT_DEVICE::kGamepad ||
+				    device == RE::INPUT_DEVICE::kVivePrimary ||
+				    device == RE::INPUT_DEVICE::kViveSecondary ||
+				    device == RE::INPUT_DEVICE::kOculusPrimary ||
+				    device == RE::INPUT_DEVICE::kOculusSecondary ||
+				    device == RE::INPUT_DEVICE::kWMRPrimary ||
+				    device == RE::INPUT_DEVICE::kWMRSecondary;
+				if (!controllerDevice)
+					continue;
+
+				if (event->GetEventType() == RE::INPUT_EVENT_TYPE::kThumbstick) {
+					if (const auto stick = event->AsThumbstickEvent()) {
+						constexpr float kIntentDeadzone = 0.40f;
+						controllerIntent = stick->xValue * stick->xValue +
+						    stick->yValue * stick->yValue >= kIntentDeadzone * kIntentDeadzone;
+					}
+					continue;
+				}
+
+				if (event->GetEventType() != RE::INPUT_EVENT_TYPE::kButton)
+					continue;
+				const auto button = event->AsButtonEvent();
+				if (!button || !button->IsDown())
+					continue;
+
+				// Trigger (0x21) is OCU's laser click and has its own press serial.
+				// Counting it here would cancel the same laser click one frame later.
+				if (button->GetIDCode() == 0x21)
+					continue;
+
+				const std::string_view action = button->GetUserEvent().c_str();
+				controllerIntent = action == "Accept" || action == "Cancel" ||
+				    action == "Cancel Alt" || action == "Up" || action == "Down" ||
+				    action == "Left" || action == "Right" ||
+				    action == "Left Stick" || action == "Right Stick" ||
+				    action == "XButton" || action == "YButton";
+			}
+
+			if (controllerIntent)
+				g_controllerMenuIntentSerial.fetch_add(1, std::memory_order_release);
+			return RE::BSEventNotifyControl::kContinue;
+		}
+	};
 
 	// Update shared memory with the active menu's 3D transform data
 	void UpdateMenuTransform()
@@ -1297,7 +1372,7 @@ namespace
 		return best;
 	}
 
-	bool ExportUiPlane(bool logDiagnostics, bool mapOpen, bool dialogueOpen, bool bookOpen)
+	bool ExportUiPlane(bool logDiagnostics, bool dialogueOpen, bool bookOpen)
 	{
 		auto pending = [logDiagnostics](const char* reason) {
 			if (logDiagnostics)
@@ -1536,67 +1611,11 @@ namespace
 			}
 		}
 
-		// v4 MapMenu endpoint. Skyrim already clips its native UIPointerGeo
-		// against the raised terrain and floating icons. The beam mesh is scaled
-		// from UIPointerNode to that hit; its model-bound center is therefore the
-		// midpoint. Reconstruct the endpoint in one coherent RoomNode-local frame
-		// so OCU can draw its blue beam/dot at the real 3D depth.
+		// The native map shaft stays in Skyrim's scene graph and is recolored by
+		// LaserCursorPumpOnce. UIPointerGeo is not consistently parented beneath
+		// RoomNode, so exporting a reconstructed endpoint can put an OpenXR visual
+		// on the wrong axis. Keep the legacy field explicitly invalid.
 		g_pTransform->mapPointerValid = 0;
-		if (mapOpen) {
-			auto* pointerNode = vrData->UIPointerNode.get();
-			auto* pointerGeo = vrData->UIPointerGeo.get();
-			if (pointerNode && pointerGeo) {
-				const auto& pointerBound = pointerGeo->GetModelData().modelBound;
-				RE::NiPoint3 originLocal{};
-				RE::NiPoint3 middleLocal{};
-				RE::NiTransform pointerToRoom;
-				RE::NiTransform pointerGeoToRoom;
-				const bool coherent =
-				    BuildLocalToAncestor(pointerNode, roomNode, pointerToRoom) &&
-				    BuildLocalToAncestor(pointerGeo, roomNode, pointerGeoToRoom);
-				if (coherent) {
-					originLocal = pointerToRoom.translate;
-					middleLocal = pointerGeoToRoom * pointerBound.center;
-				} else {
-					// UIPointer objects are not RoomNode descendants in every Skyrim VR
-					// scene. Convert their live world poses just like the proven UI-plane
-					// fallback instead of silently leaving mapPointerValid at zero.
-					auto worldToRoomPoint = [&](const RE::NiPoint3& worldPoint) {
-						RE::NiPoint3 local = TransposeMul(roomW.rotate, worldPoint - roomW.translate);
-						local /= roomScale;
-						return local;
-					};
-					originLocal = worldToRoomPoint(pointerNode->world.translate);
-					middleLocal = worldToRoomPoint(pointerGeo->world * pointerBound.center);
-				}
-				const RE::NiPoint3 endpointLocal = {
-				    2.0f * middleLocal.x - originLocal.x,
-				    2.0f * middleLocal.y - originLocal.y,
-				    2.0f * middleLocal.z - originLocal.z
-				};
-				const RE::NiPoint3 beam = endpointLocal - originLocal;
-				const float beamLength = sqrtf(beam.x * beam.x + beam.y * beam.y + beam.z * beam.z);
-				if (std::isfinite(beamLength) && beamLength > 2.0f && beamLength < 700.0f) {
-					float endpointXr[3];
-					MapSkyrimToXr(endpointLocal, endpointXr);
-					for (int i = 0; i < 3; ++i)
-						g_pTransform->mapPointerHitPos[i] = endpointXr[i] / kSkyrimUnitsPerMeter;
-					g_pTransform->mapPointerValid = 1;
-					if (logDiagnostics) {
-						SKSE::log::info("LASER MapMenu native endpoint source={} room({:.3f},{:.3f},{:.3f}) length={:.3f}m",
-						    coherent ? "local-chain" : "world-fallback",
-						    g_pTransform->mapPointerHitPos[0], g_pTransform->mapPointerHitPos[1],
-						    g_pTransform->mapPointerHitPos[2], beamLength / kSkyrimUnitsPerMeter);
-					}
-				} else if (logDiagnostics) {
-					SKSE::log::info("LASER MapMenu endpoint rejected source={} length={}su",
-					    coherent ? "local-chain" : "world-fallback", beamLength);
-				}
-			} else if (logDiagnostics) {
-				SKSE::log::info("LASER MapMenu endpoint pending pointerNode={} pointerGeo={}",
-				    pointerNode != nullptr, pointerGeo != nullptr);
-			}
-		}
 
 		// Plane extents from the node's bounding sphere. The plane geometry
 		// ('In World UI Quad Geometry') is a 16:9 quad (verified live: local
@@ -1754,8 +1773,8 @@ namespace
 	// AS2 MovieClip.hitTest() expects root/movie coordinates, while the laser and
 	// NotifyMouseState use viewport pixels. Resolve the loaded clip and convert
 	// through the movie's live viewport so interface replacers may move/scale it.
-	bool MovieClipHitAtViewportPoint(RE::GFxMovieView& movie,
-	    const std::array<const char*, 4>& clipPaths, float viewportX, float viewportY)
+	bool ViewportToMovieRootPoint(RE::GFxMovieView& movie, float viewportX,
+	    float viewportY, float& rootX, float& rootY)
 	{
 		RE::GViewport viewport{};
 		movie.GetViewport(&viewport);
@@ -1768,16 +1787,63 @@ namespace
 			return false;
 		}
 
-		const float rootX = visibleFrame.left +
+		rootX = visibleFrame.left +
 		    (viewportX - static_cast<float>(viewport.left)) * frameWidth /
 		        static_cast<float>(viewport.width);
-		const float rootY = visibleFrame.top +
+		rootY = visibleFrame.top +
 		    (viewportY - static_cast<float>(viewport.top)) * frameHeight /
 		        static_cast<float>(viewport.height);
+		return std::isfinite(rootX) && std::isfinite(rootY);
+	}
+
+	bool DisplayObjectHitAtRootPoint(RE::GFxValue& clip, float rootX, float rootY,
+	    bool shapeFlag = false)
+	{
+		if (!clip.IsObject() && !clip.IsDisplayObject())
+			return false;
 		std::array<RE::GFxValue, 3> hitArgs;
 		hitArgs[0].SetNumber(rootX);
 		hitArgs[1].SetNumber(rootY);
-		hitArgs[2].SetBoolean(false); // bounding box, including blank list-row width
+		hitArgs[2].SetBoolean(shapeFlag);
+		RE::GFxValue hit;
+		return clip.Invoke("hitTest", &hit, hitArgs) && hit.IsBool() && hit.GetBool();
+	}
+
+	bool GetListScrollBar(RE::GFxValue& list, RE::GFxValue& scrollBar)
+	{
+		// SkyUI/RaceMenu lists normally publish `scrollbar`; Bethesda-derived
+		// lists and interface replacers also use the other spellings below.
+		constexpr std::array<const char*, 4> memberNames = {
+		    "scrollbar", "scrollBar", "ListScrollbar", "_scrollBar"
+		};
+		for (const char* memberName : memberNames) {
+			if (list.GetMember(memberName, &scrollBar) &&
+			    (scrollBar.IsObject() || scrollBar.IsDisplayObject())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool DisplayObjectIsUsable(RE::GFxValue& clip)
+	{
+		RE::GFxValue visible;
+		if (clip.GetMember("_visible", &visible) && visible.IsBool() &&
+		    !visible.GetBool()) {
+			return false;
+		}
+		RE::GFxValue disabled;
+		return !clip.GetMember("disabled", &disabled) || !disabled.IsBool() ||
+		    !disabled.GetBool();
+	}
+
+	bool MovieClipHitAtViewportPoint(RE::GFxMovieView& movie,
+	    const std::array<const char*, 4>& clipPaths, float viewportX, float viewportY)
+	{
+		float rootX = 0.0f;
+		float rootY = 0.0f;
+		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
+			return false;
 
 		for (const char* path : clipPaths) {
 			if (!path)
@@ -1787,9 +1853,514 @@ namespace
 			    (!clip.IsObject() && !clip.IsDisplayObject())) {
 				continue;
 			}
-			RE::GFxValue hit;
-			if (clip.Invoke("hitTest", &hit, hitArgs) && hit.IsBool() && hit.GetBool())
+			if (DisplayObjectHitAtRootPoint(clip, rootX, rootY))
 				return true;
+		}
+		return false;
+	}
+
+	enum class RaceMenuLaserTargetKind
+	{
+		kNone,
+		kModeTab,
+		kCategory,
+		kItem,
+		kSlider,
+		kScrollBar,
+		kButton
+	};
+
+	struct RaceMenuLaserTarget
+	{
+		RaceMenuLaserTargetKind kind = RaceMenuLaserTargetKind::kNone;
+		int index = -1;
+		RE::GFxValue owner;
+		RE::GFxValue clip;
+		RE::GFxValue slider;
+	};
+
+	bool GetRaceMenuPanel(RE::GFxMovieView& movie, RE::GFxValue& panel)
+	{
+		constexpr std::array<const char*, 2> panelPaths = {
+		    "_root.RaceSexMenuBaseInstance.RaceSexPanelsInstance",
+		    "_root.RaceSexPanelsInstance"
+		};
+		for (const char* path : panelPaths) {
+			if (movie.GetVariable(&panel, path) &&
+			    (panel.IsObject() || panel.IsDisplayObject())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool GetRaceMenuListTarget(RE::GFxValue& list, float rootX, float rootY,
+	    bool permitSliders, RaceMenuLaserTargetKind rowKind,
+	    RaceMenuLaserTarget& target)
+	{
+		// RaceMenu's AS2 mouse singleton is mapped incorrectly in VR, so its
+		// vertical list scrollbar needs the same semantic treatment as its row
+		// sliders. Resolve the published list scrollbar before the list rows.
+		RE::GFxValue scrollBar;
+		if (GetListScrollBar(list, scrollBar) && DisplayObjectIsUsable(scrollBar) &&
+		    DisplayObjectHitAtRootPoint(scrollBar, rootX, rootY)) {
+			target.kind = RaceMenuLaserTargetKind::kScrollBar;
+			target.owner = list;
+			target.clip = scrollBar;
+			target.slider = scrollBar;
+			return true;
+		}
+
+		for (int clipIndex = 0; clipIndex < 40; ++clipIndex) {
+			RE::GFxValue clipArg;
+			clipArg.SetNumber(static_cast<double>(clipIndex));
+			RE::GFxValue clip;
+			if (!list.Invoke("getClipByIndex", &clip, &clipArg, 1) ||
+			    (!clip.IsObject() && !clip.IsDisplayObject())) {
+				continue;
+			}
+
+			RE::GFxValue visible;
+			if (clip.GetMember("_visible", &visible) && visible.IsBool() &&
+			    !visible.GetBool()) {
+				continue;
+			}
+			RE::GFxValue itemIndex;
+			if (!clip.GetMember("itemIndex", &itemIndex) || !itemIndex.IsNumber() ||
+			    itemIndex.GetNumber() < 0.0) {
+				continue;
+			}
+
+			if (permitSliders) {
+				RE::GFxValue slider;
+				if (clip.GetMember("SliderInstance", &slider) &&
+				    (slider.IsObject() || slider.IsDisplayObject())) {
+					RE::GFxValue sliderVisible;
+					RE::GFxValue sliderDisabled;
+					const bool isVisible = !slider.GetMember("_visible", &sliderVisible) ||
+					    !sliderVisible.IsBool() || sliderVisible.GetBool();
+					const bool isDisabled = slider.GetMember("disabled", &sliderDisabled) &&
+					    sliderDisabled.IsBool() && sliderDisabled.GetBool();
+					if (isVisible && !isDisabled &&
+					    DisplayObjectHitAtRootPoint(slider, rootX, rootY)) {
+						target.kind = RaceMenuLaserTargetKind::kSlider;
+						target.index = static_cast<int>(itemIndex.GetNumber());
+						target.owner = list;
+						target.clip = clip;
+						target.slider = slider;
+						return true;
+					}
+				}
+			}
+
+			RE::GFxValue hitClip;
+			if (!clip.GetMember("trigger", &hitClip) ||
+			    (!hitClip.IsObject() && !hitClip.IsDisplayObject())) {
+				hitClip = clip;
+			}
+			if (DisplayObjectHitAtRootPoint(hitClip, rootX, rootY)) {
+				target.kind = rowKind;
+				target.index = static_cast<int>(itemIndex.GetNumber());
+				target.owner = list;
+				target.clip = clip;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// RaceMenu VR ships a square 1024x1024 AS2 movie inside Skyrim's 2048x2048
+	// render target. Its list rows and CLIK sliders consume semantic callbacks;
+	// feeding the viewport coordinates to NotifyMouseState leaves its AS2 Mouse
+	// singleton pinned to an edge. Resolve the installed movie's real controls in
+	// root coordinates and call the same callbacks its SWF wires to a PC mouse.
+	bool ResolveRaceMenuLaserTarget(RE::GFxMovieView& movie, float viewportX,
+	    float viewportY, RaceMenuLaserTarget& target)
+	{
+		target = {};
+		float rootX = 0.0f;
+		float rootY = 0.0f;
+		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
+			return false;
+
+		RE::GFxValue panel;
+		if (!GetRaceMenuPanel(movie, panel))
+			return false;
+
+		// The color editor is a modal child layered over the main RaceMenu lists.
+		// Its HSV/alpha sliders and dynamically-created mapped buttons are not
+		// members of itemList, so resolve them first and never click through the
+		// visible field into the list beneath it.
+		RE::GFxValue colorField;
+		if (panel.GetMember("colorField", &colorField) &&
+		    (colorField.IsObject() || colorField.IsDisplayObject())) {
+			RE::GFxValue visible;
+			const bool colorFieldVisible =
+			    !colorField.GetMember("_visible", &visible) || !visible.IsBool() ||
+			    visible.GetBool();
+			if (colorFieldVisible) {
+				RE::GFxValue selector;
+				if (colorField.GetMember("colorSelector", &selector) &&
+				    (selector.IsObject() || selector.IsDisplayObject())) {
+					constexpr std::array<const char*, 4> sliderNames = {
+					    "hSlider", "sSlider", "vSlider", "aSlider"
+					};
+					for (std::size_t i = 0; i < sliderNames.size(); ++i) {
+						RE::GFxValue slider;
+						if (!selector.GetMember(sliderNames[i], &slider) ||
+						    (!slider.IsObject() && !slider.IsDisplayObject())) {
+							continue;
+						}
+						RE::GFxValue sliderVisible;
+						RE::GFxValue sliderDisabled;
+						const bool isVisible =
+						    !slider.GetMember("_visible", &sliderVisible) ||
+						    !sliderVisible.IsBool() || sliderVisible.GetBool();
+						const bool isDisabled =
+						    slider.GetMember("disabled", &sliderDisabled) &&
+						    sliderDisabled.IsBool() && sliderDisabled.GetBool();
+						if (isVisible && !isDisabled &&
+						    DisplayObjectHitAtRootPoint(slider, rootX, rootY)) {
+							target.kind = RaceMenuLaserTargetKind::kSlider;
+							target.index = 100 + static_cast<int>(i);
+							target.owner = colorField;
+							target.clip = slider;
+							target.slider = slider;
+							return true;
+						}
+					}
+				}
+
+				constexpr std::array<const char*, 2> panelNames = {
+				    "buttonPanel", "presetPanel"
+				};
+				for (std::size_t panelIndex = 0; panelIndex < panelNames.size(); ++panelIndex) {
+					RE::GFxValue buttonPanel;
+					RE::GFxValue buttons;
+					if (!colorField.GetMember(panelNames[panelIndex], &buttonPanel) ||
+					    (!buttonPanel.IsObject() && !buttonPanel.IsDisplayObject()) ||
+					    !buttonPanel.GetMember("buttons", &buttons) || !buttons.IsArray()) {
+						continue;
+					}
+					const auto count = std::min<std::uint32_t>(buttons.GetArraySize(), 12);
+					for (std::uint32_t i = 0; i < count; ++i) {
+						RE::GFxValue button;
+						if (!buttons.GetElement(i, &button) ||
+						    (!button.IsObject() && !button.IsDisplayObject())) {
+							continue;
+						}
+						RE::GFxValue buttonVisible;
+						RE::GFxValue buttonDisabled;
+						const bool isVisible =
+						    !button.GetMember("_visible", &buttonVisible) ||
+						    !buttonVisible.IsBool() || buttonVisible.GetBool();
+						const bool isDisabled =
+						    button.GetMember("disabled", &buttonDisabled) &&
+						    buttonDisabled.IsBool() && buttonDisabled.GetBool();
+						if (isVisible && !isDisabled &&
+						    DisplayObjectHitAtRootPoint(button, rootX, rootY)) {
+							target.kind = RaceMenuLaserTargetKind::kButton;
+							target.index = static_cast<int>(panelIndex * 100 + i);
+							target.owner = buttonPanel;
+							target.clip = button;
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+		}
+
+		// RaceMenu's Presets mode owns a separate editor and bottom navigation
+		// panel. These dynamically-created MappedButtons are not descendants of
+		// the main item/category lists, so the VR movie's broken AS2 mouse mapping
+		// otherwise leaves Done, Save Preset, and Load Preset unclickable.
+		RE::GFxValue presetEditor;
+		if (panel.GetMember("presetEditor", &presetEditor) &&
+		    (presetEditor.IsObject() || presetEditor.IsDisplayObject())) {
+			RE::GFxValue editorEnabled;
+			RE::GFxValue editorVisible;
+			const bool isEnabled =
+			    !presetEditor.GetMember("enabled", &editorEnabled) ||
+			    !editorEnabled.IsBool() || editorEnabled.GetBool();
+			const bool isVisible =
+			    !presetEditor.GetMember("_visible", &editorVisible) ||
+			    !editorVisible.IsBool() || editorVisible.GetBool();
+			RE::GFxValue navPanel;
+			RE::GFxValue buttons;
+			if (isEnabled && isVisible &&
+			    presetEditor.GetMember("navPanel", &navPanel) &&
+			    (navPanel.IsObject() || navPanel.IsDisplayObject()) &&
+			    navPanel.GetMember("buttons", &buttons) && buttons.IsArray()) {
+				const auto count = std::min<std::uint32_t>(buttons.GetArraySize(), 8);
+				for (std::uint32_t i = 0; i < count; ++i) {
+					RE::GFxValue button;
+					if (!buttons.GetElement(i, &button) ||
+					    (!button.IsObject() && !button.IsDisplayObject())) {
+						continue;
+					}
+					RE::GFxValue buttonVisible;
+					RE::GFxValue buttonDisabled;
+					const bool buttonIsVisible =
+					    !button.GetMember("_visible", &buttonVisible) ||
+					    !buttonVisible.IsBool() || buttonVisible.GetBool();
+					const bool buttonIsDisabled =
+					    button.GetMember("disabled", &buttonDisabled) &&
+					    buttonDisabled.IsBool() && buttonDisabled.GetBool();
+					if (buttonIsVisible && !buttonIsDisabled &&
+					    DisplayObjectHitAtRootPoint(button, rootX, rootY)) {
+						target.kind = RaceMenuLaserTargetKind::kButton;
+						target.index = 200 + static_cast<int>(i);
+						target.owner = navPanel;
+						target.clip = button;
+						return true;
+					}
+				}
+			}
+		}
+
+		RE::GFxValue modeSelect;
+		if (panel.GetMember("modeSelect", &modeSelect) &&
+		    (modeSelect.IsObject() || modeSelect.IsDisplayObject())) {
+			RE::GFxValue modes;
+			if (modeSelect.GetMember("_modes", &modes) && modes.IsArray()) {
+				const auto count = std::min<std::uint32_t>(modes.GetArraySize(), 8);
+				for (std::uint32_t i = 0; i < count; ++i) {
+					RE::GFxValue tab;
+					if (modes.GetElement(i, &tab) &&
+					    DisplayObjectHitAtRootPoint(tab, rootX, rootY)) {
+						target.kind = RaceMenuLaserTargetKind::kModeTab;
+						target.index = static_cast<int>(i);
+						target.owner = modeSelect;
+						target.clip = tab;
+						return true;
+					}
+				}
+			}
+		}
+
+		RE::GFxValue itemList;
+		if (panel.GetMember("itemList", &itemList) &&
+		    (itemList.IsObject() || itemList.IsDisplayObject()) &&
+		    GetRaceMenuListTarget(itemList, rootX, rootY, true,
+		        RaceMenuLaserTargetKind::kItem, target)) {
+			return true;
+		}
+
+		RE::GFxValue categoryList;
+		if (panel.GetMember("categoryList", &categoryList) &&
+		    (categoryList.IsObject() || categoryList.IsDisplayObject()) &&
+		    GetRaceMenuListTarget(categoryList, rootX, rootY, false,
+		        RaceMenuLaserTargetKind::kCategory, target)) {
+			return true;
+		}
+		return false;
+	}
+
+	bool HoverRaceMenuLaserTarget(RaceMenuLaserTarget& target)
+	{
+		if (target.kind == RaceMenuLaserTargetKind::kButton) {
+			RE::GFxValue controller;
+			controller.SetNumber(0.0);
+			return target.clip.Invoke(
+			    "handleMouseRollOver", nullptr, &controller, 1);
+		}
+		if (target.kind == RaceMenuLaserTargetKind::kModeTab) {
+			RE::GFxValue controller;
+			controller.SetNumber(0.0);
+			return target.clip.Invoke("handleMouseRollOver", nullptr, &controller, 1);
+		}
+		if (target.kind == RaceMenuLaserTargetKind::kCategory ||
+		    target.kind == RaceMenuLaserTargetKind::kItem ||
+		    target.kind == RaceMenuLaserTargetKind::kSlider) {
+			RE::GFxValue index;
+			index.SetNumber(static_cast<double>(target.index));
+			return target.owner.Invoke("onItemRollOver", nullptr, &index, 1);
+		}
+		return false;
+	}
+
+	bool SetVerticalScrollBarAtViewportPoint(RE::GFxMovieView& movie,
+	    RE::GFxValue& scrollBar, float viewportX, float viewportY)
+	{
+		float rootX = 0.0f;
+		float rootY = 0.0f;
+		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
+			return false;
+
+		RE::GFxValue point;
+		movie.CreateObject(&point);
+		RE::GFxValue xValue;
+		RE::GFxValue yValue;
+		xValue.SetNumber(rootX);
+		yValue.SetNumber(rootY);
+		point.SetMember("x", xValue);
+		point.SetMember("y", yValue);
+		if (!scrollBar.Invoke("globalToLocal", nullptr, &point, 1) ||
+		    !point.GetMember("y", &yValue) || !yValue.IsNumber()) {
+			return false;
+		}
+
+		auto numberMember = [&](RE::GFxValue& object, const char* name,
+		                        double fallback) {
+			RE::GFxValue value;
+			return object.GetMember(name, &value) && value.IsNumber() ?
+			    value.GetNumber() : fallback;
+		};
+		const double minimum = numberMember(scrollBar, "minPosition",
+		    numberMember(scrollBar, "minimum", 0.0));
+		const double maximum = numberMember(scrollBar, "maxPosition",
+		    numberMember(scrollBar, "maximum", 0.0));
+		if (!std::isfinite(minimum) || !std::isfinite(maximum) || maximum <= minimum)
+			return false;
+
+		RE::GFxValue track;
+		RE::GFxValue thumb;
+		const bool hasTrack = scrollBar.GetMember("track", &track) &&
+		    (track.IsObject() || track.IsDisplayObject());
+		const bool hasThumb = scrollBar.GetMember("thumb", &thumb) &&
+		    (thumb.IsObject() || thumb.IsDisplayObject());
+		const double trackY = hasTrack ? numberMember(track, "_y", 0.0) : 0.0;
+		const double thumbHeight = hasThumb ?
+		    numberMember(thumb, "__height", numberMember(thumb, "_height", 0.0)) :
+		    0.0;
+		double availableHeight = numberMember(scrollBar, "availableHeight", -1.0);
+		if (!std::isfinite(availableHeight) || availableHeight <= 0.001) {
+			const double height = numberMember(scrollBar, "__height",
+			    numberMember(scrollBar, "_height", 0.0));
+			availableHeight = height - thumbHeight;
+		}
+		if (!std::isfinite(availableHeight) || availableHeight <= 0.001)
+			return false;
+
+		// Centering the thumb under the ray also makes a track click jump directly
+		// to the requested page. Holding trigger continuously updates this value,
+		// which produces the expected grab-and-drag behavior.
+		const double thumbTop = yValue.GetNumber() - thumbHeight * 0.5;
+		const double ratio = std::clamp(
+		    (thumbTop - trackY) / availableHeight, 0.0, 1.0);
+		const double position = minimum + ratio * (maximum - minimum);
+		RE::GFxValue newPosition;
+		newPosition.SetNumber(position);
+		if (!scrollBar.SetMember("position", newPosition))
+			return false;
+		scrollBar.Invoke("updateThumb", nullptr, nullptr, 0);
+		return true;
+	}
+
+	bool SetRaceMenuSliderAtViewportPoint(RE::GFxMovieView& movie,
+	    RE::GFxValue& slider, float viewportX, float viewportY)
+	{
+		float rootX = 0.0f;
+		float rootY = 0.0f;
+		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
+			return false;
+
+		RE::GFxValue point;
+		movie.CreateObject(&point);
+		RE::GFxValue xValue;
+		RE::GFxValue yValue;
+		xValue.SetNumber(rootX);
+		yValue.SetNumber(rootY);
+		point.SetMember("x", xValue);
+		point.SetMember("y", yValue);
+		if (!slider.Invoke("globalToLocal", nullptr, &point, 1) ||
+		    !point.GetMember("x", &xValue) || !xValue.IsNumber()) {
+			return false;
+		}
+
+		auto numberMember = [&](const char* name, double fallback) {
+			RE::GFxValue value;
+			return slider.GetMember(name, &value) && value.IsNumber() ?
+			    value.GetNumber() : fallback;
+		};
+		const double minimum = numberMember("minimum", 0.0);
+		const double maximum = numberMember("maximum", 1.0);
+		const double offsetLeft = numberMember("offsetLeft", 0.0);
+		const double offsetRight = numberMember("offsetRight", 0.0);
+		const double width = numberMember("__width", numberMember("_width", 1.0));
+		const double usableWidth = width - offsetLeft - offsetRight;
+		if (!std::isfinite(usableWidth) || usableWidth <= 0.001 ||
+		    !std::isfinite(minimum) || !std::isfinite(maximum) || maximum <= minimum) {
+			return false;
+		}
+
+		double position = minimum + std::clamp(
+		    (xValue.GetNumber() - offsetLeft) / usableWidth, 0.0, 1.0) *
+		    (maximum - minimum);
+		RE::GFxValue snapping;
+		if (slider.GetMember("snapping", &snapping) && snapping.IsBool() &&
+		    snapping.GetBool()) {
+			const double interval = numberMember("snapInterval", 0.0);
+			if (std::isfinite(interval) && interval > 0.0)
+				position = std::round(position / interval) * interval;
+		}
+		position = std::clamp(position, minimum, maximum);
+
+		RE::GFxValue oldPosition;
+		const bool hadOldPosition = slider.GetMember("position", &oldPosition) &&
+		    oldPosition.IsNumber();
+		RE::GFxValue newPosition;
+		newPosition.SetNumber(position);
+		if (!slider.SetMember("position", newPosition))
+			return false;
+		slider.Invoke("updateThumb", nullptr, nullptr, 0);
+		if (!hadOldPosition || fabs(oldPosition.GetNumber() - position) > 1.0e-6) {
+			if (slider.HasMember("changedCallback")) {
+				slider.Invoke("changedCallback", nullptr, nullptr, 0);
+			} else {
+				// HSVSelector's ColorSlider instances use the standard Scaleform
+				// "change" event instead of RaceMenu's per-row changedCallback.
+				RE::GFxValue event;
+				movie.CreateObject(&event);
+				RE::GFxValue type;
+				type.SetString("change");
+				event.SetMember("type", type);
+				slider.Invoke("dispatchEventAndSound", nullptr, &event, 1);
+			}
+		}
+		return true;
+	}
+
+	bool ActivateRaceMenuLaserTarget(RE::GFxMovieView& movie,
+	    RaceMenuLaserTarget& target, float viewportX, float viewportY,
+	    RE::GFxValue* dragSlider)
+	{
+		HoverRaceMenuLaserTarget(target);
+		if (target.kind == RaceMenuLaserTargetKind::kButton) {
+			std::array<RE::GFxValue, 3> args;
+			args[0].SetNumber(0.0); // controller index
+			args[1].SetNumber(0.0); // mouse source
+			args[2].SetNumber(0.0); // primary button
+			const bool pressed = target.clip.Invoke(
+			    "handleMousePress", nullptr, args);
+			const bool released = target.clip.Invoke(
+			    "handleMouseRelease", nullptr, args);
+			return pressed || released;
+		}
+		if (target.kind == RaceMenuLaserTargetKind::kModeTab) {
+			RE::GFxValue index;
+			index.SetNumber(static_cast<double>(target.index));
+			return target.owner.Invoke("setMode", nullptr, &index, 1);
+		}
+		if (target.kind == RaceMenuLaserTargetKind::kSlider) {
+			if (dragSlider)
+				*dragSlider = target.slider;
+			return SetRaceMenuSliderAtViewportPoint(
+			    movie, target.slider, viewportX, viewportY);
+		}
+		if (target.kind == RaceMenuLaserTargetKind::kScrollBar) {
+			if (dragSlider)
+				*dragSlider = target.slider;
+			return SetVerticalScrollBarAtViewportPoint(
+			    movie, target.slider, viewportX, viewportY);
+		}
+		if (target.kind == RaceMenuLaserTargetKind::kCategory ||
+		    target.kind == RaceMenuLaserTargetKind::kItem) {
+			std::array<RE::GFxValue, 2> args;
+			args[0].SetNumber(static_cast<double>(target.index));
+			args[1].SetNumber(0.0); // BasicList.SELECT_MOUSE
+			return target.owner.Invoke("onItemPress", nullptr, args);
 		}
 		return false;
 	}
@@ -1797,7 +2368,8 @@ namespace
 	enum class JournalLeftPaneAction
 	{
 		kNone,
-		kFocusQuestTitles,
+		kQuestTitles,
+		kSystemCategory,
 		kReturnSystemCategories
 	};
 
@@ -1819,6 +2391,59 @@ namespace
 			return false;
 		}
 		return true;
+	}
+
+	bool ResolveMCMScrollTarget(RE::GFxMovieView& movie, float viewportX,
+	    float viewportY, bool& listHit, RE::GFxValue& scrollBar)
+	{
+		listHit = false;
+		scrollBar.SetUndefined();
+
+		// SkyUI's MCM is an overlay inside Journal Menu. Its ConfigPanel object
+		// exists even while the ordinary Journal is visible, so require positive
+		// proof that the Journal fader has yielded before claiming its lists.
+		if (JournalMainFaderIsInteractive(movie))
+			return false;
+
+		RE::GFxValue panel;
+		if (!movie.GetVariable(&panel, "_root.ConfigPanelFader.configPanel") ||
+		    (!panel.IsObject() && !panel.IsDisplayObject())) {
+			return false;
+		}
+		if (!DisplayObjectIsUsable(panel))
+			return false;
+
+		float rootX = 0.0f;
+		float rootY = 0.0f;
+		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
+			return false;
+
+		// ConfigPanel publishes these three lists directly. Using the members keeps
+		// this independent of their screen placement and supports both the mod list
+		// and an opened mod's submenu/options list.
+		constexpr std::array<const char*, 3> listMembers = {
+		    "_modList", "_subList", "_optionsList"
+		};
+		for (const char* listMember : listMembers) {
+			RE::GFxValue list;
+			if (!panel.GetMember(listMember, &list) ||
+			    (!list.IsObject() && !list.IsDisplayObject()) ||
+			    !DisplayObjectIsUsable(list)) {
+				continue;
+			}
+
+			const bool thisListHit = DisplayObjectHitAtRootPoint(list, rootX, rootY);
+			listHit = listHit || thisListHit;
+			RE::GFxValue candidate;
+			if (GetListScrollBar(list, candidate) &&
+			    DisplayObjectIsUsable(candidate) &&
+			    DisplayObjectHitAtRootPoint(candidate, rootX, rootY)) {
+				listHit = true;
+				scrollBar = candidate;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// The Journal's mouse selection and keyboard/gamepad focus are independent.
@@ -1847,7 +2472,7 @@ namespace
 			    "_root.Menu_mc.QuestsFader.Page_mc.TitleList_mc.List_mc"
 			};
 			if (MovieClipHitAtViewportPoint(movie, titleLists, targetX, targetY))
-				return JournalLeftPaneAction::kFocusQuestTitles;
+				return JournalLeftPaneAction::kQuestTitles;
 			return JournalLeftPaneAction::kNone;
 		}
 
@@ -1868,9 +2493,336 @@ namespace
 			}
 			if (systemState != 0)
 				return JournalLeftPaneAction::kReturnSystemCategories;
+			return JournalLeftPaneAction::kSystemCategory;
 		}
 
 		return JournalLeftPaneAction::kNone;
+	}
+
+	enum class JournalSystemConfirmAction
+	{
+		kNone,
+		kAccept,
+		kCancel
+	};
+
+	// SkyUI keeps load/quit/delete/default confirmations inside Journal Menu's
+	// SystemPage instead of opening a separate MessageBoxMenu. Its input handler
+	// explicitly consumes L2/R2 while confirming, so a laser trigger must invoke
+	// the actual Yes/No control rather than masquerade as another gamepad trigger.
+	JournalSystemConfirmAction ResolveJournalSystemConfirmAction(
+	    RE::GFxMovieView& movie, float targetX, float targetY, int& systemState)
+	{
+		if (!JournalMainFaderIsInteractive(movie))
+			return JournalSystemConfirmAction::kNone;
+
+		int currentTab = -1;
+		if (!GetNumberVariable(movie,
+		        "_root.QuestJournalFader.Menu_mc.iCurrentTab",
+		        "_root.Menu_mc.iCurrentTab", currentTab) ||
+		    currentTab != 2 ||
+		    !GetNumberVariable(movie,
+		        "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.iCurrentState",
+		        "_root.Menu_mc.SystemFader.Page_mc.iCurrentState", systemState)) {
+			return JournalSystemConfirmAction::kNone;
+		}
+
+		const bool confirming = systemState == 2 || systemState == 5 ||
+		    systemState == 7 || systemState == 9 || systemState == 10;
+		if (!confirming)
+			return JournalSystemConfirmAction::kNone;
+
+		// ButtonPanel creates Yes as button0 and No as button1. Keep the direct
+		// references too: SkyUI stores both returned clips on SystemPage.
+		constexpr std::array<const char*, 4> acceptButtons = {
+		    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc._acceptButton",
+		    "_root.Menu_mc.SystemFader.Page_mc._acceptButton",
+		    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.ConfirmPanel.buttonPanel.button0",
+		    "_root.Menu_mc.SystemFader.Page_mc.ConfirmPanel.buttonPanel.button0"
+		};
+		constexpr std::array<const char*, 4> cancelButtons = {
+		    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc._cancelButton",
+		    "_root.Menu_mc.SystemFader.Page_mc._cancelButton",
+		    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.ConfirmPanel.buttonPanel.button1",
+		    "_root.Menu_mc.SystemFader.Page_mc.ConfirmPanel.buttonPanel.button1"
+		};
+		if (MovieClipHitAtViewportPoint(movie, acceptButtons, targetX, targetY))
+			return JournalSystemConfirmAction::kAccept;
+		if (MovieClipHitAtViewportPoint(movie, cancelButtons, targetX, targetY))
+			return JournalSystemConfirmAction::kCancel;
+		return JournalSystemConfirmAction::kNone;
+	}
+
+	bool ActivateJournalSystemConfirmation(RE::GFxMovieView& movie,
+	    JournalSystemConfirmAction action)
+	{
+		if (action == JournalSystemConfirmAction::kNone)
+			return false;
+
+		const char* primary = action == JournalSystemConfirmAction::kAccept ?
+		    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.onAcceptMousePress" :
+		    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.onCancelMousePress";
+		const char* fallback = action == JournalSystemConfirmAction::kAccept ?
+		    "_root.Menu_mc.SystemFader.Page_mc.onAcceptMousePress" :
+		    "_root.Menu_mc.SystemFader.Page_mc.onCancelMousePress";
+		bool invoked = movie.Invoke(primary, nullptr, nullptr, 0) ||
+		    movie.Invoke(fallback, nullptr, nullptr, 0);
+		if (!invoked) {
+			// Interface replacers can preserve the state contract while relocating the
+			// page object. Enter/Tab reaches the same official Yes/No handler.
+			SendGFxKeyPulse(movie, action == JournalSystemConfirmAction::kAccept ?
+			    RE::GFxKey::kReturn : RE::GFxKey::kTab);
+		}
+		SKSE::log::info("LASER Journal System confirmation {} via {}",
+		    action == JournalSystemConfirmAction::kAccept ? "YES" : "NO",
+		    invoked ? "SystemPage handler" : "key fallback");
+		return true;
+	}
+
+	// A mouse click can change SystemPage state without moving Scaleform's
+	// controller focus off CategoryList. Native A then activates the stale
+	// QuickSave row even though Settings/Load/etc. is visibly open. Re-run the
+	// page's own focus resolver once per settled state; do not force it every
+	// frame, because the laser and controller must still be free to hand focus
+	// back and forth naturally.
+	bool RepairJournalSystemFocus(RE::GFxMovieView& movie, int systemState)
+	{
+		RE::GFxValue stateArg;
+		stateArg.SetNumber(static_cast<double>(systemState));
+		return movie.Invoke(
+		           "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.UpdateStateFocus",
+		           nullptr, &stateArg, 1) ||
+		    movie.Invoke("_root.Menu_mc.SystemFader.Page_mc.UpdateStateFocus",
+		        nullptr, &stateArg, 1);
+	}
+
+	// StatsPage's right-hand scrollbar deliberately assigns Scaleform focus to
+	// StatsList. That is correct for a mouse drag, but it leaves the left category
+	// list unable to receive the next native stick/A input. startPage() is SkyUI's
+	// own focus reset and is cheap after initial population because bUpdated exits
+	// before requesting the data again.
+	bool RepairJournalStatsFocus(RE::GFxMovieView& movie)
+	{
+		return movie.Invoke(
+		           "_root.QuestJournalFader.Menu_mc.StatsFader.Page_mc.startPage",
+		           nullptr, nullptr, 0) ||
+		    movie.Invoke("_root.Menu_mc.StatsFader.Page_mc.startPage",
+		        nullptr, nullptr, 0);
+	}
+
+	// Alternate Perspective's opening selector is hosted in CustomMenu, but its
+	// SkyUI BasicLists are plain AS2 clips rather than GFx button-event targets.
+	// Feature-detect only that movie so other CustomMenu users keep their existing
+	// behavior. NotifyMouseState is required for BasicList rollover and itemPress.
+	bool IsAlternatePerspectiveMenu(RE::GFxMovieView& movie)
+	{
+		RE::GFxValue mainOptions;
+		return movie.GetVariable(&mainOptions, "_root.main.menu.mainOptions") &&
+		    (mainOptions.IsObject() || mainOptions.IsDisplayObject());
+	}
+
+	bool PointerOverAlternatePerspectiveList(RE::GFxMovieView& movie,
+	    float targetX, float targetY)
+	{
+		constexpr std::array<const char*, 4> optionLists = {
+		    "_root.main.menu.mainOptions",
+		    "_root.main.menu.mainOptions.List_mc",
+		    "_root.main.menu.subOptions",
+		    "_root.main.menu.subOptions.List_mc"
+		};
+		return MovieClipHitAtViewportPoint(movie, optionLists, targetX, targetY);
+	}
+
+	// Skyrim VR's confirmation overlay is its own MessageBoxMenu. Mouse hover and
+	// controller focus are separate, which permits OK and Cancel to look selected
+	// simultaneously. Resolve the actual dynamic ButtonN clip under the laser.
+	bool GetMessageBoxButtonAtViewportPoint(RE::GFxMovieView& movie,
+	    float targetX, float targetY, int& buttonIndex, RE::GFxValue* buttonOut)
+	{
+		for (int i = 0; i < 32; ++i) {
+			std::array<char, 4 * 160> pathStorage{};
+			std::array<const char*, 4> paths{};
+			for (int p = 0; p < 4; ++p)
+				paths[p] = pathStorage.data() + p * 160;
+			std::snprintf(pathStorage.data() + 0 * 160, 160,
+			    "_root.MessageMenu.Buttons.Button%d", i);
+			std::snprintf(pathStorage.data() + 1 * 160, 160,
+			    "_root.MessageMenu.ButtonContainer.Button%d", i);
+			std::snprintf(pathStorage.data() + 2 * 160, 160,
+			    "_root.Menu_mc.Buttons.Button%d", i);
+			std::snprintf(pathStorage.data() + 3 * 160, 160,
+			    "_root.Menu_mc.ButtonContainer.Button%d", i);
+
+			if (!MovieClipHitAtViewportPoint(movie, paths, targetX, targetY))
+				continue;
+
+			buttonIndex = i;
+			if (buttonOut) {
+				for (const char* path : paths) {
+					if (movie.GetVariable(buttonOut, path) &&
+					    (buttonOut->IsObject() || buttonOut->IsDisplayObject())) {
+						break;
+					}
+				}
+			}
+			return true;
+		}
+		buttonIndex = -1;
+		return false;
+	}
+
+	bool FocusMessageBoxButton(RE::GFxMovieView& movie, int buttonIndex,
+	    bool activate)
+	{
+		if (buttonIndex < 0)
+			return false;
+
+		char primaryPath[160]{};
+		char fallbackPath[160]{};
+		std::snprintf(primaryPath, sizeof(primaryPath),
+		    "_root.MessageMenu.Buttons.Button%d", buttonIndex);
+		std::snprintf(fallbackPath, sizeof(fallbackPath),
+		    "_root.MessageMenu.ButtonContainer.Button%d", buttonIndex);
+		RE::GFxValue button;
+		if ((!movie.GetVariable(&button, primaryPath) ||
+		        (!button.IsObject() && !button.IsDisplayObject())) &&
+		    (!movie.GetVariable(&button, fallbackPath) ||
+		        (!button.IsObject() && !button.IsDisplayObject()))) {
+			return false;
+		}
+
+		std::array<RE::GFxValue, 2> focusArgs;
+		focusArgs[0] = button;
+		focusArgs[1].SetNumber(0.0);
+		bool focused = movie.Invoke(
+		    "_global.gfx.managers.FocusHandler.instance.setFocus", nullptr,
+		    focusArgs.data(), static_cast<std::uint32_t>(focusArgs.size()));
+		if (!focused) {
+			focused = movie.Invoke("_global.Selection.setFocus", nullptr,
+			    focusArgs.data(), 1) ||
+			    movie.Invoke("Selection.setFocus", nullptr, focusArgs.data(), 1);
+		}
+		if (!activate) {
+			SKSE::log::info("LASER MessageBox FOCUS button={} result={}",
+			    buttonIndex, focused);
+			return focused;
+		}
+
+		// VRMessageBox replaces Button.handlePress with an empty function, so a
+		// synthetic Return can play the focused sound without reaching buttonPress.
+		// Its ClickCallback is the canonical mouse route into GameDelegate.
+		RE::GFxValue event;
+		movie.CreateObject(&event);
+		event.SetMember("target", button);
+		const bool invoked = movie.Invoke("_root.MessageMenu.ClickCallback",
+		    nullptr, &event, 1);
+		SKSE::log::info("LASER MessageBox {} button={} focus={} callback={}",
+		    activate ? "ACTIVATE" : "FOCUS", buttonIndex, focused, invoked);
+		return invoked;
+	}
+
+	// A whole item-list panel is an intentional laser target even when Scaleform's
+	// kButtonEvents hit-test does not expose its individual AS2 rows. This is a
+	// geometry-only probe: unlike TryActivateHoveredVRItem it does not move mouse
+	// state, change the menu platform, or activate anything.
+	bool PointerOverVRItemList(RE::GFxMovieView& movie, const char* menuName,
+	    float targetX, float targetY)
+	{
+		const bool supported = strcmp(menuName, "InventoryMenu") == 0 ||
+		    strcmp(menuName, "MagicMenu") == 0 ||
+		    strcmp(menuName, "ContainerMenu") == 0;
+		if (!supported)
+			return false;
+
+		constexpr std::array<const char*, 4> itemLists = {
+		    "_root.Menu_mc.inventoryLists.itemList",
+		    "_root.Menu_mc.inventoryLists.itemList.List_mc",
+		    "_root.Menu_mc.InventoryLists_mc.ItemsList",
+		    "_root.Menu_mc.InventoryLists_mc.ItemsList.List_mc"
+		};
+		return MovieClipHitAtViewportPoint(movie, itemLists, targetX, targetY);
+	}
+
+	// When the laser is on empty menu space, the controller focus tree owns the
+	// menu. Trigger is consumed by the runtime while its ray still intersects the
+	// quad, so complete the focused row's native hand-aware action here. This path
+	// is deliberately rejected while the movie still reports mouse platform 0;
+	// that prevents a blank-space trigger from equipping a stale mouse selection.
+	bool TryActivateFocusedVRItem(RE::GFxMovieView& movie, const char* menuName,
+	    std::uint8_t laserHand)
+	{
+		const bool inventory = strcmp(menuName, "InventoryMenu") == 0;
+		const bool magic = strcmp(menuName, "MagicMenu") == 0;
+		const bool container = strcmp(menuName, "ContainerMenu") == 0;
+		if (!inventory && !magic && !container)
+			return false;
+
+		RE::GFxValue itemList;
+		bool skyUiLayout = movie.GetVariable(&itemList,
+		    "_root.Menu_mc.inventoryLists.itemList") &&
+		    (itemList.IsObject() || itemList.IsDisplayObject());
+		const char* platformPath = "_root.Menu_mc._platform";
+		const char* processMethod = "_root.Menu_mc.shouldProcessItemsListInput";
+		if (!skyUiLayout) {
+			if (!movie.GetVariable(&itemList,
+			        "_root.Menu_mc.InventoryLists_mc.ItemsList") ||
+			    (!itemList.IsObject() && !itemList.IsDisplayObject())) {
+				return false;
+			}
+			platformPath = "_root.Menu_mc.iPlatform";
+			processMethod = "_root.Menu_mc.ShouldProcessItemsListInput";
+		}
+
+		RE::GFxValue platform;
+		if (!movie.GetVariable(&platform, platformPath) || !platform.IsNumber() ||
+		    platform.GetNumber() == 0.0) {
+			return false;
+		}
+
+		RE::GFxValue checkOverList;
+		checkOverList.SetBoolean(false);
+		RE::GFxValue canProcess;
+		if (!movie.Invoke(processMethod, &canProcess, &checkOverList, 1) ||
+		    !canProcess.IsBool() || !canProcess.GetBool()) {
+			return false;
+		}
+
+		RE::GFxValue selectedIndex;
+		RE::GFxValue selectedEntry;
+		if (!itemList.GetMember("selectedIndex", &selectedIndex) ||
+		    !selectedIndex.IsNumber() || selectedIndex.GetNumber() < 0.0 ||
+		    !itemList.GetMember("selectedEntry", &selectedEntry) ||
+		    selectedEntry.IsUndefined() || selectedEntry.IsNull()) {
+			return false;
+		}
+
+		const double equipSlot = laserHand == 0 ? 1.0 : 0.0;
+		RE::GFxValue slotArg;
+		slotArg.SetNumber(equipSlot);
+		bool invoked = false;
+		if (container) {
+			std::array<RE::GFxValue, 2> args;
+			args[0].SetNumber(equipSlot);
+			args[1].SetBoolean(false);
+			invoked = movie.Invoke("_root.Menu_mc.AttemptTakeAndEquip", nullptr,
+			    args.data(), static_cast<std::uint32_t>(args.size()));
+			if (!invoked) {
+				invoked = movie.Invoke("_root.Menu_mc.AttemptEquip", nullptr,
+				    args.data(), static_cast<std::uint32_t>(args.size()));
+			}
+		} else {
+			invoked = movie.Invoke("_root.Menu_mc.AttemptEquip", nullptr, &slotArg, 1);
+		}
+		if (!invoked)
+			return false;
+
+		SKSE::log::info(
+		    "CONTROLLER focused-row ACTIVATE menu='{}' layout={} index={} hand={} slot={}",
+		    menuName, skyUiLayout ? "SkyUI" : "vanilla",
+		    static_cast<int>(selectedIndex.GetNumber()),
+		    laserHand == 0 ? "LEFT" : (laserHand == 1 ? "RIGHT" : "UNKNOWN"),
+		    static_cast<int>(equipSlot));
+		return true;
 	}
 
 	// Skyrim VR's Inventory/Magic menus deliberately ignore mouse-originated
@@ -1879,9 +2831,9 @@ namespace
 	// that layer.  Keep the pointer as a mouse, but complete an item-row trigger
 	// through the same hand-aware AttemptEquip API Skyrim VR uses.
 	//
-	// This is deliberately limited to InventoryMenu/MagicMenu.  Dialogue keeps
-	// its proven NotifyMouseState + Return route, and every other flat menu keeps
-	// the ordinary paired GFx mouse gesture.
+	// This is deliberately limited to InventoryMenu/MagicMenu/ContainerMenu.
+	// Dialogue keeps its proven NotifyMouseState + Return route, and every other
+	// flat menu keeps the ordinary paired GFx mouse gesture.
 	bool TryActivateHoveredVRItem(RE::GFxMovieView& movie, const char* menuName,
 	    std::uint8_t laserHand, float targetX, float targetY)
 	{
@@ -2037,11 +2989,29 @@ namespace
 		// Protocol v5 publishes the physical controller that generated this edge.
 		// Legacy/unknown senders retain the game's traditional right-hand default.
 		const double equipSlot = laserHand == 0 ? 1.0 : 0.0;
-		RE::GFxValue equipArg;
-		equipArg.SetNumber(equipSlot);
-		// One argument preserves InventoryMenu's default over-list validation and
-		// exactly matches MagicMenu's API in vanilla VR, SkyUI VR, and Dear Diary.
-		if (!movie.Invoke("_root.Menu_mc.AttemptEquip", nullptr, &equipArg, 1))
+		bool equipInvoked = false;
+		if (container) {
+			// SkyUI-VR deliberately leaves ContainerMenu.AttemptEquip() empty. VR's
+			// real per-hand contract is AttemptTakeAndEquip(slot, checkOverList): it
+			// transfers the selected chest item into the player's inventory, then
+			// equips it in the supplied hand (armor equips normally). This is distinct
+			// from Inventory/Magic and from desktop SkyUI's platform/equip-mode route.
+			// The exact laser row was already proven above, so do not make the VR movie
+			// repeat its mouse ancestry test.
+			std::array<RE::GFxValue, 2> equipArgs;
+			equipArgs[0].SetNumber(equipSlot);
+			equipArgs[1].SetBoolean(false); // exact row already proven above
+			equipInvoked = movie.Invoke("_root.Menu_mc.AttemptTakeAndEquip", nullptr,
+			    equipArgs.data(), static_cast<std::uint32_t>(equipArgs.size()));
+		} else {
+			RE::GFxValue equipArg;
+			equipArg.SetNumber(equipSlot);
+			// One argument preserves InventoryMenu's default over-list validation and
+			// exactly matches MagicMenu's API in vanilla VR, SkyUI VR, and Dear Diary.
+			equipInvoked = movie.Invoke("_root.Menu_mc.AttemptEquip", nullptr,
+			    &equipArg, 1);
+		}
+		if (!equipInvoked)
 			return false;
 
 		SKSE::log::info("LASER selected-row ACTIVATE menu='{}' layout={} index={} hand={} slot={}",
@@ -2088,10 +3058,47 @@ namespace
 		static float    s_pressedMovieY = 0.0f;
 		static bool     s_pressedMovieUsesNotifyMouse = false;
 		static bool     s_pressedMoviePendingStats = false;
+		static int      s_pressedJournalTab = -1;
+		static int      s_pressedJournalSystemState = -1;
 		static bool     s_journalReturnToSystemCategories = false;
-		static ULONGLONG s_journalReturnNextAttempt = 0;
-		static bool     s_mapPointerCulled = false;
-		static bool     s_mapPointerOriginalCull = false;
+		static int      s_journalReturnLastPulsedState = -1;
+		static bool     s_journalReplayCategoryPending = false;
+		static bool     s_journalReplayCategoryClick = false;
+		static float    s_journalReplayX = 0.0f;
+		static float    s_journalReplayY = 0.0f;
+		static ULONGLONG s_journalReplayNotBefore = 0;
+		static int      s_journalObservedSystemState = -1;
+		static int      s_messageBoxHoveredButton = -1;
+		static bool     s_laserOwnsFocus = false;
+		static std::uint64_t s_seenControllerIntentSerial = 0;
+		static ULONGLONG s_controllerLaserLockUntil = 0;
+		static bool     s_laserMotionAnchorValid = false;
+		static float    s_laserMotionAnchorX = 0.0f;
+		static float    s_laserMotionAnchorY = 0.0f;
+		static ULONGLONG s_laserMotionAnchorTick = 0;
+		static RE::GFxValue s_raceDragSlider;
+		static bool     s_raceSliderDragging = false;
+		static RE::GFxValue s_verticalDragScrollBar;
+		static bool     s_verticalScrollBarDragging = false;
+		static RE::GFxValue s_raceHoveredButton;
+		static RE::NiPointer<RE::BSTriShape> s_nativeMapPointer;
+		static RE::NiPointer<RE::NiNode> s_mapBeamParent;
+		static std::vector<RE::NiPointer<RE::BSTriShape>> s_mapBeamCompanions;
+		static RE::NiColorA s_nativeMapPointerOriginalColor{};
+		static float    s_nativeMapPointerOriginalScale = 1.0f;
+		static RE::NiPointer<RE::NiSourceTexture> s_nativeMapPointerOriginalTexture;
+		static RE::BSFixedString s_nativeMapPointerOriginalTexturePath;
+		static bool     s_nativeMapPointerOriginalVertexColors = false;
+		static RE::NiPointer<RE::NiTexture> s_nativeMapPointerOriginalEffectTexture;
+		static RE::NiColorA s_nativeMapPointerOriginalEffectFill{};
+		static RE::BSGraphics::VertexDesc s_nativeMapPointerOriginalGeometryVertexDesc{};
+		static RE::BSGraphics::VertexDesc s_nativeMapPointerOriginalRendererVertexDesc{};
+		static std::vector<std::array<std::uint8_t, 4>> s_nativeMapPointerOriginalVertexColorsRGBA;
+		static ID3D11Buffer* s_nativeMapPointerOriginalVertexBuffer = nullptr;
+		static bool     s_nativeMapPointerHadRendererData = false;
+		static bool     s_nativeMapPointerHadEffectData = false;
+		static bool     s_nativeMapPointerColorCaptured = false;
+		static int      s_nativeMapPointerColorState = -1;
 		static float    s_candidatePos[3] = {};
 		static float    s_candidateQuat[4] = { 0, 0, 0, 1 };
 		static float    s_candidateWidth = 0.0f, s_candidateHeight = 0.0f;
@@ -2121,6 +3128,12 @@ namespace
 			s_mouseHeld = false;
 			s_pressedMovieUsesNotifyMouse = false;
 			s_pressedMoviePendingStats = false;
+			s_pressedJournalTab = -1;
+			s_pressedJournalSystemState = -1;
+			s_raceDragSlider.SetUndefined();
+			s_raceSliderDragging = false;
+			s_verticalDragScrollBar.SetUndefined();
+			s_verticalScrollBarDragging = false;
 		};
 
 		bool menuActive = !g_activeTrackedMenus.empty();
@@ -2135,31 +3148,430 @@ namespace
 		bool mapOpen = strcmp(g_pTransform->menuName, "MapMenu") == 0;
 		bool dialogueOpen = strcmp(g_pTransform->menuName, "Dialogue Menu") == 0;
 		bool journalOpen = strcmp(g_pTransform->menuName, "Journal Menu") == 0;
+		bool raceMenuOpen = strcmp(g_pTransform->menuName, "RaceSex Menu") == 0;
+		if (!raceMenuOpen)
+			s_raceHoveredButton.SetUndefined();
 		// Special geometry and special input must key off the same advertised top
 		// menu. BookMenu can remain open underneath another tracked overlay.
 		bool bookOpen = ui && ui->IsMenuOpen("Book Menu") &&
 		    strcmp(g_pTransform->menuName, "Book Menu") == 0;
 
-		// Map depth comes from the live UIPointerGeo length. App-culling that
-		// geometry starves the endpoint source, so keep it updating and draw the
-		// compositor's blue beam/dot over Skyrim's stock pointer.
-		auto setMapPointerCulled = [&](bool culled) {
+		// Change only the packed RGB bytes already present in the native map
+		// pointer's vertex stream. Its alpha bytes are intentionally preserved so
+		// Bethesda's endpoint fade and terrain/icon clipping remain untouched.
+		// Immutable buffers get a same-layout DEFAULT replacement for the duration
+		// of MapMenu; the original GPU buffer is put back on close.
+		auto paintMapBeamVertexRGB = [&](RE::BSTriShape* beam, bool restore) {
+			if (!beam)
+				return false;
+			auto& geometryData = beam->GetGeometryRuntimeData();
+			auto* rendererData = geometryData.rendererData;
+			if (!rendererData || !rendererData->vertexBuffer ||
+			    !rendererData->vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLORS)) {
+				return false;
+			}
+			const bool nativeBeam = beam == s_nativeMapPointer.get();
+			auto* vertexBuffer = reinterpret_cast<ID3D11Buffer*>(rendererData->vertexBuffer);
+
+			const std::uint32_t stride = rendererData->vertexDesc.GetSize();
+			const std::uint32_t colorOffset = rendererData->vertexDesc.GetAttributeOffset(
+			    RE::BSGraphics::Vertex::VA_COLOR);
+			const std::uint32_t vertexCount = beam->GetTrishapeRuntimeData().vertexCount;
+			if (stride < colorOffset + 4 || vertexCount == 0)
+				return false;
+
+			// A GPU-only replacement retains the pristine native buffer. Restore any
+			// CPU copy as well, then transfer the saved COM reference back to the mesh.
+			if (restore && nativeBeam && s_nativeMapPointerOriginalVertexBuffer) {
+				if (rendererData->rawVertexData &&
+				    s_nativeMapPointerOriginalVertexColorsRGBA.size() == vertexCount) {
+					for (std::uint32_t i = 0; i < vertexCount; ++i) {
+						std::memcpy(rendererData->rawVertexData + i * stride + colorOffset,
+						    s_nativeMapPointerOriginalVertexColorsRGBA[i].data(), 4);
+					}
+				}
+				auto* replacement = vertexBuffer;
+				rendererData->vertexBuffer = reinterpret_cast<RE::ID3D11Buffer*>(
+				    s_nativeMapPointerOriginalVertexBuffer);
+				s_nativeMapPointerOriginalVertexBuffer = nullptr; // saved ref transfers back to rendererData
+				replacement->Release();
+				return true;
+			}
+
+			D3D11_BUFFER_DESC bufferDesc{};
+			vertexBuffer->GetDesc(&bufferDesc);
+			if (bufferDesc.ByteWidth < stride * vertexCount)
+				return false;
+
+			auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+			auto* context = renderer ? reinterpret_cast<ID3D11DeviceContext*>(
+			    renderer->GetRuntimeData().context) : nullptr;
+			if (!context)
+				return false;
+
+			if (rendererData->rawVertexData) {
+				if (restore) {
+					if (!nativeBeam ||
+					    s_nativeMapPointerOriginalVertexColorsRGBA.size() != vertexCount) {
+						return false;
+					}
+					for (std::uint32_t i = 0; i < vertexCount; ++i) {
+						std::memcpy(rendererData->rawVertexData + i * stride + colorOffset,
+						    s_nativeMapPointerOriginalVertexColorsRGBA[i].data(), 4);
+					}
+				} else {
+					for (std::uint32_t i = 0; i < vertexCount; ++i) {
+						auto* rgba = rendererData->rawVertexData + i * stride + colorOffset;
+						rgba[0] = 0xFF;
+						rgba[1] = 0xFF;
+						rgba[2] = 0xFF;
+					}
+				}
+
+				if (bufferDesc.Usage == D3D11_USAGE_DEFAULT) {
+					for (std::uint32_t i = 0; i < vertexCount; ++i) {
+						const UINT byteOffset = i * stride + colorOffset;
+						D3D11_BOX box{};
+						box.left = byteOffset;
+						box.right = byteOffset + 4;
+						box.bottom = box.back = 1;
+						context->UpdateSubresource(vertexBuffer, 0, &box,
+						    rendererData->rawVertexData + byteOffset, 0, 0);
+					}
+					return true;
+				}
+				if (bufferDesc.Usage == D3D11_USAGE_DYNAMIC &&
+				    (bufferDesc.CPUAccessFlags & D3D11_CPU_ACCESS_WRITE) != 0) {
+					D3D11_MAPPED_SUBRESOURCE mapped{};
+					if (SUCCEEDED(context->Map(vertexBuffer, 0, D3D11_MAP_WRITE_DISCARD,
+					        0, &mapped)) && mapped.pData) {
+						const std::size_t usedBytes = static_cast<std::size_t>(stride) * vertexCount;
+						std::memcpy(mapped.pData, rendererData->rawVertexData, usedBytes);
+						if (bufferDesc.ByteWidth > usedBytes) {
+							std::memset(static_cast<std::uint8_t*>(mapped.pData) + usedBytes,
+							    0, bufferDesc.ByteWidth - usedBytes);
+						}
+						context->Unmap(vertexBuffer, 0);
+						return true;
+					}
+					return false;
+				}
+			}
+
+			if (restore)
+				return false;
+
+			// Skyrim commonly releases the CPU vertex array after uploading this
+			// static beam. Read the tiny buffer through a staging resource, preserve
+			// every byte except RGB, then install a same-layout DEFAULT buffer.
+			ID3D11Device* device = nullptr;
+			context->GetDevice(&device);
+			if (!device)
+				return false;
+			D3D11_BUFFER_DESC stagingDesc = bufferDesc;
+			stagingDesc.Usage = D3D11_USAGE_STAGING;
+			stagingDesc.BindFlags = 0;
+			stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			stagingDesc.MiscFlags = 0;
+			ID3D11Buffer* staging = nullptr;
+			if (FAILED(device->CreateBuffer(&stagingDesc, nullptr, &staging)) || !staging) {
+				device->Release();
+				return false;
+			}
+			context->CopyResource(staging, vertexBuffer);
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			if (FAILED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped)) ||
+			    !mapped.pData) {
+				staging->Release();
+				device->Release();
+				return false;
+			}
+			std::vector<std::uint8_t> vertexBytes(bufferDesc.ByteWidth);
+			std::memcpy(vertexBytes.data(), mapped.pData, vertexBytes.size());
+			context->Unmap(staging, 0);
+			staging->Release();
+			for (std::uint32_t i = 0; i < vertexCount; ++i) {
+				auto* rgba = vertexBytes.data() + i * stride + colorOffset;
+				rgba[0] = 0xFF;
+				rgba[1] = 0xFF;
+				rgba[2] = 0xFF;
+			}
+
+			D3D11_BUFFER_DESC replacementDesc = bufferDesc;
+			replacementDesc.Usage = D3D11_USAGE_DEFAULT;
+			replacementDesc.CPUAccessFlags = 0;
+			D3D11_SUBRESOURCE_DATA initialData{};
+			initialData.pSysMem = vertexBytes.data();
+			ID3D11Buffer* replacement = nullptr;
+			const HRESULT result = device->CreateBuffer(
+			    &replacementDesc, &initialData, &replacement);
+			device->Release();
+			if (FAILED(result) || !replacement)
+				return false;
+
+			if (nativeBeam && !s_nativeMapPointerOriginalVertexBuffer) {
+				vertexBuffer->AddRef();
+				s_nativeMapPointerOriginalVertexBuffer = vertexBuffer;
+			}
+			rendererData->vertexBuffer =
+			    reinterpret_cast<RE::ID3D11Buffer*>(replacement);
+			vertexBuffer->Release();
+			return true;
+		};
+
+		// Skyrim's UIPointerGeo owns the authoritative controller direction and
+		// terrain/icon clipping. Keep it as the center line, replace its baked red
+		// texture/vertex tint, and attach four parallel clones to the same scene node
+		// for a wider game-space beam. No OpenXR coordinate conversion is involved.
+		auto restoreNativeMapPointer = [&]() {
+			if (s_mapBeamParent) {
+				for (auto& companion : s_mapBeamCompanions) {
+					if (companion && companion->parent == s_mapBeamParent.get())
+						s_mapBeamParent->DetachChild(companion.get());
+				}
+			}
+			s_mapBeamCompanions.clear();
+			s_mapBeamParent = nullptr;
+
+			if (!s_nativeMapPointer || !s_nativeMapPointerColorCaptured)
+				return;
+			auto* geo = s_nativeMapPointer.get();
+			paintMapBeamVertexRGB(geo, true);
+			auto* shader = geo->GetGeometryRuntimeData().shaderProperty.get();
+			auto* effect = shader ? netimmerse_cast<RE::BSEffectShaderProperty*>(shader) : nullptr;
+			auto* material = effect ? effect->GetMaterial() : nullptr;
+			if (material) {
+				material->baseColor = s_nativeMapPointerOriginalColor;
+				material->baseColorScale = s_nativeMapPointerOriginalScale;
+				material->sourceTexture = s_nativeMapPointerOriginalTexture;
+				material->sourceTexturePath = s_nativeMapPointerOriginalTexturePath;
+				effect->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kVertexColors,
+				    s_nativeMapPointerOriginalVertexColors);
+				if (s_nativeMapPointerHadEffectData && effect->effectData) {
+					effect->effectData->baseTexture = s_nativeMapPointerOriginalEffectTexture;
+					effect->effectData->fillColor = s_nativeMapPointerOriginalEffectFill;
+				}
+				auto& geometryData = geo->GetGeometryRuntimeData();
+				geometryData.vertexDesc = s_nativeMapPointerOriginalGeometryVertexDesc;
+				if (s_nativeMapPointerHadRendererData && geometryData.rendererData)
+					geometryData.rendererData->vertexDesc = s_nativeMapPointerOriginalRendererVertexDesc;
+				effect->InvalidateMaterial();
+				effect->SetupGeometry(geo);
+			}
+			SKSE::log::info("LASER MapMenu removed companion beam and restored native material");
+			s_nativeMapPointer = nullptr;
+			s_nativeMapPointerOriginalTexture = nullptr;
+			s_nativeMapPointerOriginalTexturePath = RE::BSFixedString();
+			s_nativeMapPointerOriginalEffectTexture = nullptr;
+			s_nativeMapPointerOriginalVertexColorsRGBA.clear();
+			if (s_nativeMapPointerOriginalVertexBuffer) {
+				// Defensive cleanup if the mesh disappeared before its buffer could be restored.
+				s_nativeMapPointerOriginalVertexBuffer->Release();
+				s_nativeMapPointerOriginalVertexBuffer = nullptr;
+			}
+			s_nativeMapPointerHadRendererData = false;
+			s_nativeMapPointerHadEffectData = false;
+			s_nativeMapPointerColorCaptured = false;
+			s_nativeMapPointerColorState = -1;
+		};
+		auto updateMapPointerCompanion = [&](bool active, bool triggerHeld) {
+			if (!active) {
+				restoreNativeMapPointer();
+				return;
+			}
 			auto pc = RE::PlayerCharacter::GetSingleton();
 			auto vrData = pc ? pc->GetVRNodeData() : nullptr;
 			auto geo = vrData ? vrData->UIPointerGeo.get() : nullptr;
-			if (!geo)
+			if (!geo) {
+				restoreNativeMapPointer();
 				return;
-			if (culled) {
-				if (!s_mapPointerCulled)
-					s_mapPointerOriginalCull = geo->GetAppCulled();
-				geo->SetAppCulled(true);
-				s_mapPointerCulled = true;
-			} else if (s_mapPointerCulled && !g_consoleOpen.load(std::memory_order_acquire)) {
-				geo->SetAppCulled(s_mapPointerOriginalCull);
-				s_mapPointerCulled = false;
 			}
+			if (s_nativeMapPointer.get() != geo) {
+				restoreNativeMapPointer();
+				auto* shader = geo->GetGeometryRuntimeData().shaderProperty.get();
+				auto* effect = shader ? netimmerse_cast<RE::BSEffectShaderProperty*>(shader) : nullptr;
+				auto* material = effect ? effect->GetMaterial() : nullptr;
+				if (!material) {
+					SKSE::log::warn("LASER MapMenu UIPointerGeo is not an effect-shader mesh; leaving native color unchanged");
+					return;
+				}
+				s_nativeMapPointer = RE::NiPointer<RE::BSTriShape>(geo);
+				s_nativeMapPointerOriginalColor = material->baseColor;
+				s_nativeMapPointerOriginalScale = material->baseColorScale;
+				s_nativeMapPointerOriginalTexture = material->sourceTexture;
+				s_nativeMapPointerOriginalTexturePath = material->sourceTexturePath;
+				s_nativeMapPointerOriginalVertexColors = effect->flags.any(
+				    RE::BSShaderProperty::EShaderPropertyFlag::kVertexColors);
+				auto& geometryData = geo->GetGeometryRuntimeData();
+				s_nativeMapPointerOriginalGeometryVertexDesc = geometryData.vertexDesc;
+				s_nativeMapPointerHadRendererData = geometryData.rendererData != nullptr;
+				if (geometryData.rendererData)
+					s_nativeMapPointerOriginalRendererVertexDesc = geometryData.rendererData->vertexDesc;
+				s_nativeMapPointerOriginalVertexColorsRGBA.clear();
+				if (geometryData.rendererData && geometryData.rendererData->rawVertexData &&
+				    geometryData.rendererData->vertexDesc.HasFlag(
+				        RE::BSGraphics::Vertex::VF_COLORS)) {
+					const std::uint32_t stride = geometryData.rendererData->vertexDesc.GetSize();
+					const std::uint32_t colorOffset =
+					    geometryData.rendererData->vertexDesc.GetAttributeOffset(
+					        RE::BSGraphics::Vertex::VA_COLOR);
+					const std::uint32_t vertexCount = geo->GetTrishapeRuntimeData().vertexCount;
+					if (stride >= colorOffset + 4 && vertexCount > 0) {
+						s_nativeMapPointerOriginalVertexColorsRGBA.resize(vertexCount);
+						for (std::uint32_t i = 0; i < vertexCount; ++i) {
+							std::memcpy(
+							    s_nativeMapPointerOriginalVertexColorsRGBA[i].data(),
+							    geometryData.rendererData->rawVertexData + i * stride + colorOffset,
+							    4);
+						}
+					}
+				}
+				s_nativeMapPointerHadEffectData = effect->effectData != nullptr;
+				if (effect->effectData) {
+					s_nativeMapPointerOriginalEffectTexture = effect->effectData->baseTexture;
+					s_nativeMapPointerOriginalEffectFill = effect->effectData->fillColor;
+				}
+				s_nativeMapPointerColorCaptured = true;
+				s_nativeMapPointerColorState = -1;
+
+				// Clone the already-clipped game mesh. Every companion shares its live
+				// length/orientation, but is offset slightly across the viewer-facing
+				// cross-section to form one visibly wider beam.
+				auto* parent = geo->parent;
+				if (parent) {
+					s_mapBeamParent = RE::NiPointer<RE::NiNode>(parent);
+					for (int i = 0; i < 4; ++i) {
+						RE::NiPointer<RE::NiObject> clonedObject(geo->Clone());
+						auto* cloneGeo = clonedObject ? clonedObject->AsTriShape() : nullptr;
+						if (!cloneGeo || cloneGeo == geo)
+							continue;
+						cloneGeo->local = geo->local;
+						cloneGeo->world = geo->world;
+						cloneGeo->previousWorld = geo->previousWorld;
+						cloneGeo->worldBound = geo->worldBound;
+						cloneGeo->SetAppCulled(false);
+						parent->AttachChild(cloneGeo, true);
+						s_mapBeamCompanions.emplace_back(cloneGeo);
+					}
+				}
+				SKSE::log::info(
+				    "LASER MapMenu companion created copies={} rgba({:.3f},{:.3f},{:.3f},{:.3f}) scale={:.3f} texture='{}' vertexColor={}",
+				    s_mapBeamCompanions.size(),
+				    material->baseColor.red, material->baseColor.green,
+				    material->baseColor.blue, material->baseColor.alpha,
+				    material->baseColorScale, material->sourceTexturePath.c_str(),
+				    s_nativeMapPointerOriginalVertexColors);
+			}
+
+			// Keep all copies parallel to the native beam and spread them across the
+			// screen-facing perpendicular. Copy world state too so the current render
+			// frame is correct even if this pump runs after the parent's update pass.
+			auto normalizePoint = [](RE::NiPoint3& value) {
+				const float length = sqrtf(value.x * value.x + value.y * value.y + value.z * value.z);
+				if (!std::isfinite(length) || length < 1.0e-5f)
+					return false;
+				value /= length;
+				return true;
+			};
+			auto crossPoint = [](const RE::NiPoint3& a, const RE::NiPoint3& b) {
+				return RE::NiPoint3{
+				    a.y * b.z - a.z * b.y,
+				    a.z * b.x - a.x * b.z,
+				    a.x * b.y - a.y * b.x
+				};
+			};
+			RE::NiPoint3 beamDir = MatColumn(geo->world.rotate, 1);
+			auto* pointerNode = vrData->UIPointerNode.get();
+			if (pointerNode) {
+				const RE::NiPoint3 towardMiddle = geo->worldBound.center - pointerNode->world.translate;
+				if (std::isfinite(towardMiddle.x) && std::isfinite(towardMiddle.y) &&
+				    std::isfinite(towardMiddle.z))
+					beamDir = towardMiddle;
+			}
+			if (!normalizePoint(beamDir))
+				beamDir = MatColumn(geo->world.rotate, 1);
+			RE::NiPoint3 toViewer = MatColumn(geo->world.rotate, 2);
+			if (auto* hmd = vrData->UprightHmdNode.get())
+				toViewer = hmd->world.translate - geo->worldBound.center;
+			if (!normalizePoint(toViewer))
+				toViewer = MatColumn(geo->world.rotate, 2);
+			RE::NiPoint3 sideWorld = crossPoint(beamDir, toViewer);
+			if (!normalizePoint(sideWorld))
+				sideWorld = MatColumn(geo->world.rotate, 0);
+
+			constexpr float kOffsets[4] = { -0.20f, -0.10f, 0.10f, 0.20f };
+			if (s_mapBeamParent) {
+				RE::NiPoint3 sideParent = TransposeMul(s_mapBeamParent->world.rotate, sideWorld);
+				const float parentScale = std::isfinite(s_mapBeamParent->world.scale) &&
+				    fabsf(s_mapBeamParent->world.scale) > 1.0e-4f ?
+				    s_mapBeamParent->world.scale : 1.0f;
+				sideParent /= parentScale;
+				for (std::size_t i = 0; i < s_mapBeamCompanions.size() && i < 4; ++i) {
+					auto* companion = s_mapBeamCompanions[i].get();
+					companion->local = geo->local;
+					companion->local.translate += sideParent * kOffsets[i];
+					companion->world = geo->world;
+					companion->world.translate += sideWorld * kOffsets[i];
+					companion->previousWorld = companion->world;
+					companion->worldBound = geo->worldBound;
+					companion->worldBound.center += sideWorld * kOffsets[i];
+					companion->SetAppCulled(false);
+				}
+			}
+
+			const int colorState = triggerHeld ? 1 : 0;
+			if (s_nativeMapPointerColorState == colorState)
+				return;
+			const float alpha = s_nativeMapPointerOriginalColor.alpha;
+			const RE::NiColorA targetColor = triggerHeld ?
+			    RE::NiColorA(55.0f / 255.0f, 145.0f / 255.0f, 1.0f, alpha) :
+			    RE::NiColorA(1.0f, 1.0f, 1.0f, alpha);
+			auto styleBeam = [&](RE::BSTriShape* beam) {
+				if (!beam)
+					return false;
+				auto* shader = beam->GetGeometryRuntimeData().shaderProperty.get();
+				auto* effect = shader ? netimmerse_cast<RE::BSEffectShaderProperty*>(shader) : nullptr;
+				auto* material = effect ? effect->GetMaterial() : nullptr;
+				auto* graphics = RE::BSGraphics::State::GetSingleton();
+				if (!material || !graphics)
+					return false;
+				auto whiteTexture = graphics->GetRuntimeData().defaultTextureWhite;
+				material->sourceTexture = whiteTexture;
+				material->sourceTexturePath = RE::BSFixedString();
+				material->baseColor = targetColor;
+				material->baseColorScale = s_nativeMapPointerOriginalScale;
+				// Keep the original packed vertex layout intact. Clearing VF_COLORS on
+				// an already-created renderer mesh makes its input layout disagree with
+				// the vertex buffer and produced the solid-black beam. The shader flag is
+				// enough to ignore Bethesda's baked red vertex tint.
+				effect->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kVertexColors,
+				    s_nativeMapPointerOriginalVertexColors);
+				if (effect->effectData) {
+					effect->effectData->baseTexture = whiteTexture;
+					effect->effectData->fillColor = targetColor;
+				}
+				effect->InvalidateMaterial();
+				effect->SetupGeometry(beam);
+				// SetupGeometry may rebuild/rebind the native render data, so install the
+				// white-RGB vertex stream only after its material pass is finalized.
+				const bool vertexRGBPainted = paintMapBeamVertexRGB(beam, false);
+				beam->SetAppCulled(false);
+				return vertexRGBPainted;
+			};
+			const bool nativePainted = styleBeam(geo);
+			std::size_t companionsPainted = 0;
+			for (auto& companion : s_mapBeamCompanions) {
+				if (styleBeam(companion.get()))
+					++companionsPainted;
+			}
+			s_nativeMapPointerColorState = colorState;
+			SKSE::log::info(
+			    "LASER MapMenu companion color={} vertexRGB(native={} companions={}/{})",
+			    triggerHeld ? "blue" : "warm-white", nativePainted,
+			    companionsPainted, s_mapBeamCompanions.size());
 		};
-		setMapPointerCulled(false);
+		updateMapPointerCompanion(menuActive && mapOpen && !statsOpen,
+		    g_pTransform->laserTriggerHeld != 0);
 
 		// Stats/Sovngarde forbids Scaleform calls. Retain the exact old movie
 		// through that interval, then clear its held state on the first safe tick.
@@ -2168,6 +3580,16 @@ namespace
 
 		if (!menuActive || statsOpen) {
 			s_journalReturnToSystemCategories = false;
+			s_journalReturnLastPulsedState = -1;
+			s_journalReplayCategoryPending = false;
+			s_journalReplayCategoryClick = false;
+			s_journalReplayNotBefore = 0;
+			s_journalObservedSystemState = -1;
+			s_messageBoxHoveredButton = -1;
+			s_laserOwnsFocus = false;
+			s_seenControllerIntentSerial = g_controllerMenuIntentSerial.load(std::memory_order_acquire);
+			s_controllerLaserLockUntil = 0;
+			s_laserMotionAnchorValid = false;
 			if (s_wasActive) {
 				g_pTransform->updateCounter++;
 				g_pTransform->uiPlaneValid = 0;
@@ -2202,6 +3624,16 @@ namespace
 		const bool menuNameChanged = strncmp(s_planeMenuName, g_pTransform->menuName, sizeof(s_planeMenuName)) != 0;
 		if (!s_wasActive || generationChanged || menuNameChanged) {
 			s_journalReturnToSystemCategories = false;
+			s_journalReturnLastPulsedState = -1;
+			s_journalReplayCategoryPending = false;
+			s_journalReplayCategoryClick = false;
+			s_journalReplayNotBefore = 0;
+			s_journalObservedSystemState = -1;
+			s_messageBoxHoveredButton = -1;
+			s_laserOwnsFocus = false;
+			s_seenControllerIntentSerial = g_controllerMenuIntentSerial.load(std::memory_order_acquire);
+			s_controllerLaserLockUntil = 0;
+			s_laserMotionAnchorValid = false;
 			// A Scaleform MouseDown can open a different movie before the
 			// controller is released (Settings -> Mod Configuration is the
 			// common case). Never deliver the old page's MouseUp to the new
@@ -2243,6 +3675,15 @@ namespace
 		const bool advertisedMenuReady = advertisedTopMenu && advertisedTopMenu->OnStack() &&
 		    advertisedTopMenu->uiMovie;
 		if (!advertisedMenuReady) {
+			s_journalReturnToSystemCategories = false;
+			s_journalReturnLastPulsedState = -1;
+			s_journalReplayCategoryPending = false;
+			s_journalReplayCategoryClick = false;
+			s_journalReplayNotBefore = 0;
+			s_laserOwnsFocus = false;
+			s_seenControllerIntentSerial = g_controllerMenuIntentSerial.load(std::memory_order_acquire);
+			s_controllerLaserLockUntil = 0;
+			s_laserMotionAnchorValid = false;
 			if (s_mouseHeld || s_pressedMovie)
 				releasePressedMovie("advertised menu unavailable");
 			g_pTransform->updateCounter++;
@@ -2272,7 +3713,7 @@ namespace
 		g_pTransform->updateCounter++;
 		// Keep exporting after the initial coherence gate. s_planePublished now
 		// means "live tracking armed", not "freeze the first accepted pose".
-		bool planeOk = ExportUiPlane(s_diagLogsLeft > 0, mapOpen, dialogueOpen, bookOpen);
+		bool planeOk = ExportUiPlane(s_diagLogsLeft > 0, dialogueOpen, bookOpen);
 		if (!s_planePublished) {
 			if (planeOk) {
 				const float dx = g_pTransform->uiPlanePos[0] - s_candidatePos[0];
@@ -2439,14 +3880,89 @@ namespace
 			        "_root.Menu_mc.SystemFader.Page_mc.iCurrentState", systemState);
 			if (!journalStateReadable || currentTab != 2) {
 				s_journalReturnToSystemCategories = false;
+				s_journalReturnLastPulsedState = -1;
+				s_journalReplayCategoryPending = false;
+				s_journalReplayCategoryClick = false;
+				s_journalReplayNotBefore = 0;
 			} else if (systemState == 0) {
-				s_journalReturnToSystemCategories = false;
-				SKSE::log::info("LASER Journal System focus restored to left CategoryList");
-			} else if (systemState != 13 && GetTickCount64() >= s_journalReturnNextAttempt) {
+				const ULONGLONG now = GetTickCount64();
+				if (s_journalReplayCategoryPending && s_journalReplayNotBefore == 0) {
+					// MAIN_STATE can be observable one frame before its clips finish their
+					// transition. Give the restored CategoryList a short settle window.
+					s_journalReplayNotBefore = now + 60;
+				} else if (!s_journalReplayCategoryPending || now >= s_journalReplayNotBefore) {
+					if (s_journalReplayCategoryPending) {
+						auto& movie = *advertisedTopMenu->uiMovie;
+						movie.NotifyMouseState(s_journalReplayX, s_journalReplayY, 0u, 0);
+						if (s_journalReplayCategoryClick) {
+							movie.NotifyMouseState(s_journalReplayX, s_journalReplayY, 1u, 0);
+							movie.NotifyMouseState(s_journalReplayX, s_journalReplayY, 0u, 0);
+						}
+						SKSE::log::info(
+						    "LASER Journal System restored left CategoryList and replayed {} at ({:.1f},{:.1f})",
+						    s_journalReplayCategoryClick ? "click" : "hover",
+						    s_journalReplayX, s_journalReplayY);
+					} else {
+						SKSE::log::info("LASER Journal System focus restored to left CategoryList");
+					}
+					s_journalReturnToSystemCategories = false;
+					s_journalReturnLastPulsedState = -1;
+					s_journalReplayCategoryPending = false;
+					s_journalReplayCategoryClick = false;
+					s_journalReplayNotBefore = 0;
+				}
+			} else if (systemState != 13 &&
+			    systemState != s_journalReturnLastPulsedState) {
+				s_journalReplayNotBefore = 0;
 				SendGFxKeyPulse(*advertisedTopMenu->uiMovie, RE::GFxKey::kTab);
-				s_journalReturnNextAttempt = GetTickCount64() + 250;
+				s_journalReturnLastPulsedState = systemState;
 				SKSE::log::info("LASER Journal System return-left step from state={}", systemState);
 			}
+		}
+
+		// Keep native A attached to the pane that is actually visible. This is a
+		// one-shot state repair, not a per-frame focus override, so controller and
+		// laser ownership can remain fluid after the state settles.
+		if (journalOpen && JournalMainFaderIsInteractive(*advertisedTopMenu->uiMovie)) {
+			int currentTab = -1;
+			int systemState = -1;
+			const bool readable = GetNumberVariable(*advertisedTopMenu->uiMovie,
+			        "_root.QuestJournalFader.Menu_mc.iCurrentTab",
+			        "_root.Menu_mc.iCurrentTab", currentTab) &&
+			    GetNumberVariable(*advertisedTopMenu->uiMovie,
+			        "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.iCurrentState",
+			        "_root.Menu_mc.SystemFader.Page_mc.iCurrentState", systemState);
+			// Journal is one persistent movie containing several internal pages. A
+			// mouse-down that opens a different page must not remain held over the new
+			// controls; otherwise the new page receives the same press and appears as a
+			// second stacked menu. Release against the exact old movie and wait for a
+			// fresh physical trigger press.
+			if (readable && s_mouseHeld && s_pressedMovieUsesNotifyMouse &&
+			    s_pressedMovie && s_pressedMovie.get() == advertisedTopMenu->uiMovie.get() &&
+			    s_pressedJournalTab >= 0 &&
+			    (currentTab != s_pressedJournalTab ||
+			        (currentTab == 2 && systemState != s_pressedJournalSystemState))) {
+				releasePressedMovie("Journal internal page transition");
+				s_clickArmed = false;
+				s_clickRearmNotBefore = GetTickCount64() + 180;
+				s_lastPressSeq = g_pTransform->laserPressSeq;
+				s_lastReleaseSeq = g_pTransform->laserReleaseSeq;
+			}
+
+			if (readable && currentTab == 2 && systemState != 13) {
+				if (systemState != s_journalObservedSystemState) {
+					const bool repaired = RepairJournalSystemFocus(
+					    *advertisedTopMenu->uiMovie, systemState);
+					SKSE::log::info(
+					    "MENU Journal System state={} native focus repair={}",
+					    systemState, repaired);
+					s_journalObservedSystemState = systemState;
+				}
+			} else if (!readable || currentTab != 2) {
+				s_journalObservedSystemState = -1;
+			}
+		} else {
+			s_journalObservedSystemState = -1;
 		}
 
 		if (!mc)
@@ -2464,11 +3980,6 @@ namespace
 			// 2026-07-25 session data: a single latched SetCursorVisibility(true)
 			// left showCursorCount at 0 for the entire session (something in the
 			// VR menu path re-hides it), so latch-once is not enough.
-			if (mc->GetRuntimeData().showCursorCount <= 0) {
-				mc->SetCursorVisibility(true);
-				s_cursorShown = true;
-			}
-
 			float rangeX = (cd.screenWidthX > 0.0f) ? cd.screenWidthX : 1280.0f;
 			float rangeY = (cd.screenWidthY > 0.0f) ? cd.screenWidthY : 720.0f;
 			// Safe-zone inset: the game insets UI content by safeZoneX/Y, so
@@ -2481,6 +3992,252 @@ namespace
 			// Tween's visible Items and Magic targets.
 			float targetX = szX + g_pTransform->laserU * (rangeX - 2.0f * szX);
 			float targetY = szY + g_pTransform->laserV * (rangeY - 2.0f * szY);
+			RE::GPtr<RE::GFxMovieView> laserMovie = advertisedTopMenu->uiMovie;
+			const bool messageBoxOpen = strcmp(s_planeMenuName, "MessageBoxMenu") == 0;
+			const bool alternatePerspectiveMenu = laserMovie &&
+			    strcmp(s_planeMenuName, "CustomMenu") == 0 &&
+			    IsAlternatePerspectiveMenu(*laserMovie);
+
+			// A hit proves where the laser can act, but it does not prove user intent.
+			// Ownership is sticky: native stick/button input owns the menu until the
+			// user deliberately moves the laser or presses its trigger over a target.
+			// This prevents a resting ray from undoing SkyUI's controller focus every
+			// frame. Dialogue and Map keep their established laser-owned behavior.
+			bool buttonHit = false;
+			JournalLeftPaneAction journalTarget = JournalLeftPaneAction::kNone;
+			if (laserMovie && !dialogueOpen && !mapOpen) {
+				buttonHit = laserMovie->HitTest(
+				    targetX, targetY, RE::GFxMovieView::HitTestType::kButtonEvents, 0);
+				if (journalOpen) {
+					int ignoredSystemState = -1;
+					journalTarget = ResolveJournalLeftPaneAction(
+					    *laserMovie, targetX, targetY, ignoredSystemState);
+				}
+			}
+			const bool itemListHit = laserMovie && !buttonHit &&
+			    PointerOverVRItemList(*laserMovie, s_planeMenuName, targetX, targetY);
+			const bool alternatePerspectiveListHit = alternatePerspectiveMenu &&
+			    PointerOverAlternatePerspectiveList(*laserMovie, targetX, targetY);
+			int messageBoxHoverButton = -1;
+			const bool messageBoxButtonHit = messageBoxOpen && laserMovie &&
+			    GetMessageBoxButtonAtViewportPoint(*laserMovie, targetX, targetY,
+			        messageBoxHoverButton, nullptr);
+			RaceMenuLaserTarget raceMenuTarget;
+			const bool raceMenuTargetHit = raceMenuOpen && laserMovie &&
+			    ResolveRaceMenuLaserTarget(
+			        *laserMovie, targetX, targetY, raceMenuTarget);
+			bool mcmListHit = false;
+			RE::GFxValue mcmScrollBar;
+			const bool mcmScrollBarHit = journalOpen && laserMovie &&
+			    ResolveMCMScrollTarget(
+			        *laserMovie, targetX, targetY, mcmListHit, mcmScrollBar);
+			// RaceMenu sliders use track clicks and drags whose empty track regions do
+			// not always advertise kButtonEvents. Treat its whole proven quad as an
+			// input surface; the SWF still decides whether the pointed control reacts.
+			const bool laserTargetInteractive = dialogueOpen || mapOpen || raceMenuOpen || buttonHit ||
+			    itemListHit || alternatePerspectiveListHit || messageBoxButtonHit || mcmListHit ||
+			    s_verticalScrollBarDragging ||
+			    journalTarget != JournalLeftPaneAction::kNone;
+
+			const uint32_t pressSeq = g_pTransform->laserPressSeq;
+			const uint32_t releaseSeq = g_pTransform->laserReleaseSeq;
+			const ULONGLONG intentNow = GetTickCount64();
+			if (!s_clickArmed) {
+				s_lastPressSeq = pressSeq;
+				s_lastReleaseSeq = releaseSeq;
+				if (intentNow >= s_clickRearmNotBefore)
+					s_clickArmed = true;
+			}
+			const bool newLaserPress = s_clickArmed && pressSeq != s_lastPressSeq;
+
+			const auto controllerIntentSerial =
+			    g_controllerMenuIntentSerial.load(std::memory_order_acquire);
+			if (controllerIntentSerial != s_seenControllerIntentSerial) {
+				s_seenControllerIntentSerial = controllerIntentSerial;
+				if (!dialogueOpen && !mapOpen) {
+					// A click/drag on StatsList's right scrollbar moves Scaleform focus
+					// away from the left CategoryList. As soon as a native controller is
+					// used again, hand focus back through SkyUI's own page routine. The
+					// right stick still scrolls StatsList through onRightStickInput.
+					if (journalOpen &&
+					    JournalMainFaderIsInteractive(*advertisedTopMenu->uiMovie)) {
+						int currentTab = -1;
+						if (GetNumberVariable(*advertisedTopMenu->uiMovie,
+						        "_root.QuestJournalFader.Menu_mc.iCurrentTab",
+						        "_root.Menu_mc.iCurrentTab", currentTab) &&
+						    currentTab == 1) {
+							const bool repaired = RepairJournalStatsFocus(
+							    *advertisedTopMenu->uiMovie);
+							SKSE::log::info(
+							    "MENU Journal Stats controller focus restored={} ", repaired);
+						}
+					}
+					if (s_laserOwnsFocus) {
+						SKSE::log::info("MENU INPUT owner=CONTROLLER menu='{}' (native input)",
+						    s_planeMenuName);
+					}
+					s_laserOwnsFocus = false;
+					s_controllerLaserLockUntil = intentNow + 180;
+					s_laserMotionAnchorValid = true;
+					s_laserMotionAnchorX = targetX;
+					s_laserMotionAnchorY = targetY;
+					s_laserMotionAnchorTick = intentNow;
+					if (s_mouseHeld || s_pressedMovie)
+						releasePressedMovie("native controller intent");
+					s_gfxMousePrimed = false;
+				}
+			}
+
+			bool meaningfulLaserMotion = false;
+			if (!s_laserMotionAnchorValid) {
+				s_laserMotionAnchorValid = true;
+				s_laserMotionAnchorX = targetX;
+				s_laserMotionAnchorY = targetY;
+				s_laserMotionAnchorTick = intentNow;
+			} else {
+				const float motionX = targetX - s_laserMotionAnchorX;
+				const float motionY = targetY - s_laserMotionAnchorY;
+				constexpr float kLaserIntentPixels = 40.0f;
+				if (motionX * motionX + motionY * motionY >=
+				    kLaserIntentPixels * kLaserIntentPixels) {
+					if (intentNow >= s_controllerLaserLockUntil)
+						meaningfulLaserMotion = true;
+					// Do not discard movement accumulated during the short controller
+					// lockout; it becomes laser intent as soon as that lock expires.
+					if (intentNow >= s_controllerLaserLockUntil) {
+						s_laserMotionAnchorX = targetX;
+						s_laserMotionAnchorY = targetY;
+						s_laserMotionAnchorTick = intentNow;
+					}
+				} else if (intentNow - s_laserMotionAnchorTick >= 500) {
+					// A slow resting-hand drift must not accumulate forever into intent.
+					s_laserMotionAnchorX = targetX;
+					s_laserMotionAnchorY = targetY;
+					s_laserMotionAnchorTick = intentNow;
+				}
+			}
+
+			const bool explicitLaserIntent = laserTargetInteractive &&
+			    (newLaserPress || meaningfulLaserMotion);
+			if (dialogueOpen || mapOpen) {
+				s_laserOwnsFocus = true;
+			} else if (explicitLaserIntent && !s_laserOwnsFocus) {
+				s_laserOwnsFocus = true;
+				SKSE::log::info(
+				    "MENU INPUT owner=LASER menu='{}' intent={} target(button={}, itemList={}, altStart={}, messageBox={}, journal={})",
+				    s_planeMenuName, newLaserPress ? "trigger" : "motion", buttonHit,
+				    itemListHit, alternatePerspectiveListHit, messageBoxHoverButton,
+				    static_cast<int>(journalTarget));
+			}
+
+			const bool laserShouldDrive = dialogueOpen || mapOpen ||
+			    (s_laserOwnsFocus && laserTargetInteractive);
+			if (!laserShouldDrive) {
+				// Leave SkyUI's native focus untouched while the controller owns it.
+				// In particular, never publish a mouse move from a merely resting ray.
+				if (s_mouseHeld || s_pressedMovie)
+					releasePressedMovie("laser input dormant");
+				if (s_cursorShown) {
+					mc->SetCursorVisibility(false);
+					s_cursorShown = false;
+				}
+				s_gfxMousePrimed = false;
+				s_messageBoxHoveredButton = -1;
+
+				if (newLaserPress) {
+					s_lastPressSeq = pressSeq;
+					bool activated = false;
+					if (strcmp(s_planeMenuName, "TweenMenu") == 0) {
+						activated = ActivateHighlightedTweenSelection(*laserMovie);
+					} else {
+						activated = TryActivateFocusedVRItem(
+						    *laserMovie, s_planeMenuName, g_pTransform->laserHand);
+					}
+					if (!activated) {
+						// Trigger is masked by the runtime while its ray intersects the
+						// quad. Return restores the same focused Accept path that A uses.
+						SendGFxKeyPulse(*laserMovie, RE::GFxKey::kReturn);
+						SKSE::log::info(
+						    "CONTROLLER focused ACCEPT menu='{}' (trigger over empty laser space)",
+						    s_planeMenuName);
+					}
+				}
+				if (s_clickArmed && releaseSeq != s_lastReleaseSeq)
+					s_lastReleaseSeq = releaseSeq;
+				s_lastCurX = s_lastCurY = -1.0f;
+				return;
+			}
+
+			if (messageBoxOpen) {
+				if (messageBoxHoverButton >= 0 &&
+				    messageBoxHoverButton != s_messageBoxHoveredButton) {
+					FocusMessageBoxButton(*laserMovie, messageBoxHoverButton, false);
+					s_messageBoxHoveredButton = messageBoxHoverButton;
+				}
+			} else {
+				s_messageBoxHoveredButton = -1;
+			}
+			if (raceMenuTargetHit &&
+			    raceMenuTarget.kind == RaceMenuLaserTargetKind::kButton) {
+				if (!s_raceHoveredButton.IsUndefined() &&
+				    !(s_raceHoveredButton == raceMenuTarget.clip)) {
+					RE::GFxValue controller;
+					controller.SetNumber(0.0);
+					s_raceHoveredButton.Invoke(
+					    "handleMouseRollOut", nullptr, &controller, 1);
+					s_raceHoveredButton.SetUndefined();
+				}
+				if (s_raceHoveredButton.IsUndefined()) {
+					HoverRaceMenuLaserTarget(raceMenuTarget);
+					s_raceHoveredButton = raceMenuTarget.clip;
+				}
+			} else {
+				if (!s_raceHoveredButton.IsUndefined()) {
+					RE::GFxValue controller;
+					controller.SetNumber(0.0);
+					s_raceHoveredButton.Invoke(
+					    "handleMouseRollOut", nullptr, &controller, 1);
+					s_raceHoveredButton.SetUndefined();
+				}
+				if (raceMenuTargetHit)
+					HoverRaceMenuLaserTarget(raceMenuTarget);
+			}
+			if (s_raceSliderDragging) {
+				if (raceMenuOpen && laserMovie && g_pTransform->laserTriggerHeld != 0) {
+					SetRaceMenuSliderAtViewportPoint(
+					    *laserMovie, s_raceDragSlider, targetX, targetY);
+				} else {
+					s_raceDragSlider.SetUndefined();
+					s_raceSliderDragging = false;
+				}
+			}
+			if (s_verticalScrollBarDragging) {
+				if (laserMovie && g_pTransform->laserTriggerHeld != 0) {
+					SetVerticalScrollBarAtViewportPoint(
+					    *laserMovie, s_verticalDragScrollBar, targetX, targetY);
+				} else {
+					s_verticalDragScrollBar.SetUndefined();
+					s_verticalScrollBarDragging = false;
+				}
+			}
+
+			// RaceMenu now uses direct AS2 hit testing/callbacks for every supported
+			// control, so its ordinary mouse arrow is redundant. Suppress both the
+			// Skyrim cursor and Scaleform's logical cursor only for this movie. Other
+			// menus retain the cursor because their hover paths still consume it.
+			if (raceMenuOpen) {
+				if (mc->GetRuntimeData().showCursorCount >= 0)
+					mc->SetCursorVisibility(false);
+				s_cursorShown = false;
+				if (laserMovie && laserMovie->GetMouseCursorCount() != 0)
+					laserMovie->SetMouseCursorCount(0);
+			} else if (mc->GetRuntimeData().showCursorCount <= 0) {
+				// The cursor is only made active after the arbiter grants laser ownership.
+				// SetCursorVisibility itself changes Skyrim's mouse platform, so doing it
+				// before this point recreated the exact stick/laser fight fixed above.
+				mc->SetCursorVisibility(true);
+				s_cursorShown = true;
+			}
 			// DIRECT CURSOR DRIVE (2026-07-25). The closed-loop mouse-delta
 			// approach is dead: session data showed the game discarding the
 			// synthetic AddMouseMoveEvent stream entirely (cursorPosX pinned at
@@ -2504,7 +4261,6 @@ namespace
 			// menu's movie — the same channel the VR keyboard's GFxCharEvent
 			// injection has used safely for months. Game thread, tracked menus
 			// only, never StatsMenu, no MovieDef access = no Sovngarde risk.
-			RE::GPtr<RE::GFxMovieView> laserMovie = advertisedTopMenu->uiMovie;
 			if (laserMovie) {
 				// Hover is authoritative. Do not synthesize a Down-arrow to prime
 				// list focus; it can move selection away from the pointed-at row.
@@ -2513,7 +4269,7 @@ namespace
 					RE::GViewport viewport{};
 					laserMovie->GetViewport(&viewport);
 					const auto oldCursorCount = laserMovie->GetMouseCursorCount();
-					if (oldCursorCount == 0)
+					if (!raceMenuOpen && oldCursorCount == 0)
 						laserMovie->SetMouseCursorCount(1);
 					SKSE::log::info(
 					    "LASER GFx mouse menu='{}' cursorCount {}->{} viewport buf={}x{} rect=({},{} {}x{})",
@@ -2527,10 +4283,14 @@ namespace
 				// so never duplicate it with HandleEvent there. Other flat menus retain
 				// the proven GFx event path; Dialogue only synchronizes position before
 				// activating its focused choice with Return.
-				if (journalOpen) {
-					const bool journalHeld = s_mouseHeld && s_pressedMovieUsesNotifyMouse &&
+				if (journalOpen || alternatePerspectiveMenu) {
+					const bool notifyMouseHeld = s_mouseHeld && s_pressedMovieUsesNotifyMouse &&
 					    s_pressedMovie && s_pressedMovie.get() == laserMovie.get();
-					laserMovie->NotifyMouseState(targetX, targetY, journalHeld ? 1u : 0u, 0);
+					laserMovie->NotifyMouseState(targetX, targetY, notifyMouseHeld ? 1u : 0u, 0);
+				} else if (raceMenuOpen) {
+					// The installed RaceMenu VR movie maps AS2 Mouse coordinates incorrectly
+					// through Skyrim's larger viewport. Its real controls are driven above by
+					// their own semantic hover/press/slider callbacks instead.
 				} else {
 					if (dialogueOpen && !s_mouseHeld)
 						laserMovie->NotifyMouseState(targetX, targetY, 0u, 0);
@@ -2542,11 +4302,11 @@ namespace
 					float mouseX = 0.0f, mouseY = 0.0f;
 					std::uint32_t mouseButtons = 0;
 					laserMovie->GetMouseState(0, &mouseX, &mouseY, &mouseButtons);
-					const bool buttonHit = laserMovie->HitTest(
+					const bool diagnosticButtonHit = laserMovie->HitTest(
 					    targetX, targetY, RE::GFxMovieView::HitTestType::kButtonEvents, 0);
 					SKSE::log::info(
 					    "LASER GFx state menu='{}' target({:.1f},{:.1f}) mouse({:.1f},{:.1f}) buttons={} buttonHit={}",
-					    s_planeMenuName, targetX, targetY, mouseX, mouseY, mouseButtons, buttonHit);
+					    s_planeMenuName, targetX, targetY, mouseX, mouseY, mouseButtons, diagnosticButtonHit);
 					s_gfxMousePrimed = true;
 				}
 				if (s_pressedMovie && s_pressedMovie.get() == laserMovie.get()) {
@@ -2571,8 +4331,6 @@ namespace
 			// Keep hover and activation in one exact movie. Dialogue uses its
 			// focused-choice route; every flat menu receives one paired GFx mouse
 			// gesture, matching the proven pre-Relos behavior.
-			uint32_t pressSeq = g_pTransform->laserPressSeq;
-			uint32_t releaseSeq = g_pTransform->laserReleaseSeq;
 			if (!s_clickArmed) {
 				// Synchronize without injecting either edge throughout the settle
 				// window. Do not require lifetime press/release counters to match:
@@ -2617,21 +4375,62 @@ namespace
 						s_mouseHeld = false;
 						s_pressedMovie = nullptr;
 						s_pressedMovieUsesNotifyMouse = false;
+					} else if (messageBoxOpen && messageBoxHoverButton >= 0 &&
+					    FocusMessageBoxButton(*laserMovie, messageBoxHoverButton, true)) {
+						// Direct callback is atomic and can close this movie immediately.
+						s_mouseHeld = false;
+						s_pressedMovie = nullptr;
+						s_pressedMovieUsesNotifyMouse = false;
+					} else if (mcmScrollBarHit) {
+						// MCM's dynamic CLIK scrollbar is not reported consistently by
+						// GFx's button-event hit test. Drive its public position setter
+						// directly so trigger-hold works across the mod/sub/options lists.
+						if (SetVerticalScrollBarAtViewportPoint(
+						        *laserMovie, mcmScrollBar, targetX, targetY)) {
+							s_verticalDragScrollBar = mcmScrollBar;
+							s_verticalScrollBarDragging = true;
+							s_mouseHeld = false;
+							s_pressedMovie = nullptr;
+							s_pressedMovieUsesNotifyMouse = false;
+							SKSE::log::info(
+							    "LASER MCM vertical scrollbar drag START at ({:.1f},{:.1f})",
+							    targetX, targetY);
+						}
 					} else if (journalOpen) {
+						int confirmState = -1;
+						const auto confirmAction = ResolveJournalSystemConfirmAction(
+						    *laserMovie, targetX, targetY, confirmState);
+						if (ActivateJournalSystemConfirmation(*laserMovie, confirmAction)) {
+							// Confirmation is atomic. Do not leave a synthetic mouse button
+							// held over the Journal movie or replay it after the load begins.
+							s_journalReturnToSystemCategories = false;
+							s_journalReturnLastPulsedState = -1;
+							s_journalReplayCategoryPending = false;
+							s_journalReplayCategoryClick = false;
+							s_journalReplayNotBefore = 0;
+							s_mouseHeld = false;
+							s_pressedMovie = nullptr;
+							s_pressedMovieUsesNotifyMouse = false;
+							SKSE::log::info(
+							    "LASER Journal System confirmation consumed at state={}", confirmState);
+							return;
+						}
 						int systemState = -1;
 						const auto leftPaneAction = ResolveJournalLeftPaneAction(
 						    *laserMovie, targetX, targetY, systemState);
-						if (leftPaneAction == JournalLeftPaneAction::kFocusQuestTitles) {
-							// QuestsPage's own LEFT handler performs the complete focus handoff:
-							// TitleList focus, divider state, objective deselection, and stick routing.
-							SendGFxKeyPulse(*laserMovie, RE::GFxKey::kLeft);
-							SKSE::log::info("LASER Journal Quests focus synchronized to left TitleList");
-						} else if (leftPaneAction == JournalLeftPaneAction::kReturnSystemCategories) {
+						if (leftPaneAction == JournalLeftPaneAction::kReturnSystemCategories) {
 							// Consume this mouse gesture: the visible CategoryList is disabled in a
-							// submenu, so its semantic action is Back/Cancel, not row activation.
+							// submenu. One trigger walks its official Back route until MAIN_STATE,
+							// then restores hover on this row without clicking it. The user can
+							// deliberately pull the trigger again to open that category.
 							s_journalReturnToSystemCategories = true;
+							s_journalReplayCategoryPending = true;
+							s_journalReplayCategoryClick = false;
+							s_journalReplayX = targetX;
+							s_journalReplayY = targetY;
+							s_journalReplayNotBefore = 0;
 							SendGFxKeyPulse(*laserMovie, RE::GFxKey::kTab);
-							s_journalReturnNextAttempt = GetTickCount64() + 250;
+							s_journalReturnLastPulsedState = systemState;
 							s_mouseHeld = false;
 							s_pressedMovie = nullptr;
 							s_pressedMovieUsesNotifyMouse = false;
@@ -2642,6 +4441,19 @@ namespace
 						// Bit 0 is GFx's first/left mouse button. The 0->1 transition is
 						// Journal's sole press event; continuing to publish 1 while held
 						// gives slider thumbs and scroll-arrow repeat logic a real drag/hold.
+						// Snapshot the page before MouseDown; the handler may synchronously
+						// switch SystemPage state inside NotifyMouseState.
+						s_pressedJournalTab = -1;
+						s_pressedJournalSystemState = -1;
+						GetNumberVariable(*laserMovie,
+						    "_root.QuestJournalFader.Menu_mc.iCurrentTab",
+						    "_root.Menu_mc.iCurrentTab", s_pressedJournalTab);
+						if (s_pressedJournalTab == 2) {
+							GetNumberVariable(*laserMovie,
+							    "_root.QuestJournalFader.Menu_mc.SystemFader.Page_mc.iCurrentState",
+							    "_root.Menu_mc.SystemFader.Page_mc.iCurrentState",
+							    s_pressedJournalSystemState);
+						}
 						laserMovie->NotifyMouseState(targetX, targetY, 1u, 0);
 						s_pressedMovie = laserMovie;
 						s_pressedMovieX = targetX;
@@ -2650,6 +4462,37 @@ namespace
 						s_pressedMovieUsesNotifyMouse = true;
 						SKSE::log::info("LASER notify-click DOWN menu='{}' at ({:.1f},{:.1f})",
 						    s_planeMenuName, targetX, targetY);
+					} else if (raceMenuOpen && raceMenuTargetHit) {
+						RE::GFxValue dragSlider;
+						if (ActivateRaceMenuLaserTarget(*laserMovie, raceMenuTarget,
+						        targetX, targetY, &dragSlider)) {
+							s_raceSliderDragging =
+							    raceMenuTarget.kind == RaceMenuLaserTargetKind::kSlider;
+							if (s_raceSliderDragging)
+								s_raceDragSlider = dragSlider;
+							s_verticalScrollBarDragging =
+							    raceMenuTarget.kind == RaceMenuLaserTargetKind::kScrollBar;
+							if (s_verticalScrollBarDragging)
+								s_verticalDragScrollBar = dragSlider;
+							s_mouseHeld = false;
+							s_pressedMovie = nullptr;
+							s_pressedMovieUsesNotifyMouse = false;
+							SKSE::log::info(
+							    "LASER RaceMenu semantic ACTIVATE kind={} index={} at ({:.1f},{:.1f})",
+							    static_cast<int>(raceMenuTarget.kind), raceMenuTarget.index,
+							    targetX, targetY);
+						}
+					} else if (alternatePerspectiveMenu || raceMenuOpen) {
+						laserMovie->NotifyMouseState(targetX, targetY, 1u, 0);
+						s_pressedMovie = laserMovie;
+						s_pressedMovieX = targetX;
+						s_pressedMovieY = targetY;
+						s_mouseHeld = true;
+						s_pressedMovieUsesNotifyMouse = true;
+						SKSE::log::info(
+						    "LASER {} notify-click DOWN at ({:.1f},{:.1f})",
+						    raceMenuOpen ? "RaceMenu" : "Alternate Perspective",
+						    targetX, targetY);
 					} else {
 						RE::GFxMouseEvent down(RE::GFxEvent::EventType::kMouseDown, 0,
 						    targetX, targetY);
@@ -2666,6 +4509,10 @@ namespace
 			}
 			if (s_clickArmed && releaseSeq != s_lastReleaseSeq) {
 				s_lastReleaseSeq = releaseSeq;
+				s_raceDragSlider.SetUndefined();
+				s_raceSliderDragging = false;
+				s_verticalDragScrollBar.SetUndefined();
+				s_verticalScrollBarDragging = false;
 				if (s_mouseHeld || s_pressedMovie)
 					releasePressedMovie("trigger release");
 			}
@@ -2674,6 +4521,13 @@ namespace
 			s_lastReleaseSeq = g_pTransform->laserReleaseSeq;
 			if (s_mouseHeld || s_pressedMovie)
 				releasePressedMovie("left menu surface");
+			if (s_cursorShown && mc) {
+				mc->SetCursorVisibility(false);
+				s_cursorShown = false;
+			}
+			s_laserOwnsFocus = false;
+			s_gfxMousePrimed = false;
+			s_messageBoxHoveredButton = -1;
 			s_lastCurX = s_lastCurY = -1.0f;
 			s_lastSentDx = s_lastSentDy = 0.0f;
 		}
@@ -5423,6 +7277,12 @@ uint main() : SV_Target { return 255; }
 
 		case SKSE::MessagingInterface::kInputLoaded:
 			SKSE::log::info("Input loaded");
+			if (auto inputManager = RE::BSInputDeviceManager::GetSingleton()) {
+				inputManager->AddEventSink(MenuInputIntentWatcher::GetSingleton());
+				SKSE::log::info("Menu input-intent watcher registered");
+			} else {
+				SKSE::log::error("Menu input-intent watcher registration failed: input manager unavailable");
+			}
 			// [EXPERIMENTAL — DISABLED] RemapMovementKeys() — see comment block above.
 			// Replaced by Configurator's Bindings tab (controlmapvr.txt editor).
 			// RemapMovementKeys();

@@ -131,6 +131,11 @@ std::string GetEnv(const std::string& var)
 static std::ofstream stream;
 #endif
 
+bool oovr_debug_logging_enabled()
+{
+	return oovr_global_configuration.DebugLogging();
+}
+
 OC_NORETURN void oovr_abort_raw_va(const char* file, long line, const char* func, const char* msg, const char* title, va_list args);
 
 void oovr_log_raw(const char* file, long line, const char* func, const char* msg)

@@ -9,8 +9,11 @@
 
 void oovr_log_raw(const char* file, long line, const char* func, const char* msg);
 void oovr_log_raw_format(const char* file, long line, const char* func, const char* msg, ...);
+bool oovr_debug_logging_enabled();
 #define OOVR_LOG(msg) oovr_log_raw(__FILE__, __LINE__, __FUNCTION__, msg)
 #define OOVR_LOGF(...) oovr_log_raw_format(__FILE__, __LINE__, __FUNCTION__, __VA_ARGS__)
+#define OOVR_DEBUG_LOG(msg) do { if (oovr_debug_logging_enabled()) OOVR_LOG(msg); } while (0)
+#define OOVR_DEBUG_LOGF(...) do { if (oovr_debug_logging_enabled()) OOVR_LOGF(__VA_ARGS__); } while (0)
 
 OC_NORETURN void oovr_abort_raw(const char* file, long line, const char* func, const char* msg, const char* title = nullptr, ...);
 void oovr_soft_abort_raw(const char* file, long line, const char* func, int* hit_count, const char* msg, ...);

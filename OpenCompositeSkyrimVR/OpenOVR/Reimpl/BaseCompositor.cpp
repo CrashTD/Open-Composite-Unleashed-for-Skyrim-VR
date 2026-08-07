@@ -104,7 +104,7 @@ ovr_enum_t BaseCompositor::WaitGetPoses(TrackedDevicePose_t* renderPoseArray, ui
 	const int64_t hbAfter = HbNowMs();
 	const uint64_t poses = s_posesFrameCount.fetch_add(1, std::memory_order_relaxed) + 1;
 	const int64_t lastHb = s_lastPosesHbMs.load(std::memory_order_relaxed);
-	if (hbAfter - lastHb >= 1000) {
+	if (oovr_debug_logging_enabled() && hbAfter - lastHb >= 1000) {
 		s_lastPosesHbMs.store(hbAfter, std::memory_order_relaxed);
 		OOVR_LOGF("[FRAME-HB poses count=%llu wait_ms=%lld]",
 		    (unsigned long long)poses, (long long)(hbAfter - hbBefore));
@@ -327,7 +327,7 @@ ovr_enum_t BaseCompositor::Submit(EVREye eye, const Texture_t* texture, const VR
 				const int64_t sfAfter = HbNowMs();
 				const uint64_t fc = s_submitFrameCount.fetch_add(1, std::memory_order_relaxed) + 1;
 				const int64_t lastHb = s_lastSubmitHbMs.load(std::memory_order_relaxed);
-				if (sfAfter - lastHb >= 1000) {
+				if (oovr_debug_logging_enabled() && sfAfter - lastHb >= 1000) {
 					s_lastSubmitHbMs.store(sfAfter, std::memory_order_relaxed);
 					OOVR_LOGF("[FRAME-HB submit count=%llu submit_ms=%lld]",
 					    (unsigned long long)fc, (long long)(sfAfter - sfBefore));

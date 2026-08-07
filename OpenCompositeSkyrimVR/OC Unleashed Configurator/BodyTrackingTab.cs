@@ -307,7 +307,7 @@ namespace OpenCompositeConfigurator
                 Location = new Point(leftMargin, y),
                 Size = new Size(rightEdge - leftMargin - 210, 66),
                 Text = "1. Camera 2-4 m away, full body in frame (webcam below, or a phone IP-camera app's URL).\n"
-                     + "2. Face the camera and press Start - OCU keeps camera/body yaw aligned to your headset. Keep this window running.\n"
+                     + "2. Face the camera and press Start - local MediaPipe Lite tracks you; no camera data leaves this PC.\n"
                      + "3. Tick \"Send trackers to the game\" + Save. In-game body size auto-calibrates to your headset.\n"
                      + "4. In the game, hold both grips 2s to calibrate the FBT mod (download link below).",
                 ForeColor = Color.FromArgb(190, 190, 195),
@@ -378,7 +378,7 @@ namespace OpenCompositeConfigurator
                 "Display only. Turn this off to skip video conversion, skeleton drawing, and UI repainting while tracking and OSC keep running. Preview also pauses on other pages and when minimized.");
 
             _chkBodySkeletonOnly = MakeCheckBox("Skeleton only", leftMargin + 365, y);
-            _chkBodySkeletonOnly.Checked = false;
+            _chkBodySkeletonOnly.Checked = true;
             _chkBodySkeletonOnly.CheckedChanged += (s, e) =>
             {
                 _bodyPreviewSkeletonOnly = _chkBodySkeletonOnly.Checked;
@@ -418,11 +418,11 @@ namespace OpenCompositeConfigurator
                 Location = new Point(leftMargin + 552, y - 1), Width = 300,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
-            _cmbBodyDevice.Items.Add("CPU (MediaPipe World3D, local)");
+            _cmbBodyDevice.Items.Add("CPU (MediaPipe World3D Lite, local)");
             _cmbBodyDevice.SelectedIndex = 0;
             _cmbBodyDevice.Enabled = false;
             new ToolTip().SetToolTip(_cmbBodyDevice,
-                "MediaPipe World3D runs locally on CPU. RTMW/Legacy2D is not loaded.");
+                "MediaPipe World3D Lite runs locally on CPU. RTMW/Legacy2D is not loaded.");
             container.Controls.Add(_cmbBodyDevice);
             y += 26;
 
@@ -1430,7 +1430,7 @@ namespace OpenCompositeConfigurator
                                 MinimumLandmarkConfidence = 0.25f,
                                 IncludeAuxiliaryTrackers = true,
                             });
-                        trackingStatusText = "Tracking (World 3D, MediaPipe CPU)" + cameraFormatNote;
+                        trackingStatusText = "Tracking (World 3D Lite, MediaPipe CPU)" + cameraFormatNote;
                         BodySetStatus(trackingStatusText, Color.FromArgb(120, 220, 120));
                     }
                     catch (Exception ex)

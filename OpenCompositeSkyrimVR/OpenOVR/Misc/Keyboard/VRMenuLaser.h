@@ -22,9 +22,8 @@ public:
 	// only the rendering is suppressed. Both default to visible.
 	void SetRenderHand(int side, bool show) { renderHand[side] = show; }
 
-	// MapMenu keeps Skyrim's native pointer input. OCU only supplies the visual.
-	// Its endpoint comes from Skyrim's depth-aware native pointer, not the flat
-	// Scaleform plane, so mountains and floating icons retain their real depth.
+	// MapMenu keeps Skyrim's native, depth-aware shaft. OCU supplies only the
+	// endpoint dot; the SKSE bridge recolors Skyrim's own shaft white/blue.
 	void SetMapVisualMode(bool enabled) { mapVisualMode = enabled; }
 	void SetMapVisualHit(bool valid, const XrVector3f& point) {
 		mapVisualHitValid = valid;
@@ -32,7 +31,7 @@ public:
 	}
 
 	// Toggle debug quad visibility and set its opacity (0-100)
-	void SetShowDebugQuad(bool show) { showDebugQuad = show; }
+	void SetShowDebugQuad(bool show);
 	void SetDebugQuadOpacity(int percent) { debugOpacityPercent = percent; }
 
 	// Set debug quad fill color (default: dark green 30,100,30)
@@ -66,6 +65,7 @@ public:
 	float GetHitV(int side) const { return hitV[side]; }
 	bool IsTriggerPressed(int side) const { return triggerState[side] && !triggerLast[side]; }
 	bool IsTriggerReleased(int side) const { return !triggerState[side] && triggerLast[side]; }
+	bool IsTriggerDown(int side) const { return triggerState[side]; }
 	bool IsThumbstickPressed(int side) const { return thumbstickState[side] && !thumbstickLast[side]; }
 	bool IsXButtonPressed(int side) const { return xBtnState[side] && !xBtnLast[side]; }
 	bool IsAppMenuPressed(int side) const { return appMenuState[side] && !appMenuLast[side]; }
@@ -84,19 +84,23 @@ private:
 	ID3D11Device* dev;
 	ID3D11DeviceContext* ctx = nullptr;
 
-	// Beam layers (one per hand, normal/clicked color variants)
-	XrSwapchain beamChain[2][2] = {};
+	// Beam textures are shared by both hand layers. State 0=idle, 1=clicked.
+	XrSwapchain beamChain[2] = {};
 	XrCompositionLayerQuad beamLayer[2] = {};
 
-	// Cursor dot layers (one per hand, normal/clicked color variants)
-	XrSwapchain dotChain[2][2] = {};
+	// Dot textures are shared by both hand layers. State 0=idle, 1=clicked.
+	XrSwapchain dotChain[2] = {};
 	XrCompositionLayerQuad dotLayer[2] = {};
 
 	// Debug quad overlay — semi-transparent rectangle showing the menu hit area
 	XrSwapchain debugQuadChain = XR_NULL_HANDLE;
 	XrCompositionLayerQuad debugQuadLayer = {};
 	std::vector<XrSwapchainImageD3D11KHR> debugSwapImages;
+	DXGI_FORMAT debugQuadFormat = DXGI_FORMAT_UNKNOWN;
 	int debugLastBakedOpacity = -1; // track to avoid redundant re-uploads
+	bool debugCreationFailed = false;
+	bool EnsureDebugQuad();
+	void DestroyDebugQuad();
 	void RebakeDebugQuadTexture(int opacityPercent);
 
 	// Menu quad definition

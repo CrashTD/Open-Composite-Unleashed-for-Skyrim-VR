@@ -14,6 +14,8 @@ public:
 	inline bool ForceConnectedTouch() const { return forceConnectedTouch; }
 	inline bool LogGetTrackedProperty() const { return logGetTrackedProperty; }
 	inline bool StopOnSoftAbort() const { return stopOnSoftAbort; }
+	inline bool DebugLogging() const { return debugLogging; }
+	const std::string& LogLevel() const { return logLevel; }
 	inline bool EnableLayers() const { return enableLayers; }
 	inline bool DX10Mode() const { return dx10Mode; }
 	inline bool EnableAppRequestedCubemap() const { return enableAppRequestedCubemap; }
@@ -271,6 +273,8 @@ private:
 	bool forceConnectedTouch = true;
 	bool logGetTrackedProperty = false;
 	bool stopOnSoftAbort = false;
+	std::string logLevel = "normal"; // normal | debug
+	bool debugLogging = false;
 
 	// Default to false since this was preventing PAYDAY 2 from starting, need to investigate to find out
 	//  if this is game-specific, or if it's a problem with the layer system

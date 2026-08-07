@@ -33,7 +33,7 @@ import os
 import math
 
 # --- Configuration ---
-ASSETS_DIR = r"C:\Users\borja\Desktop\OpenXR\OpenCompositeSkyrimVR\assets"
+ASSETS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CONTROLLERS = [
     {

@@ -2248,8 +2248,15 @@ EVRInputError BaseInput::TriggerHapticVibrationAction(VRActionHandle_t action, f
 
 	XrHapticVibration vibration = { XR_TYPE_HAPTIC_VIBRATION };
 	vibration.frequency = fFrequency == 0.0f ? XR_FREQUENCY_UNSPECIFIED : fFrequency;
-	vibration.duration = (int)(fDurationSeconds * 1000000000.0f);
-	vibration.amplitude = fAmplitude;
+	// OpenVR defines a zero-duration action haptic as one pulse. Passing a
+	// literal zero to OpenXR produces no feedback on several runtimes, so use
+	// OpenXR's portable "shortest supported pulse" sentinel for that case.
+	vibration.duration = fDurationSeconds <= 0.0f
+	    ? XR_MIN_HAPTIC_DURATION
+	    : (XrDuration)(fDurationSeconds * 1000000000.0f);
+	vibration.amplitude = std::clamp(fAmplitude, 0.0f, 1.0f);
+	if (vibration.amplitude <= 0.0f)
+		return VRInputError_None;
 
 	// Haptic failure must never kill the game (abort = hidden message box = perceived freeze)
 	OOVR_FAILED_XR_SOFT_ABORT(xrApplyHapticFeedback(xr_session.get(), &info, (XrHapticBaseHeader*)&vibration));
@@ -2920,8 +2927,20 @@ void BaseInput::TriggerLegacyHapticPulse(vr::TrackedDeviceIndex_t controllerDevi
 
 	XrHapticVibration vibration = { XR_TYPE_HAPTIC_VIBRATION };
 	vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
-	vibration.duration = durationNanos;
-	vibration.amplitude = (amplitude >= 0.0f) ? amplitude : oovr_global_configuration.HapticStrength();
+	// IVRSystem::TriggerHapticPulse is a sub-5 ms pulse API. Literal 1-3 ms
+	// OpenXR vibrations are accepted but silently disappear on some runtimes
+	// (notably streaming runtimes). XR_MIN_HAPTIC_DURATION explicitly asks the
+	// runtime for one hardware-supported pulse. Keep real longer-duration
+	// effects (OCU combat rumble) intact.
+	static constexpr uint64_t kLegacyShortPulseNanos = 5ULL * 1000ULL * 1000ULL;
+	vibration.duration = durationNanos <= kLegacyShortPulseNanos
+	    ? XR_MIN_HAPTIC_DURATION
+	    : (XrDuration)durationNanos;
+	vibration.amplitude = std::clamp(
+	    (amplitude >= 0.0f) ? amplitude : oovr_global_configuration.HapticStrength(),
+	    0.0f, 1.0f);
+	if (vibration.amplitude <= 0.0f)
+		return;
 
 	// Haptic failure must never kill the game (abort = hidden message box = perceived freeze)
 	OOVR_FAILED_XR_SOFT_ABORT(xrApplyHapticFeedback(xr_session.get(), &info, (XrHapticBaseHeader*)&vibration));

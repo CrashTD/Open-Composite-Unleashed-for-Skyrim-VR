@@ -226,6 +226,7 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(bool, forceConnectedTouch);
 		CFGOPT(bool, logGetTrackedProperty);
 		CFGOPT(bool, stopOnSoftAbort);
+		CFGOPT(string, logLevel);
 		CFGOPT(bool, enableLayers);
 		CFGOPT(bool, dx10Mode);
 		CFGOPT(bool, enableAppRequestedCubemap);
@@ -607,6 +608,14 @@ Config::Config()
 	}
 
 	// Post-processing: apply derived config settings after all INI files parsed
+	logLevel = str_tolower(logLevel);
+	if (logLevel != "normal" && logLevel != "debug") {
+		OOVR_LOGF("Unknown logLevel '%s'; using normal", logLevel.c_str());
+		logLevel = "normal";
+	}
+	debugLogging = (logLevel == "debug");
+	OOVR_LOGF("Logging level: %s", logLevel.c_str());
+
 	if (fsrNativeAA) {
 		fsrEnabled = true;
 		fsrRenderScale = 1.0f;

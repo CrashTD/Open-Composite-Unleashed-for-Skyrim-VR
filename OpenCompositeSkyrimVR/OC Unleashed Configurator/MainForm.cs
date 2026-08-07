@@ -179,7 +179,7 @@ namespace OpenCompositeConfigurator
 
         // Keyboard sound settings
         private CheckBox _chkSoundsEnabled = null!;
-        private NumericUpDown _nudSoundVolume = null!;
+        private NumericUpDown _nudHoverVolume = null!;
         private NumericUpDown _nudPressVolume = null!;
         private NumericUpDown _nudKbHapticStrength = null!;
 
@@ -212,11 +212,7 @@ namespace OpenCompositeConfigurator
         private NumericUpDown _nudLeftLaserRotY = null!;
         private NumericUpDown _nudLeftLaserRotZ = null!;
         private CheckBox _chkRightLaserRotation = null!;
-        // Menu laser quad grid toggle: self-saving (writes menu_quad_settings.ini
-        // directly, hot-reloaded by the DLL ~1s) — excluded from dirty-tracking.
-        private CheckBox _chkShowQuadGrid = null!;
         private CheckBox _chkMenuLaserEnabled = null!;
-        private bool _suppressQuadGridWrite;
         private NumericUpDown _nudRightLaserRotX = null!;
         private NumericUpDown _nudRightLaserRotY = null!;
         private NumericUpDown _nudRightLaserRotZ = null!;
@@ -652,8 +648,11 @@ namespace OpenCompositeConfigurator
             _btnTabBody.FlatAppearance.BorderSize = 0;
             _btnTabBody.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 55);
             _btnTabBody.Click += (s, e) => SwitchTab(5);
-            // Camera FBT is shelved from the public build until it passes
-            // in-headset testing; devtools.on restores the tab.
+            new ToolTip { AutoPopDelay = 12000, InitialDelay = 350 }.SetToolTip(
+                _btnTabBody,
+                "Opt-in local camera FBT. MediaPipe Lite runs on this PC; tracker output and walk-in-place remain off until you enable them.");
+            // Keep the unfinished camera-FBT work compiled and recoverable, but
+            // hide it from release users until it is ready for another test pass.
             _btnTabBody.Visible = ShowDevTools;
             Controls.Add(_btnTabBody);
 
@@ -1131,29 +1130,29 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(_chkSoundsEnabled);
             ry += 26;
 
-            // Row 4: Volume controls. AutoSize so DPI scaling can never clip
-            // the label to nothing (reported cut off on a scaled display).
-            var lblKbMasterVol = MakeLabel("Master:", rx, ry + 3, 55);
-            lblKbMasterVol.AutoSize = true;
-            container.Controls.Add(lblKbMasterVol);
-            _nudSoundVolume = new NumericUpDown
+            // Row 4: The runtime has separate hover and key-press volumes.
+            // Inset this row from the column edge so DPI scaling cannot clip the
+            // Hover label against the controller/feedback layout boundary.
+            int feedbackX = rx + 56;
+            container.Controls.Add(MakeLabel("Hover:", feedbackX, ry + 3, 58));
+            _nudHoverVolume = new NumericUpDown
             {
-                Location = new Point(rx + 55, ry), Width = 55,
+                Location = new Point(feedbackX + 60, ry), Width = 55,
                 Minimum = 0, Maximum = 100, Increment = 5, Value = 50,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
-            container.Controls.Add(_nudSoundVolume);
-            container.Controls.Add(MakeLabel("%", rx + 113, ry + 3, 20));
+            container.Controls.Add(_nudHoverVolume);
+            container.Controls.Add(MakeLabel("%", feedbackX + 118, ry + 3, 20));
 
-            container.Controls.Add(MakeLabel("Press:", rx + 148, ry + 3, 45));
+            container.Controls.Add(MakeLabel("Press:", feedbackX + 158, ry + 3, 48));
             _nudPressVolume = new NumericUpDown
             {
-                Location = new Point(rx + 195, ry), Width = 55,
+                Location = new Point(feedbackX + 208, ry), Width = 55,
                 Minimum = 0, Maximum = 100, Increment = 5, Value = 50,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             container.Controls.Add(_nudPressVolume);
-            container.Controls.Add(MakeLabel("%", rx + 253, ry + 3, 20));
+            container.Controls.Add(MakeLabel("%", feedbackX + 266, ry + 3, 20));
 
             // Keyboard haptic strength moved to the dedicated Haptics tab
             ry += 36;
@@ -1545,15 +1544,6 @@ namespace OpenCompositeConfigurator
                     bool en = _chkRightLaserRotation.Checked;
                     _nudRightLaserRotX.Enabled = en; _nudRightLaserRotY.Enabled = en; _nudRightLaserRotZ.Enabled = en;
                 };
-                ay += 28;
-
-                _chkShowQuadGrid = MakeCheckBox("Show menu laser calibration grid (applies live in-game, about 1 second)", ax1, ay);
-                _chkShowQuadGrid.CheckedChanged += (s, e) =>
-                {
-                    if (!_suppressQuadGridWrite)
-                        SetMenuQuadFlag("show_calibration_quad", _chkShowQuadGrid.Checked);
-                };
-                _pnlAxisAdjust.Controls.Add(_chkShowQuadGrid);
                 ay += 28;
 
                 _pnlAxisAdjust.Controls.Add(MakeSeparator(ax1, ay, rightEdge - leftMargin));
@@ -4009,61 +3999,6 @@ namespace OpenCompositeConfigurator
             return "";
         }
 
-        // menu_quad_settings.ini lives next to opencomposite.ini in the mod root
-        // (persistent copy) AND in the game dir (the copy the DLL hot-reloads ~1s
-        // while the game runs; Root Builder sweeps it back on exit). Write both so
-        // a toggle is live mid-game and survives the exit sweep. Targeted line
-        // edits only — the file carries the user's calibration comments.
-        private IEnumerable<string> GetMenuQuadIniPaths()
-        {
-            string root = GetInstalledRootDir();
-            if (!string.IsNullOrEmpty(root))
-            {
-                string p = Path.Combine(root, "menu_quad_settings.ini");
-                if (File.Exists(p)) yield return p;
-            }
-            if (!string.IsNullOrEmpty(_gameDir))
-            {
-                string p = Path.Combine(_gameDir, "menu_quad_settings.ini");
-                if (File.Exists(p)) yield return p;
-            }
-        }
-
-        private bool GetMenuQuadFlag(string key, bool fallback)
-        {
-            foreach (string path in GetMenuQuadIniPaths())
-            {
-                try
-                {
-                    foreach (string line in File.ReadLines(path))
-                    {
-                        string t = line.TrimStart();
-                        if (t.StartsWith(key + "=", StringComparison.OrdinalIgnoreCase))
-                            return t.Substring(key.Length + 1).Trim() != "0";
-                    }
-                }
-                catch { }
-            }
-            return fallback;
-        }
-
-        private void SetMenuQuadFlag(string key, bool on)
-        {
-            string value = key + "=" + (on ? "1" : "0");
-            foreach (string path in GetMenuQuadIniPaths())
-            {
-                try
-                {
-                    var lines = File.ReadAllLines(path).ToList();
-                    int idx = lines.FindIndex(l => l.TrimStart().StartsWith(key + "=", StringComparison.OrdinalIgnoreCase));
-                    if (idx >= 0) lines[idx] = value;
-                    else lines.Add(value);
-                    File.WriteAllLines(path, lines);
-                }
-                catch { }
-            }
-        }
-
         private string DescribeIniSaveLocations(IReadOnlyCollection<string> savePaths)
         {
             return "installed OCU mod folder";
@@ -6417,7 +6352,7 @@ namespace OpenCompositeConfigurator
                 _nudDisplayScale.Value = 100m;
                 _cmbKbTheme.SelectedIndex = 0;
                 _chkSoundsEnabled.Checked = true;
-                _nudSoundVolume.Value = 50m;
+                _nudHoverVolume.Value = 50m;
                 _nudPressVolume.Value = 50m;
                 _nudKbHapticStrength.Value = 50m;
 
@@ -6546,7 +6481,6 @@ namespace OpenCompositeConfigurator
             {
                 if (c == _tabKeyboard) continue;
                 if (c == _tabGestures) continue; // own save flow, not part of the ini
-                if (c == _chkShowQuadGrid) continue; // self-saving, applies instantly
                 // Body Tracking self-savers (persist to ui.json on Start/close;
                 // not part of the ini). Only "Send trackers to the game" and
                 // "Enable Full-Body Walking" genuinely need Save.
@@ -6693,8 +6627,9 @@ namespace OpenCompositeConfigurator
             _cmbKbTheme.SelectedIndex = kbThemeIndex < _cmbKbTheme.Items.Count ? kbThemeIndex : 0;
 
             _chkSoundsEnabled.Checked = ParseBool(_ini.Get("keyboard", "soundsEnabled", "true"));
-            if (int.TryParse(_ini.Get("keyboard", "soundVolume", "50"), out int svol))
-                _nudSoundVolume.Value = Math.Clamp(svol, 0, 100);
+            if (int.TryParse(_ini.Get("keyboard", "hoverVolume",
+                    _ini.Get("keyboard", "soundVolume", "50")), out int hvol))
+                _nudHoverVolume.Value = Math.Clamp(hvol, 0, 100);
             if (int.TryParse(_ini.Get("keyboard", "pressVolume", "50"), out int pvol))
                 _nudPressVolume.Value = Math.Clamp(pvol, 0, 100);
             if (int.TryParse(_ini.Get("keyboard", "hapticStrength", "50"), out int kbhap))
@@ -6704,8 +6639,6 @@ namespace OpenCompositeConfigurator
                 _nudSuperSample.Value = (decimal)Math.Clamp(ss, 0.5f, 2.0f);
             _chkRenderHands.Checked = ParseBool(_ini.Get("", "renderCustomHands", "true"));
             _chkHaptics.Checked = ParseBool(_ini.Get("", "haptics", "true"));
-            if (!ShowDevTools)
-                _chkHaptics.Checked = false;
             if (TryParseIniFloat(_ini.Get("", "hapticStrength", "0.1"), out float hs))
                 _nudHapticStrength.Value = (decimal)Math.Clamp(hs, 0f, 1f);
             _chkHiddenMesh.Checked = ParseBool(_ini.Get("", "enableHiddenMeshFix", "true"));
@@ -6767,15 +6700,6 @@ namespace OpenCompositeConfigurator
             _chkNetTrackersEnabled.Checked = ParseBool(_ini.Get("", "networkTrackersEnabled", "false"));
             _chkCameraLegCalibration.Checked = ParseBool(_ini.Get("", "cameraLegCalibrationEnabled", "true"));
             _chkWalkInPlace.Checked = ParseBool(_ini.Get("", "walkInPlaceEnabled", "false"));
-            if (!ShowDevTools)
-            {
-                // Camera FBT and walk-in-place are shelved from the public
-                // build until they pass in-headset testing; a Save writes
-                // them disabled. devtools.on restores the whole surface.
-                _chkCameraLegCalibration.Checked = false;
-                _chkNetTrackersEnabled.Checked = false;
-                _chkWalkInPlace.Checked = false;
-            }
             SelectWalkActivation(_ini.Get("", "walkInPlaceActivation", "none"));
             if (int.TryParse(_ini.Get("", "combatHapticStrength", "80"), out int chs))
                 _nudCombatHapticStrength.Value = Math.Clamp(chs, 0, 100);
@@ -6855,10 +6779,6 @@ namespace OpenCompositeConfigurator
             _nudRightLaserRotX.Enabled = _chkRightLaserRotation.Checked;
             _nudRightLaserRotY.Enabled = _chkRightLaserRotation.Checked;
             _nudRightLaserRotZ.Enabled = _chkRightLaserRotation.Checked;
-
-            _suppressQuadGridWrite = true;
-            _chkShowQuadGrid.Checked = GetMenuQuadFlag("show_calibration_quad", true);
-            _suppressQuadGridWrite = false;
 
             // FSR settings
             _chkFsrEnabled.Checked = ParseBool(_ini.Get("", "fsrEnabled", "false"));
@@ -7073,7 +6993,7 @@ namespace OpenCompositeConfigurator
                 1 => "skyui", 2 => "dwemer", 3 => "sovngarde", _ => "parchment"
             });
             _ini.Set("keyboard", "soundsEnabled", _chkSoundsEnabled.Checked ? "true" : "false");
-            _ini.Set("keyboard", "soundVolume", ((int)_nudSoundVolume.Value).ToString());
+            _ini.Set("keyboard", "hoverVolume", ((int)_nudHoverVolume.Value).ToString());
             _ini.Set("keyboard", "pressVolume", ((int)_nudPressVolume.Value).ToString());
             _ini.Set("keyboard", "hapticStrength", ((int)_nudKbHapticStrength.Value).ToString());
 

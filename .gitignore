@@ -47,3 +47,7 @@ ConfiguratorPublish-*/
 # Body tracking runtime output
 world3d_diag.csv
 BodyTracking/Captures/
+
+# Local analysis and calibration captures (never publish)
+/.analysis/
+/OpenCompositeSkyrimVR/art/live-*.png

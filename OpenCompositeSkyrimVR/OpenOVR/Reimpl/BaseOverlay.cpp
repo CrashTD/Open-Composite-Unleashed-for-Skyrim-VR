@@ -120,7 +120,7 @@ struct OCMenuTransform {
 	// v5: physical OpenXR hand that owns the published trigger edge.
 	// 0 = left, 1 = right, 0xFF = unavailable/legacy runtime.
 	uint8_t  laserHand;
-	uint8_t  reserved[1];
+	uint8_t  laserTriggerHeld;
 };
 #pragma pack(pop)
 static_assert(sizeof(OCMenuTransform) == 270);
@@ -2383,7 +2383,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 	// screen, while these rays remain valid throughout the full 3D scene.
 	{
 		static bool s_consoleWasOpen = false;
-		const bool consoleOpen = OCBridge_ConsoleState() == 1;
+		const bool consoleOpen = OCBridge_ConsoleState() == 1 &&
+		    oovr_global_configuration.MenuLaserEnabled();
 		if (consoleOpen) {
 			OpenConsoleLaserBridge();
 			ID3D11Device* laserDev = BaseCompositor::dxcomp ?
@@ -2638,14 +2639,16 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 			menuActive = (intptr_t)GetPropW(cachedHwnd, L"OC_MENU_ACTIVE") != 0;
 
 		// Master gate — laser stays fully dormant unless enable_laser=1
-		if (!s_mqEnableLaser)
+		const bool menuLaserMasterEnabled = s_mqEnableLaser &&
+		    oovr_global_configuration.MenuLaserEnabled();
+		if (!menuLaserMasterEnabled)
 			menuActive = false;
 
 		// CALIBRATION OVERRIDE (2026-07-25, user request): always_show_quad=1
 		// keeps the quad up at ALL times — menus come and go, the quad stays.
 		// Skips every menu/plane gate below; the quad renders head-anchored at
 		// the fallback pose until a menu opens and exports the real plane.
-		bool alwaysShow = s_mqEnableLaser && s_mqAlwaysShow;
+		bool alwaysShow = menuLaserMasterEnabled && s_mqAlwaysShow;
 		if (alwaysShow)
 			menuActive = true;
 
@@ -3059,29 +3062,11 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				// completely suppressed (Sovngarde protection).
 				bool mapVisualOnly = strcmp(s_lastMenuName, "MapMenu") == 0;
 				menuLaser->SetMapVisualMode(mapVisualOnly);
-				bool mapHitValid = false;
-				XrVector3f mapHit = {};
-				if (mapVisualOnly) {
-					OCMenuTransform mxMap = {};
-					if (ReadMenuTransform(mxMap) && mxMap.version >= 4 &&
-					    mxMap.mapPointerValid && mxMap.roomHmdValid) {
-						XrVector3f roomHit = { mxMap.mapPointerHitPos[0], mxMap.mapPointerHitPos[1], mxMap.mapPointerHitPos[2] };
-						XrVector3f roomHmd = { mxMap.roomHmdPos[0], mxMap.roomHmdPos[1], mxMap.roomHmdPos[2] };
-						mapHit = {
-							headPos.x + roomHit.x - roomHmd.x,
-							headPos.y + roomHit.y - roomHmd.y,
-							headPos.z + roomHit.z - roomHmd.z
-						};
-						const float dx = mapHit.x - headPos.x;
-						const float dy = mapHit.y - headPos.y;
-						const float dz = mapHit.z - headPos.z;
-						const float distance = sqrtf(dx * dx + dy * dy + dz * dz);
-						mapHitValid = std::isfinite(mapHit.x) && std::isfinite(mapHit.y) &&
-						    std::isfinite(mapHit.z) && std::isfinite(distance) &&
-						    distance > 0.03f && distance < 5.0f;
-					}
-				}
-				menuLaser->SetMapVisualHit(mapHitValid, mapHit);
+				// MapMenu draws no OpenXR beam or dot. Its native UIPointerGeo is the
+				// only visual with authoritative terrain/icon depth and is recolored by
+				// the SKSE bridge. This also prevents a bad RoomNode endpoint from ever
+				// producing the vertical white shaft seen in live testing.
+				menuLaser->SetMapVisualHit(false, {});
 				bool hardSuppressLaser = (strcmp(s_lastMenuName, "StatsMenu") == 0)
 				    || (strcmp(s_lastMenuName, "Loading Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Main Menu") == 0)
@@ -3332,6 +3317,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					bool wroteHit = false;
 					int side = s_activeLaserHand;
 					s_pTransform->laserHand = static_cast<uint8_t>(side);
+					s_pTransform->laserTriggerHeld = menuLaser->IsTriggerDown(side) ? 1 : 0;
 					if (!suppressLaser && !mapVisualOnly && menuLaser->IsHit(side)) {
 						// Calibration trims retained (default identity)
 						float adjU = physicalBookMode ? menuLaser->GetHitU(side) :
@@ -3372,6 +3358,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				s_pTransform->laserActive = 0; // let SKSE release a held click
 			if (s_pTransform)
 				s_pTransform->laserHand = 0xFF;
+			if (s_pTransform)
+				s_pTransform->laserTriggerHeld = 0;
 		}
 	}
 #endif // _WIN32 (menu laser system)

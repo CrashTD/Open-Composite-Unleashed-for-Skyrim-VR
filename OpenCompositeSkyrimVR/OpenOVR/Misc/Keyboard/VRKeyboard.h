@@ -138,7 +138,8 @@ private:
 	XrVector3f headWorldPos = {}; // Head position in world/view space, updated each frame
 
 	// Target dot composition layers (controller 0, controller 1, headset)
-	XrSwapchain targetDotChain[3] = { XR_NULL_HANDLE, XR_NULL_HANDLE, XR_NULL_HANDLE };
+	// One identical white-dot texture is shared by controller and headset layers.
+	XrSwapchain targetDotChain = XR_NULL_HANDLE;
 	XrCompositionLayerQuad targetDotLayer[3] = {};
 
 	// Laser pointer data
@@ -151,7 +152,8 @@ private:
 	// Laser beam composition layers (one per hand, idle/clicked variants).
 	// Both textures are built up front so press feedback never uploads during a
 	// VR frame. State 0 = warm white; state 1 = electric blue.
-	XrSwapchain laserChain[2][2] = {};
+	// Idle/clicked textures are shared by both hand layers.
+	XrSwapchain laserChain[2] = {};
 	XrCompositionLayerQuad laserLayer[2] = {};
 
 	// All layers returned by Update (keyboard + laser beams)

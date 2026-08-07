@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <d3d11.h>
 #include <cmath>
+#include <initializer_list>
 
 #include "Reimpl/BaseInput.h"
 #include "Reimpl/BaseSystem.h"
@@ -38,6 +39,70 @@ namespace {
 	constexpr int kDebugGridHeight = 1152;
 	constexpr int kDebugGridDivisions = 20;
 
+	bool IsBgraFormat(DXGI_FORMAT format)
+	{
+		return format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+		       format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+	}
+
+	bool IsSrgbFormat(DXGI_FORMAT format)
+	{
+		return format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+		       format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+	}
+
+	const char* LaserFormatName(DXGI_FORMAT format)
+	{
+		switch (format) {
+		case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+		case DXGI_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
+		default: return "OTHER";
+		}
+	}
+
+	DXGI_FORMAT PickSupportedFormat(const std::vector<int64_t>& supported,
+	    std::initializer_list<DXGI_FORMAT> preferences)
+	{
+		for (DXGI_FORMAT candidate : preferences) {
+			if (std::find(supported.begin(), supported.end(), static_cast<int64_t>(candidate)) != supported.end())
+				return candidate;
+		}
+		return DXGI_FORMAT_UNKNOWN;
+	}
+
+	std::string DescribeFormats(const std::vector<int64_t>& formats)
+	{
+		std::string result;
+		for (int64_t raw : formats) {
+			if (!result.empty()) result += ", ";
+			DXGI_FORMAT format = static_cast<DXGI_FORMAT>(raw);
+			result += LaserFormatName(format);
+			result += "(" + std::to_string(static_cast<long long>(raw)) + ")";
+		}
+		return result;
+	}
+
+	uint32_t PackColor(DXGI_FORMAT format, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+	{
+		if (IsBgraFormat(format))
+			std::swap(r, b);
+		return static_cast<uint32_t>(r) |
+		       (static_cast<uint32_t>(g) << 8) |
+		       (static_cast<uint32_t>(b) << 16) |
+		       (static_cast<uint32_t>(a) << 24);
+	}
+
+	uint8_t LinearToSrgbByte(float linear)
+	{
+		linear = std::clamp(linear, 0.0f, 1.0f);
+		float srgb = linear <= 0.0031308f
+		    ? linear * 12.92f
+		    : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+		return static_cast<uint8_t>(std::lround(srgb * 255.0f));
+	}
+
 	// Five-bit-wide, seven-row digits. Cell labels are colcol/rowrow: 0000 is
 	// top-left, 1900 is top-right, 0019 is bottom-left, 1919 is bottom-right.
 	constexpr uint8_t kDigitGlyphs[10][7] = {
@@ -61,12 +126,43 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 {
 	dev->GetImmediateContext(&ctx);
 
-	// Create both color variants up front so clicking never stalls a VR frame
-	// on texture creation/upload. State 0 is warm white; state 1 is blue.
-	for (int i = 0; i < 2; i++) {
+	// OpenXR swapchain formats are runtime-specific. Preserve OCU's existing
+	// formats whenever the active runtime advertises them, then fall back between
+	// RGBA/BGRA and sRGB/linear. PimaxXR, VDXR, and Oculus therefore keep their
+	// current path while SteamVR can use the formats it actually exposes.
+	uint32_t formatCount = 0;
+	OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainFormats(xr_session.get(), 0, &formatCount, nullptr));
+	std::vector<int64_t> runtimeFormats(formatCount);
+	OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainFormats(
+	    xr_session.get(), formatCount, &formatCount, runtimeFormats.data()));
+
+	DXGI_FORMAT laserColorFormat = PickSupportedFormat(runtimeFormats, {
+	    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+	    DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+	    DXGI_FORMAT_R8G8B8A8_UNORM,
+	    DXGI_FORMAT_B8G8R8A8_UNORM,
+	});
+	debugQuadFormat = PickSupportedFormat(runtimeFormats, {
+	    DXGI_FORMAT_R8G8B8A8_UNORM,
+	    DXGI_FORMAT_B8G8R8A8_UNORM,
+	    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+	    DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+	});
+	std::string offeredFormats = DescribeFormats(runtimeFormats);
+	if (laserColorFormat == DXGI_FORMAT_UNKNOWN || debugQuadFormat == DXGI_FORMAT_UNKNOWN) {
+		OOVR_ABORTF("Menu laser requires a supported 8-bit RGBA/BGRA swapchain format. Runtime offered: %s",
+		    offeredFormats.c_str());
+	}
+	OOVR_LOGF("Menu laser swapchain formats: offered=[%s] beam/dot=%s(%d) calibration=%s(%d)",
+	    offeredFormats.c_str(), LaserFormatName(laserColorFormat), static_cast<int>(laserColorFormat),
+	    LaserFormatName(debugQuadFormat), static_cast<int>(debugQuadFormat));
+
+	// Create one copy of each color state. Both hand composition layers can
+	// legally reference the same released swapchain image in one frame.
+	for (int clicked = 0; clicked < 2; clicked++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-		sci.format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+		sci.format = static_cast<int64_t>(laserColorFormat);
 		sci.sampleCount = 1;
 		sci.width = beamtex::kW;
 		sci.height = beamtex::kH;
@@ -74,61 +170,64 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		sci.arraySize = 1;
 		sci.mipCount = 1;
 
-		for (int clicked = 0; clicked < 2; clicked++) {
-			OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &beamChain[i][clicked]));
+		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &beamChain[clicked]));
 
-			uint32_t imgCount = 0;
-			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[i][clicked], 0, &imgCount, nullptr));
-			std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[i][clicked], imgCount, &imgCount,
-			    (XrSwapchainImageBaseHeader*)imgs.data()));
+		uint32_t imgCount = 0;
+		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[clicked], 0, &imgCount, nullptr));
+		std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[clicked], imgCount, &imgCount,
+		    (XrSwapchainImageBaseHeader*)imgs.data()));
 
-			std::vector<uint32_t> colorPixels;
-			if (clicked)
-				beamtex::Fill(colorPixels, 55, 145, 255, 220); // electric blue click
-			else
-				beamtex::Fill(colorPixels, 255, 240, 220, 200); // warm white idle
+		std::vector<uint32_t> colorPixels;
+		uint8_t r = clicked ? 55 : 255;
+		uint8_t g = clicked ? 145 : 240;
+		uint8_t b = clicked ? 255 : 220;
+		uint8_t a = clicked ? 220 : 200;
+		if (IsBgraFormat(laserColorFormat))
+			std::swap(r, b);
+		beamtex::Fill(colorPixels, r, g, b, a);
 
-			D3D11_TEXTURE2D_DESC td = {};
-			td.Width = beamtex::kW;
-			td.Height = beamtex::kH;
-			td.MipLevels = 1;
-			td.ArraySize = 1;
-			td.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-			td.SampleDesc = { 1, 0 };
-			td.Usage = D3D11_USAGE_DEFAULT;
+		D3D11_TEXTURE2D_DESC td = {};
+		td.Width = beamtex::kW;
+		td.Height = beamtex::kH;
+		td.MipLevels = 1;
+		td.ArraySize = 1;
+		td.Format = laserColorFormat;
+		td.SampleDesc = { 1, 0 };
+		td.Usage = D3D11_USAGE_DEFAULT;
 
-			D3D11_SUBRESOURCE_DATA init = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
-			CComPtr<ID3D11Texture2D> tex;
-			OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
+		D3D11_SUBRESOURCE_DATA init = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
+		CComPtr<ID3D11Texture2D> tex;
+		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
 
-			XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-			uint32_t idx = 0;
-			OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(beamChain[i][clicked], &acq, &idx));
-			XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-			wait.timeout = 500000000;
-			OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(beamChain[i][clicked], &wait));
-			ctx->CopyResource(imgs[idx].texture, tex);
-			XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-			OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(beamChain[i][clicked], &rel));
-		}
+		XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+		uint32_t idx = 0;
+		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(beamChain[clicked], &acq, &idx));
+		XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+		wait.timeout = 500000000;
+		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(beamChain[clicked], &wait));
+		ctx->CopyResource(imgs[idx].texture, tex);
+		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(beamChain[clicked], &rel));
+	}
 
+	for (int i = 0; i < 2; i++) {
 		memset(&beamLayer[i], 0, sizeof(beamLayer[i]));
 		beamLayer[i].type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		beamLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		beamLayer[i].space = xr_gbl->floorSpace;
 		beamLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		beamLayer[i].subImage.swapchain = beamChain[i][0];
+		beamLayer[i].subImage.swapchain = beamChain[0];
 		beamLayer[i].subImage.imageRect.offset = { 0, 0 };
 		beamLayer[i].subImage.imageRect.extent = { beamtex::kW, beamtex::kH };
 		beamLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	// Create matching normal/clicked cursor dots.
-	for (int i = 0; i < 2; i++) {
+	// Create one matching idle/clicked dot texture shared by both hands.
+	for (int clicked = 0; clicked < 2; clicked++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-		sci.format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+		sci.format = static_cast<int64_t>(laserColorFormat);
 		sci.sampleCount = 1;
 		sci.width = 8;
 		sci.height = 8;
@@ -136,113 +235,155 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		sci.arraySize = 1;
 		sci.mipCount = 1;
 
-		for (int clicked = 0; clicked < 2; clicked++) {
-			OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &dotChain[i][clicked]));
+		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &dotChain[clicked]));
 
-			uint32_t imgCount = 0;
-			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[i][clicked], 0, &imgCount, nullptr));
-			std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[i][clicked], imgCount, &imgCount,
-			    (XrSwapchainImageBaseHeader*)imgs.data()));
+		uint32_t imgCount = 0;
+		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[clicked], 0, &imgCount, nullptr));
+		std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[clicked], imgCount, &imgCount,
+		    (XrSwapchainImageBaseHeader*)imgs.data()));
 
-			uint8_t cr = clicked ? 55 : 255;
-			uint8_t cg = clicked ? 145 : 240;
-			uint8_t cb = clicked ? 255 : 220;
-			uint32_t packed = cr | (cg << 8) | (cb << 16) | (255u << 24);
-			uint32_t dotPixels[64];
-			for (int py = 0; py < 8; py++) {
-				for (int px = 0; px < 8; px++) {
-					float dx = px - 3.5f, dy = py - 3.5f;
-					dotPixels[py * 8 + px] = (dx * dx + dy * dy <= 12.25f) ? packed : 0;
-				}
+		uint8_t cr = clicked ? 55 : 255;
+		uint8_t cg = clicked ? 145 : 240;
+		uint8_t cb = clicked ? 255 : 220;
+		uint32_t packed = PackColor(laserColorFormat, cr, cg, cb, 255);
+		uint32_t dotPixels[64];
+		for (int py = 0; py < 8; py++) {
+			for (int px = 0; px < 8; px++) {
+				float dx = px - 3.5f, dy = py - 3.5f;
+				dotPixels[py * 8 + px] = (dx * dx + dy * dy <= 12.25f) ? packed : 0;
 			}
-
-			D3D11_TEXTURE2D_DESC td = {};
-			td.Width = 8;
-			td.Height = 8;
-			td.MipLevels = 1;
-			td.ArraySize = 1;
-			td.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-			td.SampleDesc = { 1, 0 };
-			td.Usage = D3D11_USAGE_DEFAULT;
-
-			D3D11_SUBRESOURCE_DATA init = { dotPixels, sizeof(uint32_t) * 8, sizeof(uint32_t) * 64 };
-			CComPtr<ID3D11Texture2D> tex;
-			OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
-
-			XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-			uint32_t idx = 0;
-			OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(dotChain[i][clicked], &acq, &idx));
-			XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-			wait.timeout = 500000000;
-			OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(dotChain[i][clicked], &wait));
-			ctx->CopyResource(imgs[idx].texture, tex);
-			XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-			OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(dotChain[i][clicked], &rel));
 		}
 
+		D3D11_TEXTURE2D_DESC td = {};
+		td.Width = 8;
+		td.Height = 8;
+		td.MipLevels = 1;
+		td.ArraySize = 1;
+		td.Format = laserColorFormat;
+		td.SampleDesc = { 1, 0 };
+		td.Usage = D3D11_USAGE_DEFAULT;
+
+		D3D11_SUBRESOURCE_DATA init = { dotPixels, sizeof(uint32_t) * 8, sizeof(uint32_t) * 64 };
+		CComPtr<ID3D11Texture2D> tex;
+		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
+
+		XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+		uint32_t idx = 0;
+		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(dotChain[clicked], &acq, &idx));
+		XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+		wait.timeout = 500000000;
+		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(dotChain[clicked], &wait));
+		ctx->CopyResource(imgs[idx].texture, tex);
+		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(dotChain[clicked], &rel));
+	}
+
+	for (int i = 0; i < 2; i++) {
 		memset(&dotLayer[i], 0, sizeof(dotLayer[i]));
 		dotLayer[i].type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		dotLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		dotLayer[i].space = xr_gbl->floorSpace;
 		dotLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		dotLayer[i].subImage.swapchain = dotChain[i][0];
+		dotLayer[i].subImage.swapchain = dotChain[0];
 		dotLayer[i].subImage.imageRect.offset = { 0, 0 };
 		dotLayer[i].subImage.imageRect.extent = { 8, 8 };
 		dotLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	// Create debug quad overlay — semi-transparent green rectangle showing the menu hit area
-	// Use linear UNORM (not SRGB) so raw alpha values map 1:1 to transparency —
-	// sRGB gamma expansion makes even low-alpha colors appear far too bright.
-	{
-		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
-		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-		sci.format = DXGI_FORMAT_R8G8B8A8_UNORM;
-		sci.sampleCount = 1;
-		sci.width = kDebugGridWidth;
-		sci.height = kDebugGridHeight;
-		sci.faceCount = 1;
-		sci.arraySize = 1;
-		sci.mipCount = 1;
-
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &debugQuadChain));
-
-		uint32_t imgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(debugQuadChain, 0, &imgCount, nullptr));
-		debugSwapImages.resize(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(debugQuadChain, imgCount, &imgCount,
-		    (XrSwapchainImageBaseHeader*)debugSwapImages.data()));
-
-		// Initial bake at default opacity
-		RebakeDebugQuadTexture(20);
-
-		memset(&debugQuadLayer, 0, sizeof(debugQuadLayer));
-		debugQuadLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-		debugQuadLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-		debugQuadLayer.space = xr_gbl->floorSpace;
-		debugQuadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		debugQuadLayer.subImage.swapchain = debugQuadChain;
-		debugQuadLayer.subImage.imageRect.offset = { 0, 0 };
-		debugQuadLayer.subImage.imageRect.extent = { kDebugGridWidth, kDebugGridHeight };
-		debugQuadLayer.subImage.imageArrayIndex = 0;
-	}
+	OOVR_LOG("Menu laser swapchains: 4 shared beam/dot textures; calibration grid is lazy");
 }
 
 VRMenuLaser::~VRMenuLaser()
 {
-	for (int i = 0; i < 2; i++) {
-		for (int state = 0; state < 2; state++) {
-			if (beamChain[i][state] != XR_NULL_HANDLE)
-				xrDestroySwapchain(beamChain[i][state]);
-			if (dotChain[i][state] != XR_NULL_HANDLE)
-				xrDestroySwapchain(dotChain[i][state]);
-		}
+	for (int state = 0; state < 2; state++) {
+		if (beamChain[state] != XR_NULL_HANDLE)
+			xrDestroySwapchain(beamChain[state]);
+		if (dotChain[state] != XR_NULL_HANDLE)
+			xrDestroySwapchain(dotChain[state]);
 	}
-	if (debugQuadChain != XR_NULL_HANDLE)
-		xrDestroySwapchain(debugQuadChain);
+	DestroyDebugQuad();
 	if (ctx)
 		ctx->Release();
+}
+
+void VRMenuLaser::SetShowDebugQuad(bool show)
+{
+	if (showDebugQuad == show)
+		return;
+	showDebugQuad = show;
+	debugCreationFailed = false;
+	if (!show)
+		DestroyDebugQuad();
+}
+
+bool VRMenuLaser::EnsureDebugQuad()
+{
+	if (debugQuadChain != XR_NULL_HANDLE)
+		return true;
+	if (debugCreationFailed)
+		return false;
+
+	XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+	sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+	sci.format = static_cast<int64_t>(debugQuadFormat);
+	sci.sampleCount = 1;
+	sci.width = kDebugGridWidth;
+	sci.height = kDebugGridHeight;
+	sci.faceCount = 1;
+	sci.arraySize = 1;
+	sci.mipCount = 1;
+
+	XrResult result = xrCreateSwapchain(xr_session.get(), &sci, &debugQuadChain);
+	if (XR_FAILED(result)) {
+		debugQuadChain = XR_NULL_HANDLE;
+		debugCreationFailed = true;
+		OOVR_LOGF("Menu laser calibration grid unavailable: xrCreateSwapchain=%d", result);
+		return false;
+	}
+
+	uint32_t imgCount = 0;
+	result = xrEnumerateSwapchainImages(debugQuadChain, 0, &imgCount, nullptr);
+	if (XR_FAILED(result) || imgCount == 0) {
+		OOVR_LOGF("Menu laser calibration grid unavailable: image count result=%d count=%u", result, imgCount);
+		DestroyDebugQuad();
+		debugCreationFailed = true;
+		return false;
+	}
+	debugSwapImages.assign(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+	result = xrEnumerateSwapchainImages(debugQuadChain, imgCount, &imgCount,
+	    reinterpret_cast<XrSwapchainImageBaseHeader*>(debugSwapImages.data()));
+	if (XR_FAILED(result)) {
+		OOVR_LOGF("Menu laser calibration grid unavailable: enumerate images=%d", result);
+		DestroyDebugQuad();
+		debugCreationFailed = true;
+		return false;
+	}
+
+	memset(&debugQuadLayer, 0, sizeof(debugQuadLayer));
+	debugQuadLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+	debugQuadLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+	debugQuadLayer.space = xr_gbl->floorSpace;
+	debugQuadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+	debugQuadLayer.subImage.swapchain = debugQuadChain;
+	debugQuadLayer.subImage.imageRect.offset = { 0, 0 };
+	debugQuadLayer.subImage.imageRect.extent = { kDebugGridWidth, kDebugGridHeight };
+	debugQuadLayer.subImage.imageArrayIndex = 0;
+	debugLastBakedOpacity = -1;
+	debugCreationFailed = false;
+	RebakeDebugQuadTexture(debugOpacityPercent);
+	OOVR_LOG("Menu laser calibration grid swapchain created on demand");
+	return true;
+}
+
+void VRMenuLaser::DestroyDebugQuad()
+{
+	if (debugQuadChain != XR_NULL_HANDLE)
+		xrDestroySwapchain(debugQuadChain);
+	debugQuadChain = XR_NULL_HANDLE;
+	debugSwapImages.clear();
+	memset(&debugQuadLayer, 0, sizeof(debugQuadLayer));
+	debugLastBakedOpacity = -1;
 }
 
 void VRMenuLaser::RebakeDebugQuadTexture(int opacityPercent)
@@ -253,9 +394,9 @@ void VRMenuLaser::RebakeDebugQuadTexture(int opacityPercent)
 		return;
 	debugLastBakedOpacity = opacityPercent;
 
-	// Premultiplied alpha with linear UNORM — slider % maps directly to alpha.
-	// SRGB→UNORM fix already solved the "too bright" problem, so no need for
-	// aggressive curves. Just straight linear mapping.
+	// Premultiplied alpha. Linear UNORM keeps the historical appearance; if the
+	// runtime only exposes sRGB, encode premultiplied RGB so composition decodes
+	// it back to the same linear values. Alpha itself remains linear.
 	float alphaF = opacityPercent / 100.0f;
 	// 2026-07-25: fill is fully transparent — lines and labels only. The solid
 	// color fill obstructed the menu once the quad actually became visible.
@@ -270,12 +411,22 @@ void VRMenuLaser::RebakeDebugQuadTexture(int opacityPercent)
 		if (x >= 0 && x < kDebugGridWidth && y >= 0 && y < kDebugGridHeight)
 			pixels[y * kDebugGridWidth + x] = color;
 	};
-	auto premultipliedColor = [](uint8_t r, uint8_t g, uint8_t b, float a) {
+	auto premultipliedColor = [&](uint8_t r, uint8_t g, uint8_t b, float a) {
 		a = std::clamp(a, 0.0f, 1.0f);
-		return (uint32_t)(r * a) |
-		       ((uint32_t)(g * a) << 8) |
-		       ((uint32_t)(b * a) << 16) |
-		       ((uint32_t)(a * 255.0f) << 24);
+		uint8_t pr;
+		uint8_t pg;
+		uint8_t pb;
+		if (IsSrgbFormat(debugQuadFormat)) {
+			pr = LinearToSrgbByte((r / 255.0f) * a);
+			pg = LinearToSrgbByte((g / 255.0f) * a);
+			pb = LinearToSrgbByte((b / 255.0f) * a);
+		} else {
+			pr = static_cast<uint8_t>(r * a);
+			pg = static_cast<uint8_t>(g * a);
+			pb = static_cast<uint8_t>(b * a);
+		}
+		return PackColor(debugQuadFormat, pr, pg, pb,
+		    static_cast<uint8_t>(a * 255.0f));
 	};
 
 	const float gridAF = std::min(1.0f, alphaF + 0.25f);
@@ -354,7 +505,7 @@ void VRMenuLaser::RebakeDebugQuadTexture(int opacityPercent)
 	td.Height = kDebugGridHeight;
 	td.MipLevels = 1;
 	td.ArraySize = 1;
-	td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // linear — matches swapchain
+	td.Format = debugQuadFormat;
 	td.SampleDesc = { 1, 0 };
 	td.Usage = D3D11_USAGE_DEFAULT;
 
@@ -570,14 +721,14 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 	// layer. The exported RoomNode-local menu mesh, controller rays, dot, beam,
 	// and debug quad must all be expressed in this same space.
 	XrSpace appSpace = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
-	debugQuadLayer.space = appSpace;
 	for (int side = 0; side < 2; ++side) {
 		beamLayer[side].space = appSpace;
 		dotLayer[side].space = appSpace;
 	}
 
 	// Debug quad — show the menu hit area as a semi-transparent overlay
-	if (debugQuadChain != XR_NULL_HANDLE && showDebugQuad) {
+	if (showDebugQuad && EnsureDebugQuad()) {
+		debugQuadLayer.space = appSpace;
 		RebakeDebugQuadTexture(debugOpacityPercent);
 		debugQuadLayer.pose = menuPose;
 		debugQuadLayer.size = menuSize;
@@ -659,7 +810,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 					mapVisualHitPoint.z - rayOrigin.z
 				};
 				t = sqrtf(toHit.x * toHit.x + toHit.y * toHit.y + toHit.z * toHit.z);
-				if (std::isfinite(t) && t > 0.02f && t < 5.0f) {
+				if (std::isfinite(t) && t > 0.02f && t < 12.0f) {
 					rayDir = { toHit.x / t, toHit.y / t, toHit.z / t };
 					hitPoint = mapVisualHitPoint;
 					hit = true;
@@ -698,10 +849,10 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 			}
 		}
 
-		// Flat menus use OCU's beam. MapMenu already renders Skyrim's native
-		// depth-aware red laser, so submit only OCU's endpoint dot there. This
-		// also prevents the no-hit fallback beam from flashing straight upward
-		// while Skyrim is publishing its first map-pointer endpoint.
+		// Flat menus use OCU's shaft. MapMenu keeps Skyrim's native depth-aware
+		// shaft and OCU submits only its endpoint dot. Reconstructing that shaft in
+		// OpenXR space is not reliable: Skyrim's UIPointerGeo can live outside the
+		// RoomNode chain and produced a vertical beam on real map scenes.
 		// Hidden hands still track hits/trigger above so they can claim the
 		// pointer, but draw nothing.
 		if (renderHand[side]) {
@@ -752,8 +903,8 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 		// Composition layers are submitted after Update returns, so switching the
 		// selected pre-baked swapchain here affects this same frame.
 		int colorState = triggerState[side] ? 1 : 0;
-		beamLayer[side].subImage.swapchain = beamChain[side][colorState];
-		dotLayer[side].subImage.swapchain = dotChain[side][colorState];
+		beamLayer[side].subImage.swapchain = beamChain[colorState];
+		dotLayer[side].subImage.swapchain = dotChain[colorState];
 	}
 
 	return activeLayers;
@@ -814,8 +965,8 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::UpdateWorld(
 		}
 
 		int colorState = triggerState[side] ? 1 : 0;
-		beamLayer[side].subImage.swapchain = beamChain[side][colorState];
-		dotLayer[side].subImage.swapchain = dotChain[side][colorState];
+		beamLayer[side].subImage.swapchain = beamChain[colorState];
+		dotLayer[side].subImage.swapchain = dotChain[colorState];
 
 		if (keyboardHitSide[side])
 			continue;

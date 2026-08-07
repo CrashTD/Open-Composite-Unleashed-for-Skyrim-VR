@@ -4,11 +4,11 @@ This note captures the current ASW condition before reworking timing/scheduling.
 
 ## Repo State
 
-- Repo: `C:\Users\borja\Desktop\OCU Alpha X Unstable`
+- Repo: `<local OCU checkout>`
 - Branch: `Unstable`
 - HEAD: `792899cae4185abb44ce4d1428df1051114b6ab4`
 - Deployed runtime DLL:
-  `C:\SkyrimVRmods\mods\OpenComposite Unleashed for Skyrim VR\root\openvr_api.dll`
+  `<MO2 mods folder>\OpenComposite Unleashed for Skyrim VR\root\openvr_api.dll`
 - Deployed DLL SHA256:
   `9F2B0255555C76B829ABB039EB8706B87CB8946A897456C52E9DB99D88605F85`
 

@@ -304,29 +304,6 @@ void XrController::GetPose(vr::ETrackingUniverseOrigin origin, vr::TrackedDevice
 
 	xr_utils::PoseFromSpace(pose, space, origin, transform, hand);
 
-	// TEMP POSE-PROBE (2026-07-25 render-model calibration): log the exact
-	// pose the game renders controllers at, ~1/sec per hand. Calibration by
-	// superposition: the user holds still (window A), freezes the game via
-	// the Meta overlay, physically moves the live-rendered controller onto
-	// the frozen OCU ghost, closes the overlay without moving, holds still
-	// (window B). B - A = the render model trim, computed offline from these
-	// lines. REMOVE once the trim defaults are baked.
-	{
-		static ULONGLONG s_lastProbe[2] = {};
-		int hi = (hand == HAND_LEFT) ? 0 : 1;
-		ULONGLONG now = GetTickCount64();
-		if (pose->bPoseIsValid && now - s_lastProbe[hi] > 1000) {
-			s_lastProbe[hi] = now;
-			const auto& m = pose->mDeviceToAbsoluteTracking.m;
-			OOVR_LOGF("POSE-PROBE hand=%c pos(%.4f,%.4f,%.4f) rot[%.3f,%.3f,%.3f|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f]",
-			    hi == 0 ? 'L' : 'R',
-			    m[0][3], m[1][3], m[2][3],
-			    m[0][0], m[0][1], m[0][2],
-			    m[1][0], m[1][1], m[1][2],
-			    m[2][0], m[2][1], m[2][2]);
-		}
-	}
-
 	// Live stick-driven trim (calibration mode, renderModelAdjust=true)
 	if (pose->bPoseIsValid && oovr_global_configuration.RenderModelAdjust()) {
 		auto& m = pose->mDeviceToAbsoluteTracking.m;

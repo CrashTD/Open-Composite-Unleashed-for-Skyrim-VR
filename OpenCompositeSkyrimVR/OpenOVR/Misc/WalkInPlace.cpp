@@ -951,7 +951,7 @@ void WalkInPlace::Update(bool lValid, float lFootY, bool rValid, float rFootY,
 
 	// Diagnostic heartbeat (1/s): every link of the chain in one line
 	static uint64_t lastLog = 0;
-	if (now - lastLog > 1000) {
+	if (oovr_debug_logging_enabled() && now - lastLog > 1000) {
 		lastLog = now;
 		OOVR_LOGF("WIP: L(%d y=%.3f base=%.3f) R(%d y=%.3f base=%.3f) knees=(%d %.3f,%d %.3f) hwFeet=%d semMode=%d semWalk=%d sem=(%d:%d,%d:%d) action=%d steps=%d arms=%d paired=%d gaps=(%.0f,%.0f) skel=%d q=%d dirHands=%d armPhase=%.3f armV=%.2f gait=%d slow=%d run=%d quick=%d speed=%.2f back=%d axis=%.2f turnCtrl=(%d,%d) turnPose=(%.2f,%.2f) turnPalm=(%.2f,%.2f) turn=%.2f",
 		    lValid ? 1 : 0, footFilt[0], baseline[0], rValid ? 1 : 0, footFilt[1], baseline[1],

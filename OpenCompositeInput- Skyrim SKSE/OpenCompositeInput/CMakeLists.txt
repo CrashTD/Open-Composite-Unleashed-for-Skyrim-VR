@@ -16,15 +16,34 @@ set(ENABLE_SKYRIM_SE OFF CACHE BOOL "" FORCE)
 set(ENABLE_SKYRIM_AE OFF CACHE BOOL "" FORCE)
 set(ENABLE_SKYRIM_VR ON CACHE BOOL "" FORCE)
 
+# Locate CommonLibVR without embedding a developer-specific absolute path.
+set(COMMONLIBSSE_ROOT "" CACHE PATH "Path to the CommonLibSSE-NG/CommonLibVR source tree")
+if(NOT COMMONLIBSSE_ROOT AND DEFINED ENV{COMMONLIBSSE_ROOT})
+    set(COMMONLIBSSE_ROOT "$ENV{COMMONLIBSSE_ROOT}")
+endif()
+if(NOT COMMONLIBSSE_ROOT)
+    get_filename_component(
+        COMMONLIBSSE_ROOT
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../../VR-Project-Staging/external/commonlibsse-ng"
+        ABSOLUTE
+    )
+endif()
+if(NOT EXISTS "${COMMONLIBSSE_ROOT}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "CommonLibSSE-NG/CommonLibVR was not found. Set COMMONLIBSSE_ROOT "
+        "with -DCOMMONLIBSSE_ROOT=<path> or the COMMONLIBSSE_ROOT environment variable."
+    )
+endif()
+
 # Add CommonLibVR as a subdirectory
 add_subdirectory(
-    "C:/Users/borja/Desktop/VR-Project-Staging/external/commonlibsse-ng"
+    "${COMMONLIBSSE_ROOT}"
     CommonLibSSE
     EXCLUDE_FROM_ALL
 )
 
 # Include the plugin helper macro from CommonLibVR
-include("C:/Users/borja/Desktop/VR-Project-Staging/external/commonlibsse-ng/cmake/CommonLibSSE.cmake")
+include("${COMMONLIBSSE_ROOT}/cmake/CommonLibSSE.cmake")
 
 # MinHook — inline hooking library (needed for D3D11 DrawIndexed hook)
 set(MINHOOK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../OpenCompositeSkyrimVR/libs/minhook")
@@ -45,7 +64,7 @@ set(SOURCES
 add_commonlibsse_plugin(${PROJECT_NAME}
     SOURCES ${SOURCES}
     NAME "OpenCompositeInput"
-    AUTHOR "borja"
+    AUTHOR "Wondernuttz"
     VERSION ${PROJECT_VERSION}
     USE_ADDRESS_LIBRARY
 )
