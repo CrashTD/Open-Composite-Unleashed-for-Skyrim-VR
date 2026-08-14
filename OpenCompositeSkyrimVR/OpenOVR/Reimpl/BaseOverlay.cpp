@@ -15,6 +15,7 @@
 #include "convert.h"
 #include "generated/static_bases.gen.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <direct.h>
 #include <map>
@@ -47,6 +48,13 @@ bool g_consoleLaserConsumesTrigger[2] = { false, false };
 // letting Skyrim also see the physical trigger double-activates the focused
 // inventory row when the laser click was intended for a top tab.
 bool g_menuLaserConsumesTrigger[2] = { false, false };
+// Once a trigger press is accepted by the menu laser, keep that physical press
+// hidden from Skyrim until the controller is actually released. A menu can
+// synchronously replace itself while the same pull is still down (RaceMenu
+// finishing into Alternate/Paradigm start prompts); handing the held trigger
+// back during that transition makes the newly opened prompt accept and close
+// immediately. The laser continues reading the unmasked state for drags.
+std::atomic<bool> g_menuLaserSuppressUntilRelease[2]{ false, false };
 
 // When true, the keyboard is being grab-moved. BaseSystem::GetControllerState() masks
 // thumbstick locomotion + action buttons on BOTH hands so the player doesn't walk/turn/
@@ -3099,9 +3107,13 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				// Hand switch: a trigger press while pointing at the quad claims
 				// the pointer (takes effect this frame for input, next frame for
 				// the beam visual — imperceptible).
-				for (int side = 0; !mapVisualOnly && side < 2; side++) {
-					if (side != s_activeLaserHand && menuLaser->IsHit(side) && menuLaser->IsTriggerPressed(side))
-						s_activeLaserHand = side;
+				for (int side = 0; !suppressLaser && !mapVisualOnly && side < 2; side++) {
+					if (menuLaser->IsHit(side) && menuLaser->IsTriggerPressed(side)) {
+						g_menuLaserSuppressUntilRelease[side].store(
+						    true, std::memory_order_release);
+						if (side != s_activeLaserHand)
+							s_activeLaserHand = side;
+					}
 				}
 
 				// MapMenu is visual-only: never claim or mask its native input.

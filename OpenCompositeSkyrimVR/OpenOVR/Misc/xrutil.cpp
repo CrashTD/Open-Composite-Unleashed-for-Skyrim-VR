@@ -6,6 +6,10 @@
 #include "convert.h"
 #include "xr_ext.h"
 
+#include <algorithm>
+#include <cctype>
+#include <string>
+
 XrInstance xr_instance = XR_NULL_HANDLE;
 SessionWrapper xr_session;
 std::mutex xr_session_call_mutex;
@@ -129,6 +133,27 @@ float XrSessionGlobals::GetPredictedDisplayFrequencyHz()
 		return 0.0f;
 
 	float hz = static_cast<float>(1000000000.0 / static_cast<double>(period));
+	std::string systemName = systemProperties.systemName;
+	std::transform(systemName.begin(), systemName.end(), systemName.begin(),
+	    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	const bool isPsvr2 = systemName.find("playstation vr2") != std::string::npos ||
+	    systemName.find("playstation vr 2") != std::string::npos ||
+	    systemName.find("ps vr2") != std::string::npos ||
+	    systemName.find("ps vr 2") != std::string::npos ||
+	    systemName.find("psvr2") != std::string::npos;
+
+	// PSVR2 panels expose 90 Hz and 120 Hz modes, never 60 Hz. SteamVR's
+	// OpenXR bridge can report the throttled application period (about 16.67 ms)
+	// while the panel remains at 120 Hz. Resolve that otherwise-ambiguous 60 Hz
+	// sample before the generic table accepts it as a native 60 Hz panel.
+	if (isPsvr2 && std::fabs(hz - 60.0f) < 3.0f) {
+		static std::atomic<bool> loggedPsvr2Translation{ false };
+		if (!loggedPsvr2Translation.exchange(true, std::memory_order_relaxed)) {
+			OOVR_LOGF("Display frequency: PSVR2 OpenXR app rate %.2f Hz translated to 120 Hz panel rate",
+			    hz);
+		}
+		return 120.0f;
+	}
 
 	// Prop_DisplayFrequency_Float means PANEL rate. Under runtime throttling
 	// (VD SSW, half-rate ASW modes) xrWaitFrame reports the APP period, i.e.

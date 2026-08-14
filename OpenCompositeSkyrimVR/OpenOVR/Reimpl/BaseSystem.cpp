@@ -11,6 +11,7 @@
 #include "generated/static_bases.gen.h"
 
 #include <cinttypes>
+#include <atomic>
 #include <string>
 
 // Per-hand keyboard laser flag — set by BaseOverlay::_BuildLayers.
@@ -19,6 +20,7 @@
 extern bool g_kbLaserConsumesTrigger[2];
 extern bool g_consoleLaserConsumesTrigger[2];
 extern bool g_menuLaserConsumesTrigger[2];
+extern std::atomic<bool> g_menuLaserSuppressUntilRelease[2];
 extern bool g_kbGrabActive;
 
 // Menu laser active flag — set by BaseOverlay::_BuildLayers when a
@@ -709,6 +711,18 @@ bool BaseSystem::GetControllerState(vr::TrackedDeviceIndex_t controllerDeviceInd
 	// keyboard owns several controls; the flat-menu bridge owns only trigger.
 	if (ok && controllerDeviceIndex >= 1 && controllerDeviceIndex <= 2) {
 		int hand = (int)controllerDeviceIndex - 1;
+		const uint64_t triggerMask =
+		    vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger);
+		const bool rawTriggerDown =
+		    (controllerState->ulButtonPressed & triggerMask) != 0 ||
+		    controllerState->rAxis[1].x >= 0.3f;
+		bool suppressUntilRelease =
+		    g_menuLaserSuppressUntilRelease[hand].load(std::memory_order_acquire);
+		if (suppressUntilRelease && !rawTriggerDown) {
+			g_menuLaserSuppressUntilRelease[hand].store(
+			    false, std::memory_order_release);
+			suppressUntilRelease = false;
+		}
 		if (g_kbLaserConsumesTrigger[hand]) {
 			// Keyboard owns input while laser is on quad. Mask trigger plus the
 			// thumb-rest-adjacent buttons (thumbstick, A/X, ApplicationMenu) for
@@ -726,10 +740,10 @@ bool BaseSystem::GetControllerState(vr::TrackedDeviceIndex_t controllerDeviceInd
 			controllerState->ulButtonTouched &= ~fullMask;
 			controllerState->rAxis[1].x = 0.0f;
 			controllerState->rAxis[1].y = 0.0f;
-		} else if (g_menuLaserConsumesTrigger[hand]) {
+		} else if (g_menuLaserConsumesTrigger[hand] || suppressUntilRelease) {
 			// SKSE injects the Scaleform mouse down/up at the laser target.
-			// Suppress Skyrim's simultaneous native Accept on the focused row.
-			uint64_t triggerMask = vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger);
+			// Suppress Skyrim's simultaneous native Accept on the focused row and
+			// retain ownership across any menu transition until physical release.
 			controllerState->ulButtonPressed &= ~triggerMask;
 			controllerState->ulButtonTouched &= ~triggerMask;
 			controllerState->rAxis[1].x = 0.0f;

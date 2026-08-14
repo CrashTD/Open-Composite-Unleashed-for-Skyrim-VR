@@ -483,12 +483,16 @@ static bool AcquireBridgeResourceSnapshot(OCBridgeResourceSnapshot& snapshot)
 // OCU ASW — PC-side Asynchronous SpaceWarp (global g_aswProvider in ASWProvider.h)
 
 static const OCBridgeResourceSnapshot& ReuseOrAcquireBridgeResourceSnapshot(
-    OCBridgeResourceSnapshot& localSnapshot)
+    OCBridgeResourceSnapshot& localSnapshot,
+    bool acquireIfUnscoped = true)
 {
 	if (s_scopedBridgeResourceSnapshot)
 		return *s_scopedBridgeResourceSnapshot;
 
-	AcquireBridgeResourceSnapshot(localSnapshot);
+	if (acquireIfUnscoped)
+		AcquireBridgeResourceSnapshot(localSnapshot);
+	else
+		localSnapshot.Reset();
 	return localSnapshot;
 }
 
@@ -4054,10 +4058,11 @@ DX11Compositor::~DX11Compositor()
 	    (unsigned long long)(uintptr_t)preDtorDev,
 	    (unsigned long long)(uintptr_t)chain);
 
-	// ClearState unbinds all pipeline references, then Flush drains pending commands.
-	// Without this, the NVIDIA driver retains stale internal pointers to our textures.
+	// This is Skyrim/ENB's shared immediate context.  Drain outstanding work before
+	// releasing OCU resources, but do not erase the application's pipeline state.
+	// ClearState here broke the companion-window render whenever an overlay-owned
+	// compositor was destroyed (garbage on Steam Link, black on VDXR).
 	if (context) {
-		context->ClearState();
 		context->Flush();
 	}
 	if (iAmDxcomp) {
@@ -4194,7 +4199,8 @@ void DX11Compositor::CheckCreateSwapChain(const vr::Texture_t* texture, const vr
 #ifdef OC_HAS_FSR3
 	OCBridgeResourceSnapshot localBridgeResources;
 	const auto& bridgeResources =
-	    ReuseOrAcquireBridgeResourceSnapshot(localBridgeResources);
+	    ReuseOrAcquireBridgeResourceSnapshot(localBridgeResources,
+	        Fsr3TemporalRequested() && !cube && !isOverlay);
 	ScopedBridgeResourceSnapshot bridgeResourceScope(&bridgeResources);
 	const bool bridgeResourcesReady = bridgeResources.Ready();
 #endif
@@ -4275,13 +4281,15 @@ void DX11Compositor::CheckCreateSwapChain(const vr::Texture_t* texture, const vr
 			    outWidth, outHeight, Fsr3EffectiveRenderScale(),
 			    oovr_global_configuration.FsrNativeAA() ? ", native AA" : "");
 
-		// ClearState unbinds all SRVs/RTVs/UAVs from the pipeline, releasing the
-		// NVIDIA driver's internal tracking references to our textures. Without
-		// this, destroying the swapchain leaves stale pointers in the driver's
-		// descriptor cache — crash on next frame at the same deterministic address.
-		// Flush then drains any remaining GPU commands that reference those resources.
-		context->ClearState();
-		context->Flush();
+		// Preserve Skyrim/ENB's shared immediate-context state.  Flushing orders
+		// outstanding work before old OCU swapchain resources are retired without
+		// blanking the application's companion-window pipeline.
+		if (chain || !swapchain_rtvs.empty()) {
+			context->Flush();
+			OOVR_LOG("D3D11: retiring swapchain resources without clearing application context state");
+		} else {
+			OOVR_LOG("D3D11: first swapchain creation preserves the game's immediate-context state");
+		}
 
 #ifdef OC_HAS_FSR3
 		// If FSR3 is active, drain its DX12 queue too — shared textures cross both APIs
@@ -4693,23 +4701,56 @@ void DX11Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBou
 	}
 
 #if defined(OC_HAS_FSR3) || defined(OC_HAS_DLSS)
+	bool bridgeResourcesNeeded = false;
+#ifdef OC_HAS_FSR3
+	bridgeResourcesNeeded = bridgeResourcesNeeded ||
+	    (!isOverlay && Fsr3TemporalRequested());
+#endif
+#ifdef OC_HAS_DLSS
+	bridgeResourcesNeeded = bridgeResourcesNeeded ||
+	    (!isOverlay && oovr_global_configuration.DlssEnabled() &&
+	        (oovr_global_configuration.FsrRenderScale() < 0.99f ||
+	            oovr_global_configuration.DlssPreset() == 4));
+#endif
 	OCBridgeResourceSnapshot localBridgeResources;
 	const auto& bridgeResources =
-	    ReuseOrAcquireBridgeResourceSnapshot(localBridgeResources);
+	    ReuseOrAcquireBridgeResourceSnapshot(localBridgeResources,
+	        bridgeResourcesNeeded);
 	ScopedBridgeResourceSnapshot bridgeResourceScope(&bridgeResources);
 	const bool bridgeResourcesReady = bridgeResources.Ready();
 #endif
 
 	CheckCreateSwapChain(texture, bounds, false);
 
-	// Update cached game texture SRV (Skyrim VR submits the same texture every frame)
-	if (!isOverlay && src != cachedSrcTex) {
+	// Cache a view of Skyrim's submitted texture only when a shader path will
+	// actually sample it. This preserves the 3.1 optimization for inversion,
+	// FSR, CAS, and DLAA without changing resource lifetime on the ordinary
+	// CopySubresourceRegion path. The unconditional reference is the leading
+	// suspect in the 4.x ENB/companion-window mirror regression and is not used
+	// by the plain-copy path.
+	const bool cachedSourceNeeded = !isOverlay &&
+	    ((bounds && bounds->vMin > bounds->vMax &&
+	         oovr_global_configuration.InvertUsingShaders()) ||
+	        oovr_global_configuration.FsrEnabled() ||
+	        oovr_global_configuration.CasEnabled() ||
+	        oovr_global_configuration.DlaaEnabled());
+	if (!cachedSourceNeeded) {
 		if (cachedSrcSRV) {
 			cachedSrcSRV->Release();
 			cachedSrcSRV = nullptr;
 		}
-		device->CreateShaderResourceView(src, nullptr, &cachedSrcSRV);
-		cachedSrcTex = src;
+		cachedSrcTex = nullptr;
+	} else if (src != cachedSrcTex) {
+		if (cachedSrcSRV) {
+			cachedSrcSRV->Release();
+			cachedSrcSRV = nullptr;
+		}
+		const HRESULT hr = device->CreateShaderResourceView(src, nullptr, &cachedSrcSRV);
+		cachedSrcTex = SUCCEEDED(hr) ? src : nullptr;
+		if (FAILED(hr)) {
+			OOVR_LOGF("D3D11: source SRV creation failed (hr=0x%08X)",
+			    static_cast<unsigned>(hr));
+		}
 	}
 
 	// First reserve an image from the swapchain
@@ -6575,8 +6616,25 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 	// Set current eye index for FSR radius matching (inner Invoke reads this)
 	s_currentEyeIdx = (eye == XruEyeLeft) ? 0 : 1;
 
+	// The render-target bridge is only consumed by the temporal upscalers and
+	// space-warp paths.  The ordinary compositor must not pin seven bridge COM
+	// resources twice per frame when all of those features are disabled.
+	bool bridgeResourcesNeeded = oovr_global_configuration.ASWEnabled() ||
+	    g_aswProvider != nullptr ||
+	    (g_spaceWarpProvider && g_spaceWarpProvider->IsReady());
+#ifdef OC_HAS_FSR3
+	bridgeResourcesNeeded = bridgeResourcesNeeded || Fsr3TemporalRequested();
+#endif
+#ifdef OC_HAS_DLSS
+	bridgeResourcesNeeded = bridgeResourcesNeeded ||
+	    (oovr_global_configuration.DlssEnabled() &&
+	        (oovr_global_configuration.FsrRenderScale() < 0.99f ||
+	            oovr_global_configuration.DlssPreset() == 4));
+#endif
+
 	OCBridgeResourceSnapshot bridgeResources;
-	const bool bridgeSnapshotValid = AcquireBridgeResourceSnapshot(bridgeResources);
+	const bool bridgeSnapshotValid = bridgeResourcesNeeded &&
+	    AcquireBridgeResourceSnapshot(bridgeResources);
 	ScopedBridgeResourceSnapshot bridgeResourceScope(&bridgeResources);
 	const bool bridgeResourcesReady = bridgeSnapshotValid && bridgeResources.Ready();
 	static uint64_t s_activeBridgeGeneration = 0;

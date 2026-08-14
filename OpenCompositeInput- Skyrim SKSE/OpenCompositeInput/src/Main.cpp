@@ -1867,7 +1867,8 @@ namespace
 		kItem,
 		kSlider,
 		kScrollBar,
-		kButton
+		kButton,
+		kClipAction
 	};
 
 	struct RaceMenuLaserTarget
@@ -1892,6 +1893,45 @@ namespace
 			}
 		}
 		return false;
+	}
+
+	bool GetRaceMenuButtonPanelTarget(RE::GFxValue& buttonPanel, float rootX,
+	    float rootY, int indexBase, RaceMenuLaserTarget& target)
+	{
+		if ((!buttonPanel.IsObject() && !buttonPanel.IsDisplayObject()) ||
+		    !DisplayObjectIsUsable(buttonPanel)) {
+			return false;
+		}
+
+		RE::GFxValue buttons;
+		if (!buttonPanel.GetMember("buttons", &buttons) || !buttons.IsArray())
+			return false;
+
+		const auto count = std::min<std::uint32_t>(buttons.GetArraySize(), 16);
+		for (std::uint32_t i = 0; i < count; ++i) {
+			RE::GFxValue button;
+			if (!buttons.GetElement(i, &button) || !DisplayObjectIsUsable(button))
+				continue;
+			if (DisplayObjectHitAtRootPoint(button, rootX, rootY)) {
+				target.kind = RaceMenuLaserTargetKind::kButton;
+				target.index = indexBase + static_cast<int>(i);
+				target.owner = buttonPanel;
+				target.clip = button;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool RaceMenuObjectIsActive(RE::GFxValue& object)
+	{
+		if ((!object.IsObject() && !object.IsDisplayObject()) ||
+		    !DisplayObjectIsUsable(object)) {
+			return false;
+		}
+		RE::GFxValue enabled;
+		return !object.GetMember("enabled", &enabled) || !enabled.IsBool() ||
+		    enabled.GetBool();
 	}
 
 	bool GetRaceMenuListTarget(RE::GFxValue& list, float rootX, float rootY,
@@ -1929,6 +1969,26 @@ namespace
 			if (!clip.GetMember("itemIndex", &itemIndex) || !itemIndex.IsNumber() ||
 			    itemIndex.GetNumber() < 0.0) {
 				continue;
+			}
+
+			// SliderListEntry places color, glow, and active-state actions beside
+			// the row trigger. Their own AS2 handlers distinguish ordinary color
+			// selection from the auxiliary glow action.
+			constexpr std::array<const char*, 3> rowActionNames = {
+			    "colorSquare", "glowSquare", "activeIndicator"
+			};
+			for (const char* actionName : rowActionNames) {
+				RE::GFxValue action;
+				if (clip.GetMember(actionName, &action) &&
+				    RaceMenuObjectIsActive(action) &&
+				    action.HasMember("onPress") &&
+				    DisplayObjectHitAtRootPoint(action, rootX, rootY)) {
+					target.kind = RaceMenuLaserTargetKind::kClipAction;
+					target.index = static_cast<int>(itemIndex.GetNumber());
+					target.owner = list;
+					target.clip = action;
+					return true;
+				}
 			}
 
 			if (permitSliders) {
@@ -1969,6 +2029,71 @@ namespace
 		return false;
 	}
 
+	bool GetRaceMenuMeshListTarget(RE::GFxValue& list, float rootX, float rootY,
+	    RaceMenuLaserTarget& target)
+	{
+		RE::GFxValue scrollBar;
+		if (GetListScrollBar(list, scrollBar) && DisplayObjectIsUsable(scrollBar) &&
+		    DisplayObjectHitAtRootPoint(scrollBar, rootX, rootY)) {
+			target.kind = RaceMenuLaserTargetKind::kScrollBar;
+			target.owner = list;
+			target.clip = scrollBar;
+			target.slider = scrollBar;
+			return true;
+		}
+
+		// MeshListEntry exposes four independent AS2 controls inside each row.
+		// Invoking their own handlers preserves RaceMenu's visibility, wireframe,
+		// lock, and wire-color behavior, including the status text callbacks.
+		constexpr std::array<const char*, 4> controlNames = {
+		    "visibleToggle", "wireToggle", "lockToggle", "wireColor"
+		};
+		for (int clipIndex = 0; clipIndex < 40; ++clipIndex) {
+			RE::GFxValue clipArg;
+			clipArg.SetNumber(static_cast<double>(clipIndex));
+			RE::GFxValue clip;
+			if (!list.Invoke("getClipByIndex", &clip, &clipArg, 1) ||
+			    (!clip.IsObject() && !clip.IsDisplayObject()) ||
+			    !DisplayObjectIsUsable(clip)) {
+				continue;
+			}
+
+			RE::GFxValue itemIndex;
+			if (!clip.GetMember("itemIndex", &itemIndex) || !itemIndex.IsNumber() ||
+			    itemIndex.GetNumber() < 0.0) {
+				continue;
+			}
+			for (const char* controlName : controlNames) {
+				RE::GFxValue control;
+				if (!clip.GetMember(controlName, &control) ||
+				    !RaceMenuObjectIsActive(control)) {
+					continue;
+				}
+				if (DisplayObjectHitAtRootPoint(control, rootX, rootY)) {
+					target.kind = RaceMenuLaserTargetKind::kClipAction;
+					target.index = static_cast<int>(itemIndex.GetNumber());
+					target.owner = list;
+					target.clip = control;
+					return true;
+				}
+			}
+
+			RE::GFxValue trigger;
+			if (!clip.GetMember("trigger", &trigger) ||
+			    (!trigger.IsObject() && !trigger.IsDisplayObject())) {
+				trigger = clip;
+			}
+			if (DisplayObjectHitAtRootPoint(trigger, rootX, rootY)) {
+				target.kind = RaceMenuLaserTargetKind::kItem;
+				target.index = static_cast<int>(itemIndex.GetNumber());
+				target.owner = list;
+				target.clip = clip;
+				return true;
+			}
+		}
+		return false;
+	}
+
 	// RaceMenu VR ships a square 1024x1024 AS2 movie inside Skyrim's 2048x2048
 	// render target. Its list rows and CLIK sliders consume semantic callbacks;
 	// feeding the viewport coordinates to NotifyMouseState leaves its AS2 Mouse
@@ -1982,6 +2107,44 @@ namespace
 		float rootY = 0.0f;
 		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
 			return false;
+
+		// RaceMenu attaches both FileViewerDialog and ImportDialog directly to
+		// _root as "dialog". Handle either modal before the editor so preset files,
+		// head export/import, part matching, and every dialog button remain usable
+		// without allowing a click to pass through to controls underneath it.
+		RE::GFxValue dialog;
+		if (movie.GetVariable(&dialog, "_root.dialog") &&
+		    (dialog.IsObject() || dialog.IsDisplayObject()) &&
+		    DisplayObjectIsUsable(dialog)) {
+			constexpr std::array<const char*, 2> dialogListNames = {
+			    "fileList", "importList"
+			};
+			for (const char* listName : dialogListNames) {
+				RE::GFxValue list;
+				if (dialog.GetMember(listName, &list) &&
+				    (list.IsObject() || list.IsDisplayObject()) &&
+				    DisplayObjectIsUsable(list) &&
+				    GetRaceMenuListTarget(list, rootX, rootY, false,
+				        RaceMenuLaserTargetKind::kItem, target)) {
+					return true;
+				}
+			}
+
+			RE::GFxValue buttonPanel;
+			if (dialog.GetMember("buttonPanel", &buttonPanel) &&
+			    GetRaceMenuButtonPanelTarget(
+			        buttonPanel, rootX, rootY, 300, target)) {
+				return true;
+			}
+
+			// The modal covers the main editor. Consume blank modal space as a real
+			// RaceMenu hit so the generic NotifyMouseState fallback cannot click a
+			// control underneath the dialog.
+			target.kind = RaceMenuLaserTargetKind::kNone;
+			target.owner = dialog;
+			target.clip = dialog;
+			return true;
+		}
 
 		RE::GFxValue panel;
 		if (!GetRaceMenuPanel(movie, panel))
@@ -2036,86 +2199,155 @@ namespace
 				};
 				for (std::size_t panelIndex = 0; panelIndex < panelNames.size(); ++panelIndex) {
 					RE::GFxValue buttonPanel;
-					RE::GFxValue buttons;
 					if (!colorField.GetMember(panelNames[panelIndex], &buttonPanel) ||
-					    (!buttonPanel.IsObject() && !buttonPanel.IsDisplayObject()) ||
-					    !buttonPanel.GetMember("buttons", &buttons) || !buttons.IsArray()) {
+					    (!buttonPanel.IsObject() && !buttonPanel.IsDisplayObject())) {
 						continue;
 					}
-					const auto count = std::min<std::uint32_t>(buttons.GetArraySize(), 12);
-					for (std::uint32_t i = 0; i < count; ++i) {
-						RE::GFxValue button;
-						if (!buttons.GetElement(i, &button) ||
-						    (!button.IsObject() && !button.IsDisplayObject())) {
-							continue;
-						}
-						RE::GFxValue buttonVisible;
-						RE::GFxValue buttonDisabled;
-						const bool isVisible =
-						    !button.GetMember("_visible", &buttonVisible) ||
-						    !buttonVisible.IsBool() || buttonVisible.GetBool();
-						const bool isDisabled =
-						    button.GetMember("disabled", &buttonDisabled) &&
-						    buttonDisabled.IsBool() && buttonDisabled.GetBool();
-						if (isVisible && !isDisabled &&
-						    DisplayObjectHitAtRootPoint(button, rootX, rootY)) {
-							target.kind = RaceMenuLaserTargetKind::kButton;
-							target.index = static_cast<int>(panelIndex * 100 + i);
-							target.owner = buttonPanel;
-							target.clip = button;
-							return true;
-						}
-					}
-				}
-				return false;
-			}
-		}
-
-		// RaceMenu's Presets mode owns a separate editor and bottom navigation
-		// panel. These dynamically-created MappedButtons are not descendants of
-		// the main item/category lists, so the VR movie's broken AS2 mouse mapping
-		// otherwise leaves Done, Save Preset, and Load Preset unclickable.
-		RE::GFxValue presetEditor;
-		if (panel.GetMember("presetEditor", &presetEditor) &&
-		    (presetEditor.IsObject() || presetEditor.IsDisplayObject())) {
-			RE::GFxValue editorEnabled;
-			RE::GFxValue editorVisible;
-			const bool isEnabled =
-			    !presetEditor.GetMember("enabled", &editorEnabled) ||
-			    !editorEnabled.IsBool() || editorEnabled.GetBool();
-			const bool isVisible =
-			    !presetEditor.GetMember("_visible", &editorVisible) ||
-			    !editorVisible.IsBool() || editorVisible.GetBool();
-			RE::GFxValue navPanel;
-			RE::GFxValue buttons;
-			if (isEnabled && isVisible &&
-			    presetEditor.GetMember("navPanel", &navPanel) &&
-			    (navPanel.IsObject() || navPanel.IsDisplayObject()) &&
-			    navPanel.GetMember("buttons", &buttons) && buttons.IsArray()) {
-				const auto count = std::min<std::uint32_t>(buttons.GetArraySize(), 8);
-				for (std::uint32_t i = 0; i < count; ++i) {
-					RE::GFxValue button;
-					if (!buttons.GetElement(i, &button) ||
-					    (!button.IsObject() && !button.IsDisplayObject())) {
-						continue;
-					}
-					RE::GFxValue buttonVisible;
-					RE::GFxValue buttonDisabled;
-					const bool buttonIsVisible =
-					    !button.GetMember("_visible", &buttonVisible) ||
-					    !buttonVisible.IsBool() || buttonVisible.GetBool();
-					const bool buttonIsDisabled =
-					    button.GetMember("disabled", &buttonDisabled) &&
-					    buttonDisabled.IsBool() && buttonDisabled.GetBool();
-					if (buttonIsVisible && !buttonIsDisabled &&
-					    DisplayObjectHitAtRootPoint(button, rootX, rootY)) {
-						target.kind = RaceMenuLaserTargetKind::kButton;
-						target.index = 200 + static_cast<int>(i);
-						target.owner = navPanel;
-						target.clip = button;
+					if (GetRaceMenuButtonPanelTarget(buttonPanel, rootX, rootY,
+					        static_cast<int>(panelIndex * 100), target)) {
 						return true;
 					}
 				}
+				target.kind = RaceMenuLaserTargetKind::kNone;
+				target.owner = colorField;
+				target.clip = colorField;
+				return true;
+			}
+		}
+
+		// Texture/makeup selection and the character-name field are independent
+		// modal overlays. Cover their lists and Accept/Cancel panels before any
+		// editor or main RaceMenu control.
+		RE::GFxValue makeupPanel;
+		if (panel.GetMember("makeupPanel", &makeupPanel) &&
+		    (makeupPanel.IsObject() || makeupPanel.IsDisplayObject()) &&
+		    DisplayObjectIsUsable(makeupPanel)) {
+			RE::GFxValue makeupList;
+			if (makeupPanel.GetMember("makeupList", &makeupList) &&
+			    (makeupList.IsObject() || makeupList.IsDisplayObject()) &&
+			    DisplayObjectIsUsable(makeupList) &&
+			    GetRaceMenuListTarget(makeupList, rootX, rootY, false,
+			        RaceMenuLaserTargetKind::kItem, target)) {
+				return true;
+			}
+			RE::GFxValue buttonPanel;
+			if (makeupPanel.GetMember("buttonPanel", &buttonPanel) &&
+			    GetRaceMenuButtonPanelTarget(
+			        buttonPanel, rootX, rootY, 400, target)) {
+				return true;
+			}
+			target.kind = RaceMenuLaserTargetKind::kNone;
+			target.owner = makeupPanel;
+			target.clip = makeupPanel;
+			return true;
+		}
+
+		RE::GFxValue textEntry;
+		if (panel.GetMember("textEntry", &textEntry) &&
+		    (textEntry.IsObject() || textEntry.IsDisplayObject()) &&
+		    DisplayObjectIsUsable(textEntry)) {
+			RE::GFxValue buttonPanel;
+			if (textEntry.GetMember("buttonPanel", &buttonPanel) &&
+			    GetRaceMenuButtonPanelTarget(
+			        buttonPanel, rootX, rootY, 500, target)) {
+				return true;
+			}
+			target.kind = RaceMenuLaserTargetKind::kNone;
+			target.owner = textEntry;
+			target.clip = textEntry;
+			return true;
+		}
+
+		// Sculpt mode has three separate windows plus two bottom button panels.
+		// The static panel is where Head Export, Head Import, and Clear Sculpt live.
+		RE::GFxValue vertexEditor;
+		if (panel.GetMember("vertexEditor", &vertexEditor) &&
+		    RaceMenuObjectIsActive(vertexEditor)) {
+			RE::GFxValue bottomBar;
+			RE::GFxValue staticPanel;
+			if (vertexEditor.GetMember("bottomBar", &bottomBar) &&
+			    (bottomBar.IsObject() || bottomBar.IsDisplayObject()) &&
+			    bottomBar.GetMember("staticPanel", &staticPanel) &&
+			    GetRaceMenuButtonPanelTarget(
+			        staticPanel, rootX, rootY, 600, target)) {
+				return true;
+			}
+			RE::GFxValue navPanel;
+			if (vertexEditor.GetMember("navPanel", &navPanel) &&
+			    GetRaceMenuButtonPanelTarget(
+			        navPanel, rootX, rootY, 620, target)) {
+				return true;
+			}
+
+			RE::GFxValue brushWindow;
+			if (vertexEditor.GetMember("brushWindow", &brushWindow) &&
+			    RaceMenuObjectIsActive(brushWindow)) {
+				RE::GFxValue categoryList;
+				if (brushWindow.GetMember("categoryList", &categoryList) &&
+				    (categoryList.IsObject() || categoryList.IsDisplayObject()) &&
+				    GetRaceMenuListTarget(categoryList, rootX, rootY, false,
+				        RaceMenuLaserTargetKind::kCategory, target)) {
+					return true;
+				}
+				RE::GFxValue brushList;
+				if (brushWindow.GetMember("brushList", &brushList) &&
+				    (brushList.IsObject() || brushList.IsDisplayObject()) &&
+				    GetRaceMenuListTarget(brushList, rootX, rootY, true,
+				        RaceMenuLaserTargetKind::kItem, target)) {
+					return true;
+				}
+			}
+
+			RE::GFxValue historyWindow;
+			RE::GFxValue historyList;
+			if (vertexEditor.GetMember("historyWindow", &historyWindow) &&
+			    RaceMenuObjectIsActive(historyWindow) &&
+			    historyWindow.GetMember("historyList", &historyList) &&
+			    (historyList.IsObject() || historyList.IsDisplayObject()) &&
+			    GetRaceMenuListTarget(historyList, rootX, rootY, false,
+			        RaceMenuLaserTargetKind::kItem, target)) {
+				return true;
+			}
+
+			RE::GFxValue meshWindow;
+			RE::GFxValue meshList;
+			if (vertexEditor.GetMember("meshWindow", &meshWindow) &&
+			    RaceMenuObjectIsActive(meshWindow) &&
+			    meshWindow.GetMember("meshList", &meshList) &&
+			    (meshList.IsObject() || meshList.IsDisplayObject()) &&
+			    GetRaceMenuMeshListTarget(meshList, rootX, rootY, target)) {
+				return true;
+			}
+		}
+
+		// Camera and Presets each replace the main editor and publish their own
+		// bottom navigation. Presets also owns a scrollable preview item list.
+		RE::GFxValue cameraEditor;
+		if (panel.GetMember("cameraEditor", &cameraEditor) &&
+		    RaceMenuObjectIsActive(cameraEditor)) {
+			RE::GFxValue navPanel;
+			if (cameraEditor.GetMember("navPanel", &navPanel) &&
+			    GetRaceMenuButtonPanelTarget(
+			        navPanel, rootX, rootY, 700, target)) {
+				return true;
+			}
+		}
+
+		RE::GFxValue presetEditor;
+		if (panel.GetMember("presetEditor", &presetEditor) &&
+		    RaceMenuObjectIsActive(presetEditor)) {
+			RE::GFxValue navPanel;
+			if (presetEditor.GetMember("navPanel", &navPanel) &&
+			    GetRaceMenuButtonPanelTarget(
+			        navPanel, rootX, rootY, 720, target)) {
+				return true;
+			}
+			RE::GFxValue itemList;
+			if (presetEditor.GetMember("itemList", &itemList) &&
+			    (itemList.IsObject() || itemList.IsDisplayObject()) &&
+			    GetRaceMenuListTarget(itemList, rootX, rootY, false,
+			        RaceMenuLaserTargetKind::kItem, target)) {
+				return true;
 			}
 		}
 
@@ -2154,6 +2386,34 @@ namespace
 		        RaceMenuLaserTargetKind::kCategory, target)) {
 			return true;
 		}
+
+		// Sliders mode's dynamically-created bottom buttons include Done, Search,
+		// Zoom, Light, Change Race, Choose Color, and Choose Texture.
+		RE::GFxValue navPanel;
+		if (panel.GetMember("navPanel", &navPanel) &&
+		    GetRaceMenuButtonPanelTarget(
+		        navPanel, rootX, rootY, 800, target)) {
+			return true;
+		}
+
+		RE::GFxValue categoryButtons;
+		if (panel.GetMember("categoryButtons", &categoryButtons) &&
+		    (categoryButtons.IsObject() || categoryButtons.IsDisplayObject())) {
+			constexpr std::array<const char*, 2> categoryTriggerNames = {
+			    "triggerLeft", "triggerRight"
+			};
+			for (const char* triggerName : categoryTriggerNames) {
+				RE::GFxValue trigger;
+				if (categoryButtons.GetMember(triggerName, &trigger) &&
+				    RaceMenuObjectIsActive(trigger) && trigger.HasMember("onPress") &&
+				    DisplayObjectHitAtRootPoint(trigger, rootX, rootY)) {
+					target.kind = RaceMenuLaserTargetKind::kClipAction;
+					target.owner = categoryButtons;
+					target.clip = trigger;
+					return true;
+				}
+			}
+		}
 		return false;
 	}
 
@@ -2170,6 +2430,8 @@ namespace
 			controller.SetNumber(0.0);
 			return target.clip.Invoke("handleMouseRollOver", nullptr, &controller, 1);
 		}
+		if (target.kind == RaceMenuLaserTargetKind::kClipAction)
+			return target.clip.Invoke("onRollOver", nullptr, nullptr, 0);
 		if (target.kind == RaceMenuLaserTargetKind::kCategory ||
 		    target.kind == RaceMenuLaserTargetKind::kItem ||
 		    target.kind == RaceMenuLaserTargetKind::kSlider) {
@@ -2343,6 +2605,8 @@ namespace
 			index.SetNumber(static_cast<double>(target.index));
 			return target.owner.Invoke("setMode", nullptr, &index, 1);
 		}
+		if (target.kind == RaceMenuLaserTargetKind::kClipAction)
+			return target.clip.Invoke("onPress", nullptr, nullptr, 0);
 		if (target.kind == RaceMenuLaserTargetKind::kSlider) {
 			if (dragSlider)
 				*dragSlider = target.slider;
