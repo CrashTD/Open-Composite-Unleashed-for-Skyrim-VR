@@ -1868,7 +1868,8 @@ namespace
 		kSlider,
 		kScrollBar,
 		kButton,
-		kClipAction
+		kClipAction,
+		kSculptCanvas
 	};
 
 	struct RaceMenuLaserTarget
@@ -1896,7 +1897,8 @@ namespace
 	}
 
 	bool GetRaceMenuButtonPanelTarget(RE::GFxValue& buttonPanel, float rootX,
-	    float rootY, int indexBase, RaceMenuLaserTarget& target)
+	    float rootY, int indexBase, RaceMenuLaserTarget& target,
+	    std::uint32_t maxButtons = 16)
 	{
 		if ((!buttonPanel.IsObject() && !buttonPanel.IsDisplayObject()) ||
 		    !DisplayObjectIsUsable(buttonPanel)) {
@@ -1907,7 +1909,7 @@ namespace
 		if (!buttonPanel.GetMember("buttons", &buttons) || !buttons.IsArray())
 			return false;
 
-		const auto count = std::min<std::uint32_t>(buttons.GetArraySize(), 16);
+		const auto count = std::min<std::uint32_t>(buttons.GetArraySize(), maxButtons);
 		for (std::uint32_t i = 0; i < count; ++i) {
 			RE::GFxValue button;
 			if (!buttons.GetElement(i, &button) || !DisplayObjectIsUsable(button))
@@ -2275,7 +2277,7 @@ namespace
 			RE::GFxValue navPanel;
 			if (vertexEditor.GetMember("navPanel", &navPanel) &&
 			    GetRaceMenuButtonPanelTarget(
-			        navPanel, rootX, rootY, 620, target)) {
+			        navPanel, rootX, rootY, 620, target, 1)) {
 				return true;
 			}
 
@@ -2318,6 +2320,39 @@ namespace
 			    GetRaceMenuMeshListTarget(meshList, rootX, rootY, target)) {
 				return true;
 			}
+
+			// WireframeDisplay's AS2 handlers read foreground._xmouse/_ymouse.
+			// Those values are pinned by Skyrim VR's 1024-to-2048 viewport mapping,
+			// so recognize the real head image here and drive CharGen with explicit
+			// foreground-local coordinates in the cursor pump below.
+			RE::GFxValue wireframeDisplay;
+			RE::GFxValue foreground;
+			if (vertexEditor.GetMember("wireframeDisplay", &wireframeDisplay) &&
+			    RaceMenuObjectIsActive(wireframeDisplay) &&
+			    wireframeDisplay.GetMember("foreground", &foreground) &&
+			    RaceMenuObjectIsActive(foreground)) {
+				RE::GFxValue loaded;
+				RE::GFxValue disableInput;
+				const bool assetsLoaded =
+				    wireframeDisplay.GetMember("bLoadedAssets", &loaded) &&
+				    loaded.IsBool() && loaded.GetBool();
+				const bool inputDisabled =
+				    wireframeDisplay.GetMember("disableInput", &disableInput) &&
+				    disableInput.IsBool() && disableInput.GetBool();
+				bool canvasHit = DisplayObjectHitAtRootPoint(foreground, rootX, rootY);
+				if (!canvasHit) {
+					RE::GFxValue wireframe;
+					canvasHit = foreground.GetMember("wireframe", &wireframe) &&
+					    (wireframe.IsObject() || wireframe.IsDisplayObject()) &&
+					    DisplayObjectHitAtRootPoint(wireframe, rootX, rootY);
+				}
+				if (assetsLoaded && !inputDisabled && canvasHit) {
+					target.kind = RaceMenuLaserTargetKind::kSculptCanvas;
+					target.owner = wireframeDisplay;
+					target.clip = foreground;
+					return true;
+				}
+			}
 		}
 
 		// Camera and Presets each replace the main editor and publish their own
@@ -2328,7 +2363,7 @@ namespace
 			RE::GFxValue navPanel;
 			if (cameraEditor.GetMember("navPanel", &navPanel) &&
 			    GetRaceMenuButtonPanelTarget(
-			        navPanel, rootX, rootY, 700, target)) {
+			        navPanel, rootX, rootY, 700, target, 1)) {
 				return true;
 			}
 		}
@@ -2440,6 +2475,152 @@ namespace
 			return target.owner.Invoke("onItemRollOver", nullptr, &index, 1);
 		}
 		return false;
+	}
+
+	bool InvokeRaceMenuCharGen(RE::GFxMovieView& movie, const char* method,
+	    RE::GFxValue* result, const RE::GFxValue* args, std::uint32_t argCount)
+	{
+		RE::GFxValue charGen;
+		if (movie.GetVariable(&charGen, "_global.skse.plugins.CharGen") &&
+		    (charGen.IsObject() || charGen.IsDisplayObject()) &&
+		    charGen.Invoke(method, result, args, argCount)) {
+			return true;
+		}
+
+		// Some Scaleform builds expose native plugin functions to Invoke but do
+		// not return the intermediate _global object through GetVariable.
+		std::string path = "_global.skse.plugins.CharGen.";
+		path += method;
+		return movie.Invoke(path.c_str(), result, args, argCount);
+	}
+
+	bool GetRaceMenuSculptPoint(RE::GFxMovieView& movie,
+	    RE::GFxValue& foreground, float viewportX, float viewportY,
+	    double& localX, double& localY)
+	{
+		float rootX = 0.0f;
+		float rootY = 0.0f;
+		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
+			return false;
+
+		RE::GFxValue point;
+		movie.CreateObject(&point);
+		RE::GFxValue xValue;
+		RE::GFxValue yValue;
+		xValue.SetNumber(rootX);
+		yValue.SetNumber(rootY);
+		point.SetMember("x", xValue);
+		point.SetMember("y", yValue);
+		if (!foreground.Invoke("globalToLocal", nullptr, &point, 1) ||
+		    !point.GetMember("x", &xValue) || !xValue.IsNumber() ||
+		    !point.GetMember("y", &yValue) || !yValue.IsNumber()) {
+			return false;
+		}
+
+		RE::GFxValue widthValue;
+		RE::GFxValue heightValue;
+		if (!foreground.GetMember("fixedWidth", &widthValue) ||
+		    !widthValue.IsNumber() ||
+		    !foreground.GetMember("fixedHeight", &heightValue) ||
+		    !heightValue.IsNumber()) {
+			return false;
+		}
+		const double width = widthValue.GetNumber();
+		const double height = heightValue.GetNumber();
+		if (!std::isfinite(width) || !std::isfinite(height) ||
+		    width <= 0.0 || height <= 0.0) {
+			return false;
+		}
+
+		localX = std::clamp(xValue.GetNumber(), 0.0, width);
+		localY = std::clamp(yValue.GetNumber(), 0.0, height);
+		return std::isfinite(localX) && std::isfinite(localY);
+	}
+
+	void DispatchRaceMenuSculptEvent(RE::GFxMovieView& movie,
+	    RE::GFxValue& wireframeDisplay, const char* eventType)
+	{
+		RE::GFxValue event;
+		movie.CreateObject(&event);
+		RE::GFxValue type;
+		type.SetString(eventType);
+		event.SetMember("type", type);
+		wireframeDisplay.Invoke("dispatchEvent", nullptr, &event, 1);
+	}
+
+	bool HoverRaceMenuSculptCanvas(RE::GFxMovieView& movie,
+	    RE::GFxValue& foreground, float viewportX, float viewportY,
+	    double* outLocalX = nullptr, double* outLocalY = nullptr)
+	{
+		double localX = 0.0;
+		double localY = 0.0;
+		if (!GetRaceMenuSculptPoint(
+		        movie, foreground, viewportX, viewportY, localX, localY)) {
+			return false;
+		}
+		std::array<RE::GFxValue, 2> args;
+		args[0].SetNumber(localX);
+		args[1].SetNumber(localY);
+		if (!InvokeRaceMenuCharGen(movie, "DoHoverMesh", nullptr,
+		        args.data(), static_cast<std::uint32_t>(args.size()))) {
+			return false;
+		}
+		if (outLocalX)
+			*outLocalX = localX;
+		if (outLocalY)
+			*outLocalY = localY;
+		return true;
+	}
+
+	bool BeginRaceMenuSculptStroke(RE::GFxMovieView& movie,
+	    RaceMenuLaserTarget& target, float viewportX, float viewportY,
+	    double& localX, double& localY)
+	{
+		if (!HoverRaceMenuSculptCanvas(movie, target.clip, viewportX, viewportY,
+		        &localX, &localY)) {
+			return false;
+		}
+
+		std::array<RE::GFxValue, 2> args;
+		args[0].SetNumber(localX);
+		args[1].SetNumber(localY);
+		RE::GFxValue began;
+		if (!InvokeRaceMenuCharGen(movie, "BeginPaintMesh", &began,
+		        args.data(), static_cast<std::uint32_t>(args.size())) ||
+		    !began.IsBool() || !began.GetBool()) {
+			return false;
+		}
+
+		RE::GFxValue painting;
+		painting.SetBoolean(true);
+		target.clip.SetMember("painting", painting);
+		DispatchRaceMenuSculptEvent(movie, target.owner, "beginPainting");
+		return true;
+	}
+
+	bool ContinueRaceMenuSculptStroke(RE::GFxMovieView& movie,
+	    RE::GFxValue& foreground, float viewportX, float viewportY,
+	    double& localX, double& localY)
+	{
+		if (!HoverRaceMenuSculptCanvas(movie, foreground, viewportX, viewportY,
+		        &localX, &localY)) {
+			return false;
+		}
+		std::array<RE::GFxValue, 2> args;
+		args[0].SetNumber(localX);
+		args[1].SetNumber(localY);
+		return InvokeRaceMenuCharGen(movie, "DoPaintMesh", nullptr,
+		    args.data(), static_cast<std::uint32_t>(args.size()));
+	}
+
+	void EndRaceMenuSculptStroke(RE::GFxMovieView& movie,
+	    RE::GFxValue& wireframeDisplay, RE::GFxValue& foreground)
+	{
+		RE::GFxValue painting;
+		painting.SetBoolean(false);
+		foreground.SetMember("painting", painting);
+		DispatchRaceMenuSculptEvent(movie, wireframeDisplay, "endPainting");
+		InvokeRaceMenuCharGen(movie, "EndPaintMesh", nullptr, nullptr, 0);
 	}
 
 	bool SetVerticalScrollBarAtViewportPoint(RE::GFxMovieView& movie,
@@ -3321,6 +3502,7 @@ namespace
 		static float    s_pressedMovieX = 0.0f;
 		static float    s_pressedMovieY = 0.0f;
 		static bool     s_pressedMovieUsesNotifyMouse = false;
+		static bool     s_pressedMovieUsesSculpt = false;
 		static bool     s_pressedMoviePendingStats = false;
 		static int      s_pressedJournalTab = -1;
 		static int      s_pressedJournalSystemState = -1;
@@ -3344,6 +3526,10 @@ namespace
 		static bool     s_raceSliderDragging = false;
 		static RE::GFxValue s_verticalDragScrollBar;
 		static bool     s_verticalScrollBarDragging = false;
+		static RE::GFxValue s_raceSculptDisplay;
+		static RE::GFxValue s_raceSculptForeground;
+		static double   s_raceSculptLastX = 0.0;
+		static double   s_raceSculptLastY = 0.0;
 		static RE::GFxValue s_raceHoveredButton;
 		static RE::NiPointer<RE::BSTriShape> s_nativeMapPointer;
 		static RE::NiPointer<RE::NiNode> s_mapBeamParent;
@@ -3372,7 +3558,13 @@ namespace
 			// Never inject a coordinate-less/global mouse-up after the menu stack
 			// changes: that was selecting a control in the newly opened movie.
 			if (s_mouseHeld && s_pressedMovie) {
-				if (s_pressedMovieUsesNotifyMouse) {
+				if (s_pressedMovieUsesSculpt) {
+					EndRaceMenuSculptStroke(*s_pressedMovie,
+					    s_raceSculptDisplay, s_raceSculptForeground);
+					SKSE::log::info(
+					    "LASER RaceMenu sculpt END at local({:.1f},{:.1f}) reason={}",
+					    s_raceSculptLastX, s_raceSculptLastY, reason);
+				} else if (s_pressedMovieUsesNotifyMouse) {
 					// Journal controls (lists, sliders, steppers, scroll arrows) are
 					// wired to AS2 Mouse state. End that exact movie's held bit even if
 					// the menu stack changed before the physical trigger was released.
@@ -3391,6 +3583,7 @@ namespace
 			s_pressedMovie = nullptr;
 			s_mouseHeld = false;
 			s_pressedMovieUsesNotifyMouse = false;
+			s_pressedMovieUsesSculpt = false;
 			s_pressedMoviePendingStats = false;
 			s_pressedJournalTab = -1;
 			s_pressedJournalSystemState = -1;
@@ -3398,6 +3591,8 @@ namespace
 			s_raceSliderDragging = false;
 			s_verticalDragScrollBar.SetUndefined();
 			s_verticalScrollBarDragging = false;
+			s_raceSculptDisplay.SetUndefined();
+			s_raceSculptForeground.SetUndefined();
 		};
 
 		bool menuActive = !g_activeTrackedMenus.empty();
@@ -4441,6 +4636,31 @@ namespace
 			} else {
 				s_messageBoxHoveredButton = -1;
 			}
+			if (s_pressedMovieUsesSculpt && s_mouseHeld && s_pressedMovie) {
+				const bool sameCanvas = raceMenuOpen && laserMovie &&
+				    s_pressedMovie.get() == laserMovie.get() &&
+				    g_pTransform->laserTriggerHeld != 0 && raceMenuTargetHit &&
+				    raceMenuTarget.kind == RaceMenuLaserTargetKind::kSculptCanvas &&
+				    raceMenuTarget.clip == s_raceSculptForeground;
+				if (sameCanvas) {
+					double localX = 0.0;
+					double localY = 0.0;
+					if (GetRaceMenuSculptPoint(*laserMovie, s_raceSculptForeground,
+					        targetX, targetY, localX, localY)) {
+						const double dx = localX - s_raceSculptLastX;
+						const double dy = localY - s_raceSculptLastY;
+						if (dx * dx + dy * dy >= 0.0625 &&
+						    ContinueRaceMenuSculptStroke(*laserMovie,
+						        s_raceSculptForeground, targetX, targetY,
+						        localX, localY)) {
+							s_raceSculptLastX = localX;
+							s_raceSculptLastY = localY;
+						}
+					}
+				} else {
+					releasePressedMovie("left RaceMenu sculpt canvas");
+				}
+			}
 			if (raceMenuTargetHit &&
 			    raceMenuTarget.kind == RaceMenuLaserTargetKind::kButton) {
 				if (!s_raceHoveredButton.IsUndefined() &&
@@ -4463,8 +4683,15 @@ namespace
 					    "handleMouseRollOut", nullptr, &controller, 1);
 					s_raceHoveredButton.SetUndefined();
 				}
-				if (raceMenuTargetHit)
-					HoverRaceMenuLaserTarget(raceMenuTarget);
+				if (raceMenuTargetHit) {
+					if (raceMenuTarget.kind == RaceMenuLaserTargetKind::kSculptCanvas &&
+					    !s_pressedMovieUsesSculpt) {
+						HoverRaceMenuSculptCanvas(*laserMovie, raceMenuTarget.clip,
+						    targetX, targetY);
+					} else {
+						HoverRaceMenuLaserTarget(raceMenuTarget);
+					}
+				}
 			}
 			if (s_raceSliderDragging) {
 				if (raceMenuOpen && laserMovie && g_pTransform->laserTriggerHeld != 0) {
@@ -4727,24 +4954,49 @@ namespace
 						SKSE::log::info("LASER notify-click DOWN menu='{}' at ({:.1f},{:.1f})",
 						    s_planeMenuName, targetX, targetY);
 					} else if (raceMenuOpen && raceMenuTargetHit) {
-						RE::GFxValue dragSlider;
-						if (ActivateRaceMenuLaserTarget(*laserMovie, raceMenuTarget,
-						        targetX, targetY, &dragSlider)) {
-							s_raceSliderDragging =
-							    raceMenuTarget.kind == RaceMenuLaserTargetKind::kSlider;
-							if (s_raceSliderDragging)
-								s_raceDragSlider = dragSlider;
-							s_verticalScrollBarDragging =
-							    raceMenuTarget.kind == RaceMenuLaserTargetKind::kScrollBar;
-							if (s_verticalScrollBarDragging)
-								s_verticalDragScrollBar = dragSlider;
-							s_mouseHeld = false;
-							s_pressedMovie = nullptr;
-							s_pressedMovieUsesNotifyMouse = false;
-							SKSE::log::info(
-							    "LASER RaceMenu semantic ACTIVATE kind={} index={} at ({:.1f},{:.1f})",
-							    static_cast<int>(raceMenuTarget.kind), raceMenuTarget.index,
-							    targetX, targetY);
+						if (raceMenuTarget.kind == RaceMenuLaserTargetKind::kSculptCanvas) {
+							double localX = 0.0;
+							double localY = 0.0;
+							if (BeginRaceMenuSculptStroke(*laserMovie, raceMenuTarget,
+							        targetX, targetY, localX, localY)) {
+								s_raceSculptDisplay = raceMenuTarget.owner;
+								s_raceSculptForeground = raceMenuTarget.clip;
+								s_raceSculptLastX = localX;
+								s_raceSculptLastY = localY;
+								s_pressedMovie = laserMovie;
+								s_pressedMovieX = targetX;
+								s_pressedMovieY = targetY;
+								s_mouseHeld = true;
+								s_pressedMovieUsesNotifyMouse = false;
+								s_pressedMovieUsesSculpt = true;
+								SKSE::log::info(
+								    "LASER RaceMenu sculpt BEGIN local({:.1f},{:.1f}) viewport({:.1f},{:.1f})",
+								    localX, localY, targetX, targetY);
+							} else {
+								SKSE::log::info(
+								    "LASER RaceMenu sculpt BEGIN rejected viewport({:.1f},{:.1f})",
+								    targetX, targetY);
+							}
+						} else {
+							RE::GFxValue dragSlider;
+							if (ActivateRaceMenuLaserTarget(*laserMovie, raceMenuTarget,
+							        targetX, targetY, &dragSlider)) {
+								s_raceSliderDragging =
+								    raceMenuTarget.kind == RaceMenuLaserTargetKind::kSlider;
+								if (s_raceSliderDragging)
+									s_raceDragSlider = dragSlider;
+								s_verticalScrollBarDragging =
+								    raceMenuTarget.kind == RaceMenuLaserTargetKind::kScrollBar;
+								if (s_verticalScrollBarDragging)
+									s_verticalDragScrollBar = dragSlider;
+								s_mouseHeld = false;
+								s_pressedMovie = nullptr;
+								s_pressedMovieUsesNotifyMouse = false;
+								SKSE::log::info(
+								    "LASER RaceMenu semantic ACTIVATE kind={} index={} at ({:.1f},{:.1f})",
+								    static_cast<int>(raceMenuTarget.kind), raceMenuTarget.index,
+								    targetX, targetY);
+							}
 						}
 					} else if (alternatePerspectiveMenu || raceMenuOpen) {
 						laserMovie->NotifyMouseState(targetX, targetY, 1u, 0);
