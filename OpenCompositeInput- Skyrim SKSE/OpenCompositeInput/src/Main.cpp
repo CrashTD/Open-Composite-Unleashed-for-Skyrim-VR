@@ -68,11 +68,13 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <algorithm> // laser cursor pump: std::clamp
 #include <array>
 #include <chrono> // gesture concentration-spell burst pacing
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <cstdio>
 #include <fstream>
+#include <initializer_list>
 #include <thread> // gesture concentration-spell burst
 #include <utility>
 
@@ -1809,6 +1811,163 @@ namespace
 		return clip.Invoke("hitTest", &hit, hitArgs) && hit.IsBool() && hit.GetBool();
 	}
 
+	bool RootPointToDisplayObjectLocal(RE::GFxMovieView& movie,
+	    RE::GFxValue& clip, float rootX, float rootY, double& localX,
+	    double& localY)
+	{
+		if (!clip.IsObject() && !clip.IsDisplayObject())
+			return false;
+
+		RE::GFxValue point;
+		movie.CreateObject(&point);
+		RE::GFxValue xValue;
+		RE::GFxValue yValue;
+		xValue.SetNumber(rootX);
+		yValue.SetNumber(rootY);
+		point.SetMember("x", xValue);
+		point.SetMember("y", yValue);
+		if (!clip.Invoke("globalToLocal", nullptr, &point, 1) ||
+		    !point.GetMember("x", &xValue) || !xValue.IsNumber() ||
+		    !point.GetMember("y", &yValue) || !yValue.IsNumber()) {
+			return false;
+		}
+
+		localX = xValue.GetNumber();
+		localY = yValue.GetNumber();
+		return std::isfinite(localX) && std::isfinite(localY);
+	}
+
+	// Several RaceMenu 0.4.20 clips have visible geometry but no AS2 hit area in
+	// Skyrim VR. MovieClip.getBounds() still reports their transformed rectangle,
+	// so use it as a geometry fallback instead of allowing the click to fall
+	// through to the broken VR Mouse singleton.
+	bool GetDisplayObjectRootBounds(RE::GFxMovieView& movie,
+	    RE::GFxValue& clip, double& xMin, double& xMax, double& yMin,
+	    double& yMax)
+	{
+		if (!clip.IsObject() && !clip.IsDisplayObject())
+			return false;
+
+		RE::GFxValue root;
+		if (!movie.GetVariable(&root, "_root") ||
+		    (!root.IsObject() && !root.IsDisplayObject())) {
+			return false;
+		}
+		RE::GFxValue bounds;
+		if (!clip.Invoke("getBounds", &bounds, &root, 1) ||
+		    (!bounds.IsObject() && !bounds.IsDisplayObject())) {
+			return false;
+		}
+
+		auto numberMember = [&](const char* name, double& result) {
+			RE::GFxValue value;
+			if (!bounds.GetMember(name, &value) || !value.IsNumber())
+				return false;
+			result = value.GetNumber();
+			return std::isfinite(result);
+		};
+		if (!numberMember("xMin", xMin) || !numberMember("xMax", xMax) ||
+		    !numberMember("yMin", yMin) || !numberMember("yMax", yMax) ||
+		    xMax <= xMin || yMax <= yMin) {
+			return false;
+		}
+		return true;
+	}
+
+	bool DisplayObjectBoundsHitAtRootPoint(RE::GFxMovieView& movie,
+	    RE::GFxValue& clip, float rootX, float rootY)
+	{
+		double xMin = 0.0;
+		double xMax = 0.0;
+		double yMin = 0.0;
+		double yMax = 0.0;
+		if (!GetDisplayObjectRootBounds(
+		        movie, clip, xMin, xMax, yMin, yMax)) {
+			return false;
+		}
+		return static_cast<double>(rootX) >= xMin &&
+		    static_cast<double>(rootX) <= xMax &&
+		    static_cast<double>(rootY) >= yMin &&
+		    static_cast<double>(rootY) <= yMax;
+	}
+
+	bool DisplayObjectGeometryHitAtRootPoint(RE::GFxMovieView& movie,
+	    RE::GFxValue& clip, float rootX, float rootY)
+	{
+		return DisplayObjectHitAtRootPoint(clip, rootX, rootY) ||
+		    DisplayObjectBoundsHitAtRootPoint(movie, clip, rootX, rootY);
+	}
+
+	bool RootPointToDisplayObjectBoundsRatio(RE::GFxMovieView& movie,
+	    RE::GFxValue& clip, float rootX, float rootY, double& ratioX,
+	    double& ratioY, bool requireInside)
+	{
+		double xMin = 0.0;
+		double xMax = 0.0;
+		double yMin = 0.0;
+		double yMax = 0.0;
+		if (!GetDisplayObjectRootBounds(
+		        movie, clip, xMin, xMax, yMin, yMax)) {
+			return false;
+		}
+		const double x = static_cast<double>(rootX);
+		const double y = static_cast<double>(rootY);
+		if (requireInside &&
+		    (x < xMin || x > xMax || y < yMin || y > yMax)) {
+			return false;
+		}
+		ratioX = (x - xMin) / (xMax - xMin);
+		ratioY = (y - yMin) / (yMax - yMin);
+		return std::isfinite(ratioX) && std::isfinite(ratioY);
+	}
+
+	bool RootPointToRaceMenuSculptPoint(RE::GFxMovieView& movie,
+	    RE::GFxValue& foreground, float rootX, float rootY, double& localX,
+	    double& localY)
+	{
+		RE::GFxValue widthValue;
+		RE::GFxValue heightValue;
+		if (!foreground.GetMember("fixedWidth", &widthValue) ||
+		    !widthValue.IsNumber() ||
+		    !foreground.GetMember("fixedHeight", &heightValue) ||
+		    !heightValue.IsNumber()) {
+			return false;
+		}
+		const double width = widthValue.GetNumber();
+		const double height = heightValue.GetNumber();
+		if (!std::isfinite(width) || !std::isfinite(height) ||
+		    width <= 0.0 || height <= 0.0) {
+			return false;
+		}
+
+		// The image loader applies an internal scale to foreground. globalToLocal()
+		// therefore returns values outside fixedWidth/fixedHeight even over the visible
+		// image. Normalize through the loaded image's real root-space rectangle.
+		RE::GFxValue wireframe;
+		RE::GFxValue* boundsClip = &foreground;
+		if (foreground.GetMember("wireframe", &wireframe) &&
+		    (wireframe.IsObject() || wireframe.IsDisplayObject())) {
+			boundsClip = &wireframe;
+		}
+		double ratioX = 0.0;
+		double ratioY = 0.0;
+		if (RootPointToDisplayObjectBoundsRatio(movie, *boundsClip, rootX, rootY,
+		        ratioX, ratioY, true)) {
+			localX = std::clamp(ratioX, 0.0, 1.0) * width;
+			localY = std::clamp(ratioY, 0.0, 1.0) * height;
+			return true;
+		}
+
+		// Keep a strict local-coordinate fallback for interface replacers that do not
+		// publish useful getBounds data.
+		if (!RootPointToDisplayObjectLocal(
+		        movie, foreground, rootX, rootY, localX, localY)) {
+			return false;
+		}
+		return localX >= 0.0 && localX <= width &&
+		    localY >= 0.0 && localY <= height;
+	}
+
 	bool GetListScrollBar(RE::GFxValue& list, RE::GFxValue& scrollBar)
 	{
 		// SkyUI/RaceMenu lists normally publish `scrollbar`; Bethesda-derived
@@ -1936,16 +2095,33 @@ namespace
 		    enabled.GetBool();
 	}
 
-	bool GetRaceMenuListTarget(RE::GFxValue& list, float rootX, float rootY,
+	bool GetRaceMenuListTarget(RE::GFxMovieView& movie, RE::GFxValue& list,
+	    float rootX, float rootY,
 	    bool permitSliders, RaceMenuLaserTargetKind rowKind,
 	    RaceMenuLaserTarget& target)
 	{
+		auto memberHit = [&](RE::GFxValue& object,
+		                     std::initializer_list<const char*> memberNames) {
+			for (const char* memberName : memberNames) {
+				RE::GFxValue member;
+				if (object.GetMember(memberName, &member) &&
+				    (member.IsObject() || member.IsDisplayObject()) &&
+				    DisplayObjectIsUsable(member) &&
+				    DisplayObjectGeometryHitAtRootPoint(
+				        movie, member, rootX, rootY)) {
+					return true;
+				}
+			}
+			return false;
+		};
+
 		// RaceMenu's AS2 mouse singleton is mapped incorrectly in VR, so its
 		// vertical list scrollbar needs the same semantic treatment as its row
 		// sliders. Resolve the published list scrollbar before the list rows.
 		RE::GFxValue scrollBar;
 		if (GetListScrollBar(list, scrollBar) && DisplayObjectIsUsable(scrollBar) &&
-		    DisplayObjectHitAtRootPoint(scrollBar, rootX, rootY)) {
+		    DisplayObjectGeometryHitAtRootPoint(
+		        movie, scrollBar, rootX, rootY)) {
 			target.kind = RaceMenuLaserTargetKind::kScrollBar;
 			target.owner = list;
 			target.clip = scrollBar;
@@ -1968,8 +2144,15 @@ namespace
 				continue;
 			}
 			RE::GFxValue itemIndex;
-			if (!clip.GetMember("itemIndex", &itemIndex) || !itemIndex.IsNumber() ||
-			    itemIndex.GetNumber() < 0.0) {
+			int resolvedItemIndex = -1;
+			if (clip.GetMember("itemIndex", &itemIndex) && itemIndex.IsNumber() &&
+			    itemIndex.GetNumber() >= 0.0) {
+				resolvedItemIndex = static_cast<int>(itemIndex.GetNumber());
+			} else if (rowKind == RaceMenuLaserTargetKind::kCategory) {
+				// TextCategoryList assigns clips and entries one-to-one. Some VR GFx
+				// builds do not expose the dynamic itemIndex member back to native code.
+				resolvedItemIndex = clipIndex;
+			} else {
 				continue;
 			}
 
@@ -1986,7 +2169,7 @@ namespace
 				    action.HasMember("onPress") &&
 				    DisplayObjectHitAtRootPoint(action, rootX, rootY)) {
 					target.kind = RaceMenuLaserTargetKind::kClipAction;
-					target.index = static_cast<int>(itemIndex.GetNumber());
+					target.index = resolvedItemIndex;
 					target.owner = list;
 					target.clip = action;
 					return true;
@@ -2003,10 +2186,21 @@ namespace
 					    !sliderVisible.IsBool() || sliderVisible.GetBool();
 					const bool isDisabled = slider.GetMember("disabled", &sliderDisabled) &&
 					    sliderDisabled.IsBool() && sliderDisabled.GetBool();
-					if (isVisible && !isDisabled &&
-					    DisplayObjectHitAtRootPoint(slider, rootX, rootY)) {
+					// RaceMenuSlider is a container. In the installed 0.4.20 SWF its
+					// container has no reliable hit area in VR, while its track/thumb do.
+					// BrushListEntry also puts a transparent row trigger over the property,
+					// so treat any hit on that slider row as an intentional slider drag.
+					const bool sliderHit = DisplayObjectGeometryHitAtRootPoint(
+					    movie, slider, rootX, rootY) ||
+					    memberHit(slider, { "track", "thumb" });
+					const bool sliderRowHit = memberHit(clip,
+					    { "trigger", "textField", "valueField", "selectIndicator",
+					        "focusIndicator" }) ||
+					    DisplayObjectGeometryHitAtRootPoint(
+					        movie, clip, rootX, rootY);
+					if (isVisible && !isDisabled && (sliderHit || sliderRowHit)) {
 						target.kind = RaceMenuLaserTargetKind::kSlider;
-						target.index = static_cast<int>(itemIndex.GetNumber());
+						target.index = resolvedItemIndex;
 						target.owner = list;
 						target.clip = clip;
 						target.slider = slider;
@@ -2015,14 +2209,15 @@ namespace
 				}
 			}
 
-			RE::GFxValue hitClip;
-			if (!clip.GetMember("trigger", &hitClip) ||
-			    (!hitClip.IsObject() && !hitClip.IsDisplayObject())) {
-				hitClip = clip;
-			}
-			if (DisplayObjectHitAtRootPoint(hitClip, rootX, rootY)) {
+			// TextCategoryListEntry, used by Sculpt's Smooth/Deflate/Move strip,
+			// deliberately has no `trigger`. Its actual hit geometry is the resized
+			// background/text pair, not the otherwise empty container MovieClip.
+			const bool rowHit = memberHit(clip,
+			    { "trigger", "background", "textField", "valueField" }) ||
+			    DisplayObjectGeometryHitAtRootPoint(movie, clip, rootX, rootY);
+			if (rowHit) {
 				target.kind = rowKind;
-				target.index = static_cast<int>(itemIndex.GetNumber());
+				target.index = resolvedItemIndex;
 				target.owner = list;
 				target.clip = clip;
 				return true;
@@ -2031,12 +2226,129 @@ namespace
 		return false;
 	}
 
-	bool GetRaceMenuMeshListTarget(RE::GFxValue& list, float rootX, float rootY,
+	bool GetRaceMenuSculptCategoryTarget(RE::GFxMovieView& movie,
+	    RE::GFxValue& list, float rootX, float rootY,
+	    RaceMenuLaserTarget& target)
+	{
+		// TextCategoryListEntry has no trigger in the installed RaceMenu SWF. Its
+		// background and label are the authoritative hit rectangles. Do not use the
+		// container clip here because its tweened bounds can span other Sculpt panes.
+		for (int clipIndex = 0; clipIndex < 12; ++clipIndex) {
+			RE::GFxValue arg;
+			arg.SetNumber(static_cast<double>(clipIndex));
+			RE::GFxValue clip;
+			if (!list.Invoke("getClipByIndex", &clip, &arg, 1) ||
+			    (!clip.IsObject() && !clip.IsDisplayObject())) {
+				continue;
+			}
+
+			RE::GFxValue visible;
+			if (clip.GetMember("_visible", &visible) && visible.IsBool() &&
+			    !visible.GetBool()) {
+				continue;
+			}
+			RE::GFxValue itemIndexValue;
+			const int itemIndex = clip.GetMember("itemIndex", &itemIndexValue) &&
+			        itemIndexValue.IsNumber() && itemIndexValue.GetNumber() >= 0.0 ?
+			    static_cast<int>(itemIndexValue.GetNumber()) : clipIndex;
+
+			constexpr std::array<const char*, 2> hitMembers = {
+			    "background", "textField"
+			};
+			for (const char* memberName : hitMembers) {
+				RE::GFxValue member;
+				if (clip.GetMember(memberName, &member) &&
+				    (member.IsObject() || member.IsDisplayObject()) &&
+				    DisplayObjectBoundsHitAtRootPoint(
+				        movie, member, rootX, rootY)) {
+					target.kind = RaceMenuLaserTargetKind::kCategory;
+					target.index = itemIndex;
+					target.owner = list;
+					target.clip = clip;
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	bool GetRaceMenuSculptBrushTarget(RE::GFxMovieView& movie,
+	    RE::GFxValue& list, float rootX, float rootY,
 	    RaceMenuLaserTarget& target)
 	{
 		RE::GFxValue scrollBar;
 		if (GetListScrollBar(list, scrollBar) && DisplayObjectIsUsable(scrollBar) &&
-		    DisplayObjectHitAtRootPoint(scrollBar, rootX, rootY)) {
+		    DisplayObjectGeometryHitAtRootPoint(
+		        movie, scrollBar, rootX, rootY)) {
+			target.kind = RaceMenuLaserTargetKind::kScrollBar;
+			target.owner = list;
+			target.clip = scrollBar;
+			target.slider = scrollBar;
+			return true;
+		}
+
+		// BrushListEntry rows are all sliders. Only their real slider geometry may
+		// claim a hit. A whole-row/container fallback is what allowed Sculpt input to
+		// mutate the ordinary face sliders behind the editor.
+		for (int clipIndex = 0; clipIndex < 40; ++clipIndex) {
+			RE::GFxValue arg;
+			arg.SetNumber(static_cast<double>(clipIndex));
+			RE::GFxValue clip;
+			if (!list.Invoke("getClipByIndex", &clip, &arg, 1) ||
+			    (!clip.IsObject() && !clip.IsDisplayObject())) {
+				continue;
+			}
+			RE::GFxValue itemIndexValue;
+			if (!clip.GetMember("itemIndex", &itemIndexValue) ||
+			    !itemIndexValue.IsNumber() || itemIndexValue.GetNumber() < 0.0) {
+				continue;
+			}
+
+			RE::GFxValue slider;
+			if (!clip.GetMember("SliderInstance", &slider) ||
+			    (!slider.IsObject() && !slider.IsDisplayObject())) {
+				continue;
+			}
+			RE::GFxValue sliderVisible;
+			RE::GFxValue sliderDisabled;
+			const bool isVisible = !slider.GetMember("_visible", &sliderVisible) ||
+			    !sliderVisible.IsBool() || sliderVisible.GetBool();
+			const bool isDisabled = slider.GetMember("disabled", &sliderDisabled) &&
+			    sliderDisabled.IsBool() && sliderDisabled.GetBool();
+			if (!isVisible || isDisabled)
+				continue;
+
+			bool hit = DisplayObjectBoundsHitAtRootPoint(
+			    movie, slider, rootX, rootY);
+			constexpr std::array<const char*, 2> sliderMembers = { "track", "thumb" };
+			for (const char* memberName : sliderMembers) {
+				RE::GFxValue member;
+				if (!hit && slider.GetMember(memberName, &member) &&
+				    (member.IsObject() || member.IsDisplayObject())) {
+					hit = DisplayObjectBoundsHitAtRootPoint(
+					    movie, member, rootX, rootY);
+				}
+			}
+			if (hit) {
+				target.kind = RaceMenuLaserTargetKind::kSlider;
+				target.index = static_cast<int>(itemIndexValue.GetNumber());
+				target.owner = list;
+				target.clip = clip;
+				target.slider = slider;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool GetRaceMenuMeshListTarget(RE::GFxMovieView& movie,
+	    RE::GFxValue& list, float rootX, float rootY,
+	    RaceMenuLaserTarget& target, bool permitRows = true)
+	{
+		RE::GFxValue scrollBar;
+		if (GetListScrollBar(list, scrollBar) && DisplayObjectIsUsable(scrollBar) &&
+		    DisplayObjectGeometryHitAtRootPoint(
+		        movie, scrollBar, rootX, rootY)) {
 			target.kind = RaceMenuLaserTargetKind::kScrollBar;
 			target.owner = list;
 			target.clip = scrollBar;
@@ -2071,7 +2383,8 @@ namespace
 				    !RaceMenuObjectIsActive(control)) {
 					continue;
 				}
-				if (DisplayObjectHitAtRootPoint(control, rootX, rootY)) {
+				if (DisplayObjectGeometryHitAtRootPoint(
+				        movie, control, rootX, rootY)) {
 					target.kind = RaceMenuLaserTargetKind::kClipAction;
 					target.index = static_cast<int>(itemIndex.GetNumber());
 					target.owner = list;
@@ -2080,12 +2393,17 @@ namespace
 				}
 			}
 
-			RE::GFxValue trigger;
-			if (!clip.GetMember("trigger", &trigger) ||
-			    (!trigger.IsObject() && !trigger.IsDisplayObject())) {
-				trigger = clip;
-			}
-			if (DisplayObjectHitAtRootPoint(trigger, rootX, rootY)) {
+			if (!permitRows)
+				continue;
+
+			// The transparent trigger's published bounds are oversized in the VR SWF
+			// and overlap the 768x768 head canvas. The visible row label is stable and
+			// provides the intended selection target without stealing paint strokes.
+			RE::GFxValue textField;
+			if (clip.GetMember("textField", &textField) &&
+			    (textField.IsObject() || textField.IsDisplayObject()) &&
+			    DisplayObjectBoundsHitAtRootPoint(
+			        movie, textField, rootX, rootY)) {
 				target.kind = RaceMenuLaserTargetKind::kItem;
 				target.index = static_cast<int>(itemIndex.GetNumber());
 				target.owner = list;
@@ -2101,6 +2419,185 @@ namespace
 	// feeding the viewport coordinates to NotifyMouseState leaves its AS2 Mouse
 	// singleton pinned to an edge. Resolve the installed movie's real controls in
 	// root coordinates and call the same callbacks its SWF wires to a PC mouse.
+	void LogRaceMenuSculptState(RE::GFxMovieView& movie,
+	    RE::GFxValue& vertexEditor)
+	{
+		// Target resolution runs every frame. Probe the AS2 object graph at most
+		// four times per second so diagnostics cannot become another menu bottleneck.
+		static ULONGLONG lastProbeTick = 0;
+		const ULONGLONG now = GetTickCount64();
+		if (now - lastProbeTick < 250)
+			return;
+		lastProbeTick = now;
+
+		auto boolMember = [](RE::GFxValue& object, const char* name,
+		                      bool fallback) {
+			RE::GFxValue value;
+			return object.GetMember(name, &value) && value.IsBool() ?
+			    value.GetBool() : fallback;
+		};
+		auto numberMember = [](RE::GFxValue& object, const char* name,
+		                        double fallback) {
+			RE::GFxValue value;
+			return object.GetMember(name, &value) && value.IsNumber() ?
+			    value.GetNumber() : fallback;
+		};
+
+		RE::GFxValue charGen;
+		const bool hasCharGen = movie.GetVariable(
+		    &charGen, "_global.skse.plugins.CharGen") &&
+		    (charGen.IsObject() || charGen.IsDisplayObject());
+		const bool hasCreateMorph = hasCharGen && charGen.HasMember("CreateMorphEditor");
+		const bool hasPaintMorph = hasCharGen && charGen.HasMember("BeginPaintMesh") &&
+		    charGen.HasMember("DoPaintMesh") && charGen.HasMember("EndPaintMesh");
+
+		RE::GFxValue brushWindow;
+		const bool hasBrushWindow = vertexEditor.GetMember("brushWindow", &brushWindow) &&
+		    (brushWindow.IsObject() || brushWindow.IsDisplayObject());
+		const bool brushLoaded = hasBrushWindow &&
+		    boolMember(brushWindow, "bLoadedAssets", false);
+		RE::GFxValue brushes;
+		const int brushCount = hasBrushWindow && brushWindow.GetMember("brushes", &brushes) &&
+		    brushes.IsArray() ? static_cast<int>(brushes.GetArraySize()) : -1;
+
+		RE::GFxValue wireframeDisplay;
+		RE::GFxValue foreground;
+		const bool hasDisplay = vertexEditor.GetMember(
+		    "wireframeDisplay", &wireframeDisplay) &&
+		    (wireframeDisplay.IsObject() || wireframeDisplay.IsDisplayObject());
+		const bool hasForeground = hasDisplay && wireframeDisplay.GetMember(
+		    "foreground", &foreground) &&
+		    (foreground.IsObject() || foreground.IsDisplayObject());
+		const bool wireLoaded = hasDisplay &&
+		    boolMember(wireframeDisplay, "bLoadedAssets", false);
+		const bool inputDisabled = hasDisplay &&
+		    boolMember(wireframeDisplay, "disableInput", false);
+
+		RE::GFxValue editorData;
+		const bool hasEditorData = hasDisplay && wireframeDisplay.GetMember(
+		    "editorData", &editorData) &&
+		    (editorData.IsObject() || editorData.IsDisplayObject());
+		const int editorWidth = hasEditorData ?
+		    static_cast<int>(numberMember(editorData, "width", -1.0)) : -1;
+		const int editorHeight = hasEditorData ?
+		    static_cast<int>(numberMember(editorData, "height", -1.0)) : -1;
+		const int fixedWidth = hasForeground ?
+		    static_cast<int>(numberMember(foreground, "fixedWidth", -1.0)) : -1;
+		const int fixedHeight = hasForeground ?
+		    static_cast<int>(numberMember(foreground, "fixedHeight", -1.0)) : -1;
+		RE::GFxValue wireframe;
+		const bool hasWireframe = hasForeground && foreground.GetMember(
+		    "wireframe", &wireframe) &&
+		    (wireframe.IsObject() || wireframe.IsDisplayObject());
+		const int imageWidth = hasWireframe ?
+		    static_cast<int>(numberMember(wireframe, "_width", -1.0)) : -1;
+		const int imageHeight = hasWireframe ?
+		    static_cast<int>(numberMember(wireframe, "_height", -1.0)) : -1;
+
+		const int stateBits = (hasCharGen ? 1 : 0) | (hasCreateMorph ? 2 : 0) |
+		    (hasPaintMorph ? 4 : 0) | (brushLoaded ? 8 : 0) |
+		    (wireLoaded ? 16 : 0) | (inputDisabled ? 32 : 0) |
+		    (hasEditorData ? 64 : 0) | (hasWireframe ? 128 : 0);
+		static int lastStateBits = -1;
+		static int lastBrushCount = -2;
+		static int lastEditorWidth = -2;
+		static int lastEditorHeight = -2;
+		static int lastFixedWidth = -2;
+		static int lastFixedHeight = -2;
+		static int lastImageWidth = -2;
+		static int lastImageHeight = -2;
+		static ULONGLONG lastLogTick = 0;
+		const bool changed = stateBits != lastStateBits || brushCount != lastBrushCount ||
+		    editorWidth != lastEditorWidth || editorHeight != lastEditorHeight ||
+		    fixedWidth != lastFixedWidth || fixedHeight != lastFixedHeight ||
+		    imageWidth != lastImageWidth || imageHeight != lastImageHeight;
+		if (!changed && now - lastLogTick < 15000)
+			return;
+
+		lastStateBits = stateBits;
+		lastBrushCount = brushCount;
+		lastEditorWidth = editorWidth;
+		lastEditorHeight = editorHeight;
+		lastFixedWidth = fixedWidth;
+		lastFixedHeight = fixedHeight;
+		lastImageWidth = imageWidth;
+		lastImageHeight = imageHeight;
+		lastLogTick = now;
+		const bool imageReady = hasEditorData && hasWireframe && fixedWidth > 0 &&
+		    fixedHeight > 0 && imageWidth > 0 && imageHeight > 0;
+		if (imageReady) {
+			SKSE::log::info(
+			    "RACEMENU SCULPT ready charGen={} create={} paint={} brushes={}/{} wireLoaded={} disabled={} editor={}x{} fixed={}x{} image={}x{}",
+			    hasCharGen, hasCreateMorph, hasPaintMorph, brushLoaded, brushCount,
+			    wireLoaded, inputDisabled, editorWidth, editorHeight, fixedWidth,
+			    fixedHeight, imageWidth, imageHeight);
+		} else {
+			SKSE::log::warn(
+			    "RACEMENU SCULPT incomplete charGen={} create={} paint={} brushes={}/{} wireLoaded={} disabled={} editor={}x{} fixed={}x{} image={}x{}",
+			    hasCharGen, hasCreateMorph, hasPaintMorph, brushLoaded, brushCount,
+			    wireLoaded, inputDisabled, editorWidth, editorHeight, fixedWidth,
+			    fixedHeight, imageWidth, imageHeight);
+		}
+
+		if (hasWireframe) {
+			double xMin = 0.0;
+			double xMax = 0.0;
+			double yMin = 0.0;
+			double yMax = 0.0;
+			const bool hasBounds = GetDisplayObjectRootBounds(
+			    movie, wireframe, xMin, xMax, yMin, yMax);
+			SKSE::log::info(
+			    "RACEMENU SCULPT canvas bounds={} root=({:.1f},{:.1f})..({:.1f},{:.1f})",
+			    hasBounds, xMin, yMin, xMax, yMax);
+		}
+
+		RE::GFxValue categoryList;
+		RE::GFxValue categoryEntries;
+		const bool hasCategoryList = hasBrushWindow &&
+		    brushWindow.GetMember("categoryList", &categoryList) &&
+		    (categoryList.IsObject() || categoryList.IsDisplayObject());
+		const int categoryCount = hasCategoryList &&
+		        categoryList.GetMember("entryList", &categoryEntries) &&
+		        categoryEntries.IsArray() ?
+		    static_cast<int>(categoryEntries.GetArraySize()) : -1;
+		SKSE::log::info(
+		    "RACEMENU SCULPT categories list={} entries={}",
+		    hasCategoryList, categoryCount);
+		if (hasCategoryList) {
+			const int clipsToLog = categoryCount < 6 ? categoryCount : 6;
+			for (int clipIndex = 0; clipIndex < clipsToLog; ++clipIndex) {
+				RE::GFxValue arg;
+				arg.SetNumber(static_cast<double>(clipIndex));
+				RE::GFxValue clip;
+				if (!categoryList.Invoke("getClipByIndex", &clip, &arg, 1) ||
+				    (!clip.IsObject() && !clip.IsDisplayObject())) {
+					SKSE::log::warn(
+					    "RACEMENU SCULPT category clip={} unavailable", clipIndex);
+					continue;
+				}
+				RE::GFxValue item;
+				const int itemIndex = clip.GetMember("itemIndex", &item) &&
+				        item.IsNumber() ?
+				    static_cast<int>(item.GetNumber()) : -1;
+				RE::GFxValue background;
+				RE::GFxValue* boundsClip = &clip;
+				if (clip.GetMember("background", &background) &&
+				    (background.IsObject() || background.IsDisplayObject())) {
+					boundsClip = &background;
+				}
+				double xMin = 0.0;
+				double xMax = 0.0;
+				double yMin = 0.0;
+				double yMax = 0.0;
+				const bool hasBounds = GetDisplayObjectRootBounds(
+				    movie, *boundsClip, xMin, xMax, yMin, yMax);
+				SKSE::log::info(
+				    "RACEMENU SCULPT category clip={} item={} bounds={} root=({:.1f},{:.1f})..({:.1f},{:.1f})",
+				    clipIndex, itemIndex, hasBounds, xMin, yMin, xMax, yMax);
+			}
+		}
+	}
+
 	bool ResolveRaceMenuLaserTarget(RE::GFxMovieView& movie, float viewportX,
 	    float viewportY, RaceMenuLaserTarget& target)
 	{
@@ -2126,7 +2623,7 @@ namespace
 				if (dialog.GetMember(listName, &list) &&
 				    (list.IsObject() || list.IsDisplayObject()) &&
 				    DisplayObjectIsUsable(list) &&
-				    GetRaceMenuListTarget(list, rootX, rootY, false,
+				    GetRaceMenuListTarget(movie, list, rootX, rootY, false,
 				        RaceMenuLaserTargetKind::kItem, target)) {
 					return true;
 				}
@@ -2152,12 +2649,60 @@ namespace
 		if (!GetRaceMenuPanel(movie, panel))
 			return false;
 
+		// ModeSwitcher is authoritative. Read its already-published fields directly
+		// instead of invoking AS2 while RaceMenu may still be initializing categories.
+		// Sculpt's child windows are constructed with enabled=false and shown later
+		// only through TweenLite autoAlpha, so their enabled property is not visibility.
+		int selectedMode = -1;
+		RE::GFxValue modeSelectState;
+		if (panel.GetMember("modeSelect", &modeSelectState) &&
+		    (modeSelectState.IsObject() || modeSelectState.IsDisplayObject())) {
+			RE::GFxValue modes;
+			RE::GFxValue buttonGroup;
+			RE::GFxValue selectedButton;
+			if (modeSelectState.GetMember("_modes", &modes) && modes.IsArray() &&
+			    modeSelectState.GetMember("buttonGroup", &buttonGroup) &&
+			    (buttonGroup.IsObject() || buttonGroup.IsDisplayObject()) &&
+			    buttonGroup.GetMember("selectedButton", &selectedButton) &&
+			    (selectedButton.IsObject() || selectedButton.IsDisplayObject())) {
+				const auto count = std::min<std::uint32_t>(modes.GetArraySize(), 8);
+				for (std::uint32_t i = 0; i < count; ++i) {
+					RE::GFxValue mode;
+					if (modes.GetElement(i, &mode) && mode == selectedButton) {
+						selectedMode = static_cast<int>(i);
+						break;
+					}
+				}
+			}
+		}
+		const bool sculptModeSelected = selectedMode == 3;
+
+		// Mode tabs must remain reachable while Sculpt consumes the rest of its
+		// surface, otherwise the user cannot leave the tab with the laser.
+		if (modeSelectState.IsObject() || modeSelectState.IsDisplayObject()) {
+			RE::GFxValue modes;
+			if (modeSelectState.GetMember("_modes", &modes) && modes.IsArray()) {
+				const auto count = std::min<std::uint32_t>(modes.GetArraySize(), 8);
+				for (std::uint32_t i = 0; i < count; ++i) {
+					RE::GFxValue tab;
+					if (modes.GetElement(i, &tab) &&
+					    DisplayObjectHitAtRootPoint(tab, rootX, rootY)) {
+						target.kind = RaceMenuLaserTargetKind::kModeTab;
+						target.index = static_cast<int>(i);
+						target.owner = modeSelectState;
+						target.clip = tab;
+						return true;
+					}
+				}
+			}
+		}
+
 		// The color editor is a modal child layered over the main RaceMenu lists.
 		// Its HSV/alpha sliders and dynamically-created mapped buttons are not
 		// members of itemList, so resolve them first and never click through the
 		// visible field into the list beneath it.
 		RE::GFxValue colorField;
-		if (panel.GetMember("colorField", &colorField) &&
+		if (!sculptModeSelected && panel.GetMember("colorField", &colorField) &&
 		    (colorField.IsObject() || colorField.IsDisplayObject())) {
 			RE::GFxValue visible;
 			const bool colorFieldVisible =
@@ -2221,14 +2766,14 @@ namespace
 		// modal overlays. Cover their lists and Accept/Cancel panels before any
 		// editor or main RaceMenu control.
 		RE::GFxValue makeupPanel;
-		if (panel.GetMember("makeupPanel", &makeupPanel) &&
+		if (!sculptModeSelected && panel.GetMember("makeupPanel", &makeupPanel) &&
 		    (makeupPanel.IsObject() || makeupPanel.IsDisplayObject()) &&
 		    DisplayObjectIsUsable(makeupPanel)) {
 			RE::GFxValue makeupList;
 			if (makeupPanel.GetMember("makeupList", &makeupList) &&
 			    (makeupList.IsObject() || makeupList.IsDisplayObject()) &&
 			    DisplayObjectIsUsable(makeupList) &&
-			    GetRaceMenuListTarget(makeupList, rootX, rootY, false,
+			    GetRaceMenuListTarget(movie, makeupList, rootX, rootY, false,
 			        RaceMenuLaserTargetKind::kItem, target)) {
 				return true;
 			}
@@ -2245,7 +2790,7 @@ namespace
 		}
 
 		RE::GFxValue textEntry;
-		if (panel.GetMember("textEntry", &textEntry) &&
+		if (!sculptModeSelected && panel.GetMember("textEntry", &textEntry) &&
 		    (textEntry.IsObject() || textEntry.IsDisplayObject()) &&
 		    DisplayObjectIsUsable(textEntry)) {
 			RE::GFxValue buttonPanel;
@@ -2264,7 +2809,8 @@ namespace
 		// The static panel is where Head Export, Head Import, and Clear Sculpt live.
 		RE::GFxValue vertexEditor;
 		if (panel.GetMember("vertexEditor", &vertexEditor) &&
-		    RaceMenuObjectIsActive(vertexEditor)) {
+		    (vertexEditor.IsObject() || vertexEditor.IsDisplayObject()) &&
+		    (sculptModeSelected || RaceMenuObjectIsActive(vertexEditor))) {
 			RE::GFxValue bottomBar;
 			RE::GFxValue staticPanel;
 			if (vertexEditor.GetMember("bottomBar", &bottomBar) &&
@@ -2283,41 +2829,35 @@ namespace
 
 			RE::GFxValue brushWindow;
 			if (vertexEditor.GetMember("brushWindow", &brushWindow) &&
-			    RaceMenuObjectIsActive(brushWindow)) {
+			    (brushWindow.IsObject() || brushWindow.IsDisplayObject()) &&
+			    DisplayObjectIsUsable(brushWindow)) {
 				RE::GFxValue categoryList;
 				if (brushWindow.GetMember("categoryList", &categoryList) &&
 				    (categoryList.IsObject() || categoryList.IsDisplayObject()) &&
-				    GetRaceMenuListTarget(categoryList, rootX, rootY, false,
-				        RaceMenuLaserTargetKind::kCategory, target)) {
+				    GetRaceMenuSculptCategoryTarget(
+				        movie, categoryList, rootX, rootY, target)) {
 					return true;
 				}
 				RE::GFxValue brushList;
 				if (brushWindow.GetMember("brushList", &brushList) &&
 				    (brushList.IsObject() || brushList.IsDisplayObject()) &&
-				    GetRaceMenuListTarget(brushList, rootX, rootY, true,
-				        RaceMenuLaserTargetKind::kItem, target)) {
+				    GetRaceMenuSculptBrushTarget(
+				        movie, brushList, rootX, rootY, target)) {
 					return true;
 				}
 			}
 
-			RE::GFxValue historyWindow;
-			RE::GFxValue historyList;
-			if (vertexEditor.GetMember("historyWindow", &historyWindow) &&
-			    RaceMenuObjectIsActive(historyWindow) &&
-			    historyWindow.GetMember("historyList", &historyList) &&
-			    (historyList.IsObject() || historyList.IsDisplayObject()) &&
-			    GetRaceMenuListTarget(historyList, rootX, rootY, false,
-			        RaceMenuLaserTargetKind::kItem, target)) {
-				return true;
-			}
-
+			// Resolve the four small mesh toggles before the canvas, but defer its
+			// oversized row triggers until after the real 768x768 head image.
 			RE::GFxValue meshWindow;
 			RE::GFxValue meshList;
 			if (vertexEditor.GetMember("meshWindow", &meshWindow) &&
-			    RaceMenuObjectIsActive(meshWindow) &&
+			    (meshWindow.IsObject() || meshWindow.IsDisplayObject()) &&
+			    DisplayObjectIsUsable(meshWindow) &&
 			    meshWindow.GetMember("meshList", &meshList) &&
 			    (meshList.IsObject() || meshList.IsDisplayObject()) &&
-			    GetRaceMenuMeshListTarget(meshList, rootX, rootY, target)) {
+			    GetRaceMenuMeshListTarget(
+			        movie, meshList, rootX, rootY, target, false)) {
 				return true;
 			}
 
@@ -2328,9 +2868,11 @@ namespace
 			RE::GFxValue wireframeDisplay;
 			RE::GFxValue foreground;
 			if (vertexEditor.GetMember("wireframeDisplay", &wireframeDisplay) &&
-			    RaceMenuObjectIsActive(wireframeDisplay) &&
+			    (wireframeDisplay.IsObject() || wireframeDisplay.IsDisplayObject()) &&
+			    DisplayObjectIsUsable(wireframeDisplay) &&
 			    wireframeDisplay.GetMember("foreground", &foreground) &&
-			    RaceMenuObjectIsActive(foreground)) {
+			    (foreground.IsObject() || foreground.IsDisplayObject()) &&
+			    DisplayObjectIsUsable(foreground)) {
 				RE::GFxValue loaded;
 				RE::GFxValue disableInput;
 				const bool assetsLoaded =
@@ -2339,13 +2881,10 @@ namespace
 				const bool inputDisabled =
 				    wireframeDisplay.GetMember("disableInput", &disableInput) &&
 				    disableInput.IsBool() && disableInput.GetBool();
-				bool canvasHit = DisplayObjectHitAtRootPoint(foreground, rootX, rootY);
-				if (!canvasHit) {
-					RE::GFxValue wireframe;
-					canvasHit = foreground.GetMember("wireframe", &wireframe) &&
-					    (wireframe.IsObject() || wireframe.IsDisplayObject()) &&
-					    DisplayObjectHitAtRootPoint(wireframe, rootX, rootY);
-				}
+				double localX = 0.0;
+				double localY = 0.0;
+				const bool canvasHit = RootPointToRaceMenuSculptPoint(
+				    movie, foreground, rootX, rootY, localX, localY);
 				if (assetsLoaded && !inputDisabled && canvasHit) {
 					target.kind = RaceMenuLaserTargetKind::kSculptCanvas;
 					target.owner = wireframeDisplay;
@@ -2353,6 +2892,33 @@ namespace
 					return true;
 				}
 			}
+
+			// History and mesh row selection live outside the image. They are checked
+			// after the canvas because the VR SWF reports oversized container bounds.
+			RE::GFxValue historyWindow;
+			RE::GFxValue historyList;
+			if (vertexEditor.GetMember("historyWindow", &historyWindow) &&
+			    (historyWindow.IsObject() || historyWindow.IsDisplayObject()) &&
+			    DisplayObjectIsUsable(historyWindow) &&
+			    historyWindow.GetMember("historyList", &historyList) &&
+			    (historyList.IsObject() || historyList.IsDisplayObject()) &&
+			    GetRaceMenuListTarget(movie, historyList, rootX, rootY, false,
+			        RaceMenuLaserTargetKind::kItem, target)) {
+				return true;
+			}
+			if ((meshList.IsObject() || meshList.IsDisplayObject()) &&
+			    GetRaceMenuMeshListTarget(
+			        movie, meshList, rootX, rootY, target, true)) {
+				return true;
+			}
+
+			// Sculpt replaces the normal slider editor. Consuming its blank space is
+			// essential: otherwise NotifyMouseState or the main itemList resolver clicks
+			// the hidden face morph controls underneath this tab.
+			target.kind = RaceMenuLaserTargetKind::kNone;
+			target.owner = vertexEditor;
+			target.clip = vertexEditor;
+			return true;
 		}
 
 		// Camera and Presets each replace the main editor and publish their own
@@ -2380,7 +2946,7 @@ namespace
 			RE::GFxValue itemList;
 			if (presetEditor.GetMember("itemList", &itemList) &&
 			    (itemList.IsObject() || itemList.IsDisplayObject()) &&
-			    GetRaceMenuListTarget(itemList, rootX, rootY, false,
+			    GetRaceMenuListTarget(movie, itemList, rootX, rootY, false,
 			        RaceMenuLaserTargetKind::kItem, target)) {
 				return true;
 			}
@@ -2409,7 +2975,7 @@ namespace
 		RE::GFxValue itemList;
 		if (panel.GetMember("itemList", &itemList) &&
 		    (itemList.IsObject() || itemList.IsDisplayObject()) &&
-		    GetRaceMenuListTarget(itemList, rootX, rootY, true,
+		    GetRaceMenuListTarget(movie, itemList, rootX, rootY, true,
 		        RaceMenuLaserTargetKind::kItem, target)) {
 			return true;
 		}
@@ -2417,7 +2983,7 @@ namespace
 		RE::GFxValue categoryList;
 		if (panel.GetMember("categoryList", &categoryList) &&
 		    (categoryList.IsObject() || categoryList.IsDisplayObject()) &&
-		    GetRaceMenuListTarget(categoryList, rootX, rootY, false,
+		    GetRaceMenuListTarget(movie, categoryList, rootX, rootY, false,
 		        RaceMenuLaserTargetKind::kCategory, target)) {
 			return true;
 		}
@@ -2503,38 +3069,8 @@ namespace
 		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
 			return false;
 
-		RE::GFxValue point;
-		movie.CreateObject(&point);
-		RE::GFxValue xValue;
-		RE::GFxValue yValue;
-		xValue.SetNumber(rootX);
-		yValue.SetNumber(rootY);
-		point.SetMember("x", xValue);
-		point.SetMember("y", yValue);
-		if (!foreground.Invoke("globalToLocal", nullptr, &point, 1) ||
-		    !point.GetMember("x", &xValue) || !xValue.IsNumber() ||
-		    !point.GetMember("y", &yValue) || !yValue.IsNumber()) {
-			return false;
-		}
-
-		RE::GFxValue widthValue;
-		RE::GFxValue heightValue;
-		if (!foreground.GetMember("fixedWidth", &widthValue) ||
-		    !widthValue.IsNumber() ||
-		    !foreground.GetMember("fixedHeight", &heightValue) ||
-		    !heightValue.IsNumber()) {
-			return false;
-		}
-		const double width = widthValue.GetNumber();
-		const double height = heightValue.GetNumber();
-		if (!std::isfinite(width) || !std::isfinite(height) ||
-		    width <= 0.0 || height <= 0.0) {
-			return false;
-		}
-
-		localX = std::clamp(xValue.GetNumber(), 0.0, width);
-		localY = std::clamp(yValue.GetNumber(), 0.0, height);
-		return std::isfinite(localX) && std::isfinite(localY);
+		return RootPointToRaceMenuSculptPoint(
+		    movie, foreground, rootX, rootY, localX, localY);
 	}
 
 	void DispatchRaceMenuSculptEvent(RE::GFxMovieView& movie,
@@ -2594,6 +3130,19 @@ namespace
 		RE::GFxValue painting;
 		painting.SetBoolean(true);
 		target.clip.SetMember("painting", painting);
+
+		// Mirror WireframeDisplay.beginPaintMesh's handler state. OCU drives the
+		// native CharGen calls with corrected VR coordinates, but the foreground
+		// clip still needs to remain in the same painting state its ActionScript
+		// expects until the physical trigger is released.
+		RE::GFxValue paintHandler;
+		if (target.clip.GetMember("doPaintMesh", &paintHandler))
+			target.clip.SetMember("onMouseMove", paintHandler);
+		RE::GFxValue releaseHandler;
+		if (target.clip.GetMember("endPaintMesh", &releaseHandler)) {
+			target.clip.SetMember("onRelease", releaseHandler);
+			target.clip.SetMember("onReleaseOutside", releaseHandler);
+		}
 		DispatchRaceMenuSculptEvent(movie, target.owner, "beginPainting");
 		return true;
 	}
@@ -2619,6 +3168,13 @@ namespace
 		RE::GFxValue painting;
 		painting.SetBoolean(false);
 		foreground.SetMember("painting", painting);
+		RE::GFxValue hoverHandler;
+		if (foreground.GetMember("doHoverMesh", &hoverHandler))
+			foreground.SetMember("onMouseMove", hoverHandler);
+		RE::GFxValue nullHandler;
+		nullHandler.SetNull();
+		foreground.SetMember("onRelease", nullHandler);
+		foreground.SetMember("onReleaseOutside", nullHandler);
 		DispatchRaceMenuSculptEvent(movie, wireframeDisplay, "endPainting");
 		InvokeRaceMenuCharGen(movie, "EndPaintMesh", nullptr, nullptr, 0);
 	}
@@ -2679,8 +3235,13 @@ namespace
 		// Centering the thumb under the ray also makes a track click jump directly
 		// to the requested page. Holding trigger continuously updates this value,
 		// which produces the expected grab-and-drag behavior.
+		double boundsRatioX = 0.0;
+		double boundsRatioY = 0.0;
+		const bool hasBoundsRatio = hasTrack &&
+		    RootPointToDisplayObjectBoundsRatio(movie, track, rootX, rootY,
+		        boundsRatioX, boundsRatioY, false);
 		const double thumbTop = yValue.GetNumber() - thumbHeight * 0.5;
-		const double ratio = std::clamp(
+		const double ratio = std::clamp(hasBoundsRatio ? boundsRatioY :
 		    (thumbTop - trackY) / availableHeight, 0.0, 1.0);
 		const double position = minimum + ratio * (maximum - minimum);
 		RE::GFxValue newPosition;
@@ -2699,18 +3260,10 @@ namespace
 		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
 			return false;
 
-		RE::GFxValue point;
-		movie.CreateObject(&point);
-		RE::GFxValue xValue;
-		RE::GFxValue yValue;
-		xValue.SetNumber(rootX);
-		yValue.SetNumber(rootY);
-		point.SetMember("x", xValue);
-		point.SetMember("y", yValue);
-		if (!slider.Invoke("globalToLocal", nullptr, &point, 1) ||
-		    !point.GetMember("x", &xValue) || !xValue.IsNumber()) {
-			return false;
-		}
+		double localX = 0.0;
+		double localY = 0.0;
+		const bool hasLocalPoint = RootPointToDisplayObjectLocal(
+		    movie, slider, rootX, rootY, localX, localY);
 
 		auto numberMember = [&](const char* name, double fallback) {
 			RE::GFxValue value;
@@ -2728,8 +3281,26 @@ namespace
 			return false;
 		}
 
-		double position = minimum + std::clamp(
-		    (xValue.GetNumber() - offsetLeft) / usableWidth, 0.0, 1.0) *
+		RE::GFxValue track;
+		RE::GFxValue* boundsClip = &slider;
+		if (slider.GetMember("track", &track) &&
+		    (track.IsObject() || track.IsDisplayObject())) {
+			boundsClip = &track;
+		}
+		double boundsRatioX = 0.0;
+		double boundsRatioY = 0.0;
+		const bool hasBoundsRatio = RootPointToDisplayObjectBoundsRatio(
+		    movie, *boundsClip, rootX, rootY, boundsRatioX, boundsRatioY, false);
+		if (!hasBoundsRatio && !hasLocalPoint)
+			return false;
+		// RaceMenu's regular sliders attach value text and other row geometry to
+		// the track clip. getBounds() therefore reports almost twice the visible
+		// track width on those rows. The slider's own local width and offsets are
+		// the coordinates used by gfx.controls.Slider and remain correct for both
+		// regular morph sliders and the smaller sculpt brush sliders.
+		const double localRatio = (localX - offsetLeft) / usableWidth;
+		const double sliderRatio = hasLocalPoint ? localRatio : boundsRatioX;
+		double position = minimum + std::clamp(sliderRatio, 0.0, 1.0) *
 		    (maximum - minimum);
 		RE::GFxValue snapping;
 		if (slider.GetMember("snapping", &snapping) && snapping.IsBool() &&
@@ -2740,26 +3311,45 @@ namespace
 		}
 		position = std::clamp(position, minimum, maximum);
 
-		RE::GFxValue oldPosition;
-		const bool hadOldPosition = slider.GetMember("position", &oldPosition) &&
-		    oldPosition.IsNumber();
-		RE::GFxValue newPosition;
-		newPosition.SetNumber(position);
-		if (!slider.SetMember("position", newPosition))
+		RE::GFxValue oldValue;
+		const bool hadOldValue = slider.GetMember("value", &oldValue) &&
+		    oldValue.IsNumber();
+		RE::GFxValue newValue;
+		newValue.SetNumber(position);
+		// RaceMenuSlider derives from gfx.controls.Slider. Its official mouse path
+		// writes `value`, then dispatches a `change` event. Follow that route so the
+		// thumb, BrushListEntry value text, brush data, and native callback all update.
+		if (!slider.SetMember("value", newValue) &&
+		    !slider.SetMember("position", newValue)) {
 			return false;
+		}
 		slider.Invoke("updateThumb", nullptr, nullptr, 0);
-		if (!hadOldPosition || fabs(oldPosition.GetNumber() - position) > 1.0e-6) {
-			if (slider.HasMember("changedCallback")) {
-				slider.Invoke("changedCallback", nullptr, nullptr, 0);
-			} else {
-				// HSVSelector's ColorSlider instances use the standard Scaleform
-				// "change" event instead of RaceMenu's per-row changedCallback.
-				RE::GFxValue event;
-				movie.CreateObject(&event);
-				RE::GFxValue type;
-				type.SetString("change");
-				event.SetMember("type", type);
-				slider.Invoke("dispatchEventAndSound", nullptr, &event, 1);
+		if (!hadOldValue || fabs(oldValue.GetNumber() - position) > 1.0e-6) {
+			RE::GFxValue event;
+			movie.CreateObject(&event);
+			RE::GFxValue type;
+			type.SetString("change");
+			event.SetMember("type", type);
+			const bool dispatched =
+			    slider.Invoke("dispatchEventAndSound", nullptr, &event, 1);
+			const bool callbackFallback = !dispatched &&
+			    slider.HasMember("changedCallback") &&
+			    slider.Invoke("changedCallback", nullptr, nullptr, 0);
+
+			RE::GFxValue acceptedValue;
+			const double accepted = slider.GetMember("value", &acceptedValue) &&
+			        acceptedValue.IsNumber() ?
+			    acceptedValue.GetNumber() : -DBL_MAX;
+			static ULONGLONG lastSliderLogTick = 0;
+			const ULONGLONG now = GetTickCount64();
+			if (now - lastSliderLogTick >= 100) {
+				lastSliderLogTick = now;
+				SKSE::log::info(
+				    "RACEMENU SLIDER change rootX={:.2f} boundsRatio={:.3f} localRatio={:.3f} source={} localX={:.2f} width={:.2f} range={:.3f}..{:.3f} old={:.3f} requested={:.3f} accepted={:.3f} event={} fallback={}",
+				    rootX, hasBoundsRatio ? boundsRatioX : -DBL_MAX, localRatio,
+				    hasLocalPoint ? "local" : "bounds", localX, width, minimum, maximum,
+				    hadOldValue ? oldValue.GetNumber() : -DBL_MAX, position,
+				    accepted, dispatched, callbackFallback);
 			}
 		}
 		return true;
@@ -3061,21 +3651,192 @@ namespace
 	// behavior. NotifyMouseState is required for BasicList rollover and itemPress.
 	bool IsAlternatePerspectiveMenu(RE::GFxMovieView& movie)
 	{
+		RE::GFxValue main;
+		RE::GFxValue menu;
 		RE::GFxValue mainOptions;
-		return movie.GetVariable(&mainOptions, "_root.main.menu.mainOptions") &&
-		    (mainOptions.IsObject() || mainOptions.IsDisplayObject());
+		RE::GFxValue subOptions;
+		return movie.GetVariable(&main, "_root.main") &&
+		    (main.IsObject() || main.IsDisplayObject()) &&
+		    main.HasMember("openMenu") && main.HasMember("onCloseMenu") &&
+		    movie.GetVariable(&menu, "_root.main.menu") &&
+		    (menu.IsObject() || menu.IsDisplayObject()) &&
+		    menu.HasMember("setActiveLists") && menu.HasMember("onItemPressSub") &&
+		    movie.GetVariable(&mainOptions, "_root.main.menu.mainOptions") &&
+		    (mainOptions.IsObject() || mainOptions.IsDisplayObject()) &&
+		    mainOptions.HasMember("getClipByIndex") &&
+		    mainOptions.HasMember("onItemRollOver") &&
+		    movie.GetVariable(&subOptions, "_root.main.menu.subOptions") &&
+		    (subOptions.IsObject() || subOptions.IsDisplayObject()) &&
+		    subOptions.HasMember("getClipByIndex") &&
+		    subOptions.HasMember("onItemRollOver");
 	}
 
-	bool PointerOverAlternatePerspectiveList(RE::GFxMovieView& movie,
-	    float targetX, float targetY)
+	bool ResolveAlternatePerspectiveLaserTarget(RE::GFxMovieView& movie,
+	    float viewportX, float viewportY, RaceMenuLaserTarget& target)
 	{
-		constexpr std::array<const char*, 4> optionLists = {
+		target = {};
+		float rootX = 0.0f;
+		float rootY = 0.0f;
+		if (!ViewportToMovieRootPoint(movie, viewportX, viewportY, rootX, rootY))
+			return false;
+
+		constexpr std::array<const char*, 2> optionLists = {
 		    "_root.main.menu.mainOptions",
-		    "_root.main.menu.mainOptions.List_mc",
-		    "_root.main.menu.subOptions",
-		    "_root.main.menu.subOptions.List_mc"
+		    "_root.main.menu.subOptions"
 		};
-		return MovieClipHitAtViewportPoint(movie, optionLists, targetX, targetY);
+		for (const char* path : optionLists) {
+			const bool isSubList =
+			    std::strcmp(path, "_root.main.menu.subOptions") == 0;
+			RE::GFxValue list;
+			if (!movie.GetVariable(&list, path) ||
+			    (!list.IsObject() && !list.IsDisplayObject()) ||
+			    !DisplayObjectIsUsable(list)) {
+				continue;
+			}
+
+			// OptionList enables only the pane that currently owns focus. Reject the
+			// greyed pane so its overlapping bounds cannot steal the laser.
+			RE::GFxValue disabled;
+			if ((list.GetMember("disableInput", &disabled) && disabled.IsBool() &&
+			        disabled.GetBool()) ||
+			    (list.GetMember("disableSelection", &disabled) && disabled.IsBool() &&
+			        disabled.GetBool()) ||
+			    (list.GetMember("_selectDisable", &disabled) && disabled.IsBool() &&
+			        disabled.GetBool())) {
+				continue;
+			}
+
+			RE::GFxValue scrollBar;
+			if (GetListScrollBar(list, scrollBar) && DisplayObjectIsUsable(scrollBar) &&
+			    DisplayObjectGeometryHitAtRootPoint(
+			        movie, scrollBar, rootX, rootY)) {
+				target.kind = RaceMenuLaserTargetKind::kScrollBar;
+				target.owner = list;
+				target.clip = scrollBar;
+				target.slider = scrollBar;
+				return true;
+			}
+
+			// Both MainList and SubList publish the number of attached, visible entry
+			// clips as _listIndex. Fall back to a bounded probe for interface variants.
+			int clipCount = 48;
+			RE::GFxValue listIndex;
+			if (list.GetMember("_listIndex", &listIndex) && listIndex.IsNumber() &&
+			    listIndex.GetNumber() >= 0.0 && listIndex.GetNumber() <= 128.0) {
+				clipCount = static_cast<int>(listIndex.GetNumber());
+			}
+
+			// SubListEntry has no full-width row background. Resolve its rows from the
+			// exact local layout used by ScrollingList.UpdateList: background origin,
+			// borders, and entryHeight. This avoids depending on text or gradient bounds.
+			// If an interface variant does not expose those members, retain the proven
+			// per-clip fallback below instead of disabling the pane.
+			if (isSubList) {
+				RE::GFxValue background;
+				auto getNumber = [](RE::GFxValue& object, const char* member,
+				                     double& result) {
+					RE::GFxValue value;
+					if (!object.GetMember(member, &value) || !value.IsNumber())
+						return false;
+					result = value.GetNumber();
+					return std::isfinite(result);
+				};
+				double localX = 0.0;
+				double localY = 0.0;
+				double backgroundX = 0.0;
+				double backgroundY = 0.0;
+				double backgroundWidth = 0.0;
+				double leftBorder = 0.0;
+				double rightBorder = 0.0;
+				double topBorder = 0.0;
+				double entryHeight = 0.0;
+				const bool hasLayout = list.GetMember("background", &background) &&
+				    (background.IsObject() || background.IsDisplayObject()) &&
+				    RootPointToDisplayObjectLocal(
+				        movie, list, rootX, rootY, localX, localY) &&
+				    getNumber(background, "_x", backgroundX) &&
+				    getNumber(background, "_y", backgroundY) &&
+				    getNumber(background, "_width", backgroundWidth) &&
+				    getNumber(list, "leftBorder", leftBorder) &&
+				    getNumber(list, "rightBorder", rightBorder) &&
+				    getNumber(list, "topBorder", topBorder) &&
+				    getNumber(list, "entryHeight", entryHeight) &&
+				    backgroundWidth > leftBorder + rightBorder && entryHeight > 0.0;
+				if (hasLayout) {
+					const double rowXMin = backgroundX + leftBorder;
+					const double rowXMax = backgroundX + backgroundWidth - rightBorder;
+					const double rowYMin = backgroundY + topBorder;
+					const int clipIndex = static_cast<int>(
+					    std::floor((localY - rowYMin) / entryHeight));
+					if (localX >= rowXMin && localX <= rowXMax && clipIndex >= 0 &&
+					    clipIndex < clipCount) {
+						RE::GFxValue arg;
+						arg.SetNumber(static_cast<double>(clipIndex));
+						RE::GFxValue clip;
+						RE::GFxValue itemIndex;
+						if (list.Invoke("getClipByIndex", &clip, &arg, 1) &&
+						    (clip.IsObject() || clip.IsDisplayObject()) &&
+						    DisplayObjectIsUsable(clip) &&
+						    clip.GetMember("itemIndex", &itemIndex) &&
+						    itemIndex.IsNumber() && itemIndex.GetNumber() >= 0.0) {
+							target.kind = RaceMenuLaserTargetKind::kItem;
+							target.index = static_cast<int>(itemIndex.GetNumber());
+							target.owner = list;
+							target.clip = clip;
+							return true;
+						}
+					}
+				}
+			}
+
+			for (int clipIndex = 0; clipIndex < clipCount; ++clipIndex) {
+				RE::GFxValue arg;
+				arg.SetNumber(static_cast<double>(clipIndex));
+				RE::GFxValue clip;
+				if (!list.Invoke("getClipByIndex", &clip, &arg, 1) ||
+				    (!clip.IsObject() && !clip.IsDisplayObject()) ||
+				    !DisplayObjectIsUsable(clip)) {
+					continue;
+				}
+
+				RE::GFxValue itemIndex;
+				if (!clip.GetMember("itemIndex", &itemIndex) ||
+				    !itemIndex.IsNumber() || itemIndex.GetNumber() < 0.0) {
+					continue;
+				}
+				RE::GFxValue enabled;
+				if ((clip.GetMember("enabled", &enabled) && enabled.IsBool() &&
+				        !enabled.GetBool()) ||
+				    (clip.GetMember("isEnabled", &enabled) && enabled.IsBool() &&
+				        !enabled.GetBool())) {
+					continue;
+				}
+
+				bool hit = DisplayObjectGeometryHitAtRootPoint(
+				    movie, clip, rootX, rootY);
+				constexpr std::array<const char*, 6> entryMembers = {
+				    "background", "name", "modname", "index", "selectIndicator",
+				    "hasSuboptions"
+				};
+				for (const char* memberName : entryMembers) {
+					RE::GFxValue member;
+					if (!hit && clip.GetMember(memberName, &member) &&
+					    (member.IsObject() || member.IsDisplayObject())) {
+						hit = DisplayObjectGeometryHitAtRootPoint(
+						    movie, member, rootX, rootY);
+					}
+				}
+				if (!hit)
+					continue;
+
+				target.kind = RaceMenuLaserTargetKind::kItem;
+				target.index = static_cast<int>(itemIndex.GetNumber());
+				target.owner = list;
+				target.clip = clip;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// Skyrim VR's confirmation overlay is its own MessageBoxMenu. Mouse hover and
@@ -4452,8 +5213,13 @@ namespace
 			float targetX = szX + g_pTransform->laserU * (rangeX - 2.0f * szX);
 			float targetY = szY + g_pTransform->laserV * (rangeY - 2.0f * szY);
 			RE::GPtr<RE::GFxMovieView> laserMovie = advertisedTopMenu->uiMovie;
+			const ULONGLONG semanticNow = GetTickCount64();
+			// A menu can be on the UI stack before its ActionScript object tree is
+			// finished constructing. Keep all semantic Scaleform probes inside the
+			// same transition quarantine that already blocks click edges.
+			const bool menuSemanticInputReady = semanticNow >= s_clickRearmNotBefore;
 			const bool messageBoxOpen = strcmp(s_planeMenuName, "MessageBoxMenu") == 0;
-			const bool alternatePerspectiveMenu = laserMovie &&
+			const bool alternatePerspectiveMenu = menuSemanticInputReady && laserMovie &&
 			    strcmp(s_planeMenuName, "CustomMenu") == 0 &&
 			    IsAlternatePerspectiveMenu(*laserMovie);
 
@@ -4464,7 +5230,7 @@ namespace
 			// frame. Dialogue and Map keep their established laser-owned behavior.
 			bool buttonHit = false;
 			JournalLeftPaneAction journalTarget = JournalLeftPaneAction::kNone;
-			if (laserMovie && !dialogueOpen && !mapOpen) {
+			if (menuSemanticInputReady && laserMovie && !dialogueOpen && !mapOpen) {
 				buttonHit = laserMovie->HitTest(
 				    targetX, targetY, RE::GFxMovieView::HitTestType::kButtonEvents, 0);
 				if (journalOpen) {
@@ -4473,34 +5239,37 @@ namespace
 					    *laserMovie, targetX, targetY, ignoredSystemState);
 				}
 			}
-			const bool itemListHit = laserMovie && !buttonHit &&
+			const bool itemListHit = menuSemanticInputReady && laserMovie && !buttonHit &&
 			    PointerOverVRItemList(*laserMovie, s_planeMenuName, targetX, targetY);
-			const bool alternatePerspectiveListHit = alternatePerspectiveMenu &&
-			    PointerOverAlternatePerspectiveList(*laserMovie, targetX, targetY);
+			RaceMenuLaserTarget alternatePerspectiveTarget;
+			const bool alternatePerspectiveTargetHit = alternatePerspectiveMenu &&
+			    ResolveAlternatePerspectiveLaserTarget(
+			        *laserMovie, targetX, targetY, alternatePerspectiveTarget);
 			int messageBoxHoverButton = -1;
-			const bool messageBoxButtonHit = messageBoxOpen && laserMovie &&
+			const bool messageBoxButtonHit = menuSemanticInputReady && messageBoxOpen && laserMovie &&
 			    GetMessageBoxButtonAtViewportPoint(*laserMovie, targetX, targetY,
 			        messageBoxHoverButton, nullptr);
 			RaceMenuLaserTarget raceMenuTarget;
-			const bool raceMenuTargetHit = raceMenuOpen && laserMovie &&
+			const bool raceMenuTargetHit = menuSemanticInputReady && raceMenuOpen && laserMovie &&
 			    ResolveRaceMenuLaserTarget(
 			        *laserMovie, targetX, targetY, raceMenuTarget);
 			bool mcmListHit = false;
 			RE::GFxValue mcmScrollBar;
-			const bool mcmScrollBarHit = journalOpen && laserMovie &&
+			const bool mcmScrollBarHit = menuSemanticInputReady && journalOpen && laserMovie &&
 			    ResolveMCMScrollTarget(
 			        *laserMovie, targetX, targetY, mcmListHit, mcmScrollBar);
 			// RaceMenu sliders use track clicks and drags whose empty track regions do
 			// not always advertise kButtonEvents. Treat its whole proven quad as an
 			// input surface; the SWF still decides whether the pointed control reacts.
-			const bool laserTargetInteractive = dialogueOpen || mapOpen || raceMenuOpen || buttonHit ||
-			    itemListHit || alternatePerspectiveListHit || messageBoxButtonHit || mcmListHit ||
+			const bool laserTargetInteractive = dialogueOpen || mapOpen ||
+			    (menuSemanticInputReady && raceMenuOpen) || buttonHit ||
+			    itemListHit || alternatePerspectiveTargetHit || messageBoxButtonHit || mcmListHit ||
 			    s_verticalScrollBarDragging ||
 			    journalTarget != JournalLeftPaneAction::kNone;
 
 			const uint32_t pressSeq = g_pTransform->laserPressSeq;
 			const uint32_t releaseSeq = g_pTransform->laserReleaseSeq;
-			const ULONGLONG intentNow = GetTickCount64();
+			const ULONGLONG intentNow = semanticNow;
 			if (!s_clickArmed) {
 				s_lastPressSeq = pressSeq;
 				s_lastReleaseSeq = releaseSeq;
@@ -4585,7 +5354,7 @@ namespace
 				SKSE::log::info(
 				    "MENU INPUT owner=LASER menu='{}' intent={} target(button={}, itemList={}, altStart={}, messageBox={}, journal={})",
 				    s_planeMenuName, newLaserPress ? "trigger" : "motion", buttonHit,
-				    itemListHit, alternatePerspectiveListHit, messageBoxHoverButton,
+				    itemListHit, alternatePerspectiveTargetHit, messageBoxHoverButton,
 				    static_cast<int>(journalTarget));
 			}
 
@@ -4636,26 +5405,27 @@ namespace
 			} else {
 				s_messageBoxHoveredButton = -1;
 			}
+			if (alternatePerspectiveTargetHit &&
+			    alternatePerspectiveTarget.kind == RaceMenuLaserTargetKind::kItem) {
+				HoverRaceMenuLaserTarget(alternatePerspectiveTarget);
+			}
 			if (s_pressedMovieUsesSculpt && s_mouseHeld && s_pressedMovie) {
+				double localX = 0.0;
+				double localY = 0.0;
 				const bool sameCanvas = raceMenuOpen && laserMovie &&
 				    s_pressedMovie.get() == laserMovie.get() &&
-				    g_pTransform->laserTriggerHeld != 0 && raceMenuTargetHit &&
-				    raceMenuTarget.kind == RaceMenuLaserTargetKind::kSculptCanvas &&
-				    raceMenuTarget.clip == s_raceSculptForeground;
+				    g_pTransform->laserTriggerHeld != 0 &&
+				    GetRaceMenuSculptPoint(*laserMovie, s_raceSculptForeground,
+				        targetX, targetY, localX, localY);
 				if (sameCanvas) {
-					double localX = 0.0;
-					double localY = 0.0;
-					if (GetRaceMenuSculptPoint(*laserMovie, s_raceSculptForeground,
-					        targetX, targetY, localX, localY)) {
-						const double dx = localX - s_raceSculptLastX;
-						const double dy = localY - s_raceSculptLastY;
-						if (dx * dx + dy * dy >= 0.0625 &&
-						    ContinueRaceMenuSculptStroke(*laserMovie,
-						        s_raceSculptForeground, targetX, targetY,
-						        localX, localY)) {
-							s_raceSculptLastX = localX;
-							s_raceSculptLastY = localY;
-						}
+					const double dx = localX - s_raceSculptLastX;
+					const double dy = localY - s_raceSculptLastY;
+					if (dx * dx + dy * dy >= 0.0625 &&
+					    ContinueRaceMenuSculptStroke(*laserMovie,
+					        s_raceSculptForeground, targetX, targetY,
+					        localX, localY)) {
+						s_raceSculptLastX = localX;
+						s_raceSculptLastY = localY;
 					}
 				} else {
 					releasePressedMovie("left RaceMenu sculpt canvas");
@@ -4774,10 +5544,14 @@ namespace
 				// so never duplicate it with HandleEvent there. Other flat menus retain
 				// the proven GFx event path; Dialogue only synchronizes position before
 				// activating its focused choice with Return.
-				if (journalOpen || alternatePerspectiveMenu) {
+				if (journalOpen) {
 					const bool notifyMouseHeld = s_mouseHeld && s_pressedMovieUsesNotifyMouse &&
 					    s_pressedMovie && s_pressedMovie.get() == laserMovie.get();
 					laserMovie->NotifyMouseState(targetX, targetY, notifyMouseHeld ? 1u : 0u, 0);
+				} else if (alternatePerspectiveMenu) {
+					// Alternate Perspective is driven through its exact BasicList entry and
+					// scrollbar callbacks above and below. Skyrim VR's generic mouse state
+					// does not reliably resolve these dynamically attached AS2 clips.
 				} else if (raceMenuOpen) {
 					// The installed RaceMenu VR movie maps AS2 Mouse coordinates incorrectly
 					// through Skyrim's larger viewport. Its real controls are driven above by
@@ -4872,6 +5646,30 @@ namespace
 						s_mouseHeld = false;
 						s_pressedMovie = nullptr;
 						s_pressedMovieUsesNotifyMouse = false;
+					} else if (alternatePerspectiveTargetHit &&
+					    alternatePerspectiveTarget.kind == RaceMenuLaserTargetKind::kScrollBar) {
+						if (SetVerticalScrollBarAtViewportPoint(*laserMovie,
+						        alternatePerspectiveTarget.slider, targetX, targetY)) {
+							s_verticalDragScrollBar = alternatePerspectiveTarget.slider;
+							s_verticalScrollBarDragging = true;
+							s_mouseHeld = false;
+							s_pressedMovie = nullptr;
+							s_pressedMovieUsesNotifyMouse = false;
+							SKSE::log::info(
+							    "LASER Alternate Perspective scrollbar drag START at ({:.1f},{:.1f})",
+							    targetX, targetY);
+						}
+					} else if (alternatePerspectiveTargetHit &&
+					    alternatePerspectiveTarget.kind == RaceMenuLaserTargetKind::kItem) {
+						const int activatedIndex = alternatePerspectiveTarget.index;
+						const bool activated = ActivateRaceMenuLaserTarget(*laserMovie,
+						    alternatePerspectiveTarget, targetX, targetY, nullptr);
+						s_mouseHeld = false;
+						s_pressedMovie = nullptr;
+						s_pressedMovieUsesNotifyMouse = false;
+						SKSE::log::info(
+						    "LASER Alternate Perspective item ACTIVATE index={} result={} at ({:.1f},{:.1f})",
+						    activatedIndex, activated, targetX, targetY);
 					} else if (mcmScrollBarHit) {
 						// MCM's dynamic CLIK scrollbar is not reported consistently by
 						// GFx's button-event hit test. Drive its public position setter
@@ -4998,7 +5796,7 @@ namespace
 								    targetX, targetY);
 							}
 						}
-					} else if (alternatePerspectiveMenu || raceMenuOpen) {
+					} else if (raceMenuOpen) {
 						laserMovie->NotifyMouseState(targetX, targetY, 1u, 0);
 						s_pressedMovie = laserMovie;
 						s_pressedMovieX = targetX;
