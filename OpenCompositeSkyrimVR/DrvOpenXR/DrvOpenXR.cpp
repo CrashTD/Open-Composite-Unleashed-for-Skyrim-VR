@@ -236,6 +236,17 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	if (availableExtensions.count(XR_EXT_HAND_TRACKING_EXTENSION_NAME))
 		extensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
 
+	// Standard cross-runtime gaze input. PSVR2 Toolkit exposes this through
+	// SteamVR OpenXR; other runtimes/headsets may expose it directly. Auto eye
+	// tracking never enables fixed VRS when gaze is unavailable; Fixed is a
+	// separate explicit setting.
+	if (oovr_global_configuration.VrsEyeTracked() &&
+	    availableExtensions.count(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) {
+		extensions.push_back(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
+		xr_extEyeGazeInteraction = true;
+		OOVR_LOG("XR_EXT_eye_gaze_interaction extension available and enabled");
+	}
+
 	if (availableExtensions.contains(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME))
 		extensions.push_back(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME);
 
@@ -352,8 +363,9 @@ void DrvOpenXR::SetupSession()
 	xr_gbl = new XrSessionGlobals();
 
 	// Print the current version for diagnostic purposes
-	OOVR_LOGF("Started OpenXR session on runtime '%s', hand tracking supported: %d",
-	    xr_gbl->systemProperties.systemName, xr_gbl->handTrackingProperties.supportsHandTracking);
+	OOVR_LOGF("Started OpenXR session on runtime '%s', hand tracking supported: %d, eye gaze supported: %d",
+	    xr_gbl->systemProperties.systemName, xr_gbl->handTrackingProperties.supportsHandTracking,
+	    xr_gbl->eyeGazeProperties.supportsEyeGazeInteraction);
 
 	// Attach inputs early so implicit layers (like VD) see an attached
 	// action set before the first xrSyncActions / xrWaitFrame.

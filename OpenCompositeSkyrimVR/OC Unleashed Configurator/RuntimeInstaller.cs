@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -19,6 +20,34 @@ namespace OpenCompositeConfigurator
     // where it permanently shadows the real mod files.
     internal static class RuntimeInstaller
     {
+        internal sealed class RuntimeRemovalResult
+        {
+            public string GameDir { get; init; } = "";
+            public string BackupDir { get; init; } = "";
+            public List<string> RemovedFiles { get; } = new();
+            public List<string> SkippedFiles { get; } = new();
+            public bool RestoredVanillaOpenVr { get; set; }
+            public bool NeedsSteamVerify { get; set; }
+            public bool IsMo2ModInstall { get; init; }
+        }
+
+        // These are the only game-root paths OCU currently owns. The payload is
+        // also enumerated so future OCU files are covered, but no directory is
+        // ever removed recursively and an unrecognized binary must match the
+        // packaged payload byte-for-byte before it is touched.
+        private static readonly string[] KnownRuntimePaths =
+        {
+            "openvr_api.dll",
+            "opencomposite.ini",
+            "menu_quad_settings.ini",
+            "amd_fidelityfx_loader_dx12.dll",
+            "amd_fidelityfx_upscaler_dx12.dll",
+            "nvngx_dlss.dll",
+            Path.Combine("Gestures", "Dark.wav"),
+            Path.Combine("Gestures", "Impact.wav"),
+            Path.Combine("Gestures", "Magictrace.wav")
+        };
+
         // Config/user content is copied only when missing, never overwritten.
         private static bool IsCopyIfMissingOnly(string relPath)
         {
@@ -124,6 +153,202 @@ namespace OpenCompositeConfigurator
             catch (Exception ex)
             {
                 return "Runtime check failed: " + ex.Message;
+            }
+        }
+
+        // Explicit, recoverable OCU removal. Unlike the automatic startup sync,
+        // this is allowed for an EXE stored in an MO2 mod folder because the user
+        // deliberately requested recovery. It still refuses an MO2/USVFS-injected
+        // process: those writes can be redirected into Overwrite instead of the
+        // real Skyrim directory.
+        public static RuntimeRemovalResult RemoveRuntime(IWin32Window owner, string exeDir)
+        {
+            if (IsRunningUnderMo2())
+            {
+                throw new InvalidOperationException(
+                    "The Configurator is running through MO2/USVFS. Close it and launch the EXE directly from the OCU mod folder before removing game-root files.");
+            }
+
+            string[] blockingProcesses = { "SkyrimVR", "vrserver", "vrmonitor" };
+            string[] running = blockingProcesses
+                .Where(name => Process.GetProcessesByName(name).Length > 0)
+                .ToArray();
+            if (running.Length > 0)
+            {
+                throw new InvalidOperationException(
+                    "Close Skyrim VR and SteamVR first. Still running: " + string.Join(", ", running));
+            }
+
+            string payloadDir = Path.Combine(exeDir, "root");
+            if (!Directory.Exists(payloadDir))
+                throw new DirectoryNotFoundException("OCU root payload not found beside the Configurator: " + payloadDir);
+
+            string gameDir = FindGameDir(owner, exeDir);
+            if (string.IsNullOrEmpty(gameDir))
+                throw new DirectoryNotFoundException("Skyrim VR folder was not selected; nothing was changed.");
+
+            return RemoveRuntimeFromGameDir(payloadDir, gameDir, LooksLikeMo2ModFolder(exeDir));
+        }
+
+        private static RuntimeRemovalResult RemoveRuntimeFromGameDir(string payloadDir, string gameDir, bool isMo2ModInstall)
+        {
+            string fullPayloadDir = Path.GetFullPath(payloadDir);
+            string fullGameDir = Path.GetFullPath(gameDir);
+            if (!File.Exists(Path.Combine(fullGameDir, "SkyrimVR.exe")))
+                throw new InvalidOperationException("Selected folder does not contain SkyrimVR.exe: " + fullGameDir);
+
+            string backupDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "OpenCompositeConfigurator", "RuntimeBackups",
+                DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+
+            var result = new RuntimeRemovalResult
+            {
+                GameDir = fullGameDir,
+                BackupDir = backupDir,
+                IsMo2ModInstall = isMo2ModInstall
+            };
+
+            var relativePaths = new HashSet<string>(KnownRuntimePaths, StringComparer.OrdinalIgnoreCase);
+            foreach (string src in Directory.EnumerateFiles(fullPayloadDir, "*", SearchOption.AllDirectories))
+            {
+                if (IsExcluded(Path.GetFileName(src)))
+                    continue;
+                relativePaths.Add(Path.GetRelativePath(fullPayloadDir, src));
+            }
+
+            string mainDll = Path.Combine(fullGameDir, "openvr_api.dll");
+            string vanillaBackup = mainDll + ".vanilla.bak";
+            bool removedOpenCompositeDll = false;
+
+            foreach (string rel in relativePaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+            {
+                string target = ResolveChildPath(fullGameDir, rel);
+                if (!File.Exists(target))
+                    continue;
+
+                string name = Path.GetFileName(rel);
+                bool remove;
+                if (string.Equals(name, "openvr_api.dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    remove = ContainsAsciiToken(target, "OpenComposite");
+                    removedOpenCompositeDll = remove;
+                }
+                else if (string.Equals(name, "opencomposite.ini", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, "menu_quad_settings.ini", StringComparison.OrdinalIgnoreCase)
+                    || rel.StartsWith("Gestures" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    || rel.StartsWith("Gestures/", StringComparison.OrdinalIgnoreCase))
+                {
+                    // These are OCU config/content paths. Preserve customized
+                    // versions in the recovery backup instead of deleting them.
+                    remove = true;
+                }
+                else
+                {
+                    string payloadFile = ResolveChildPath(fullPayloadDir, rel);
+                    remove = File.Exists(payloadFile) && FilesIdentical(payloadFile, target);
+                }
+
+                if (!remove)
+                {
+                    result.SkippedFiles.Add(rel + " (not positively identified as OCU-owned)");
+                    continue;
+                }
+
+                MoveToBackup(target, backupDir, rel);
+                result.RemovedFiles.Add(rel);
+            }
+
+            // Manual/Vortex installation preserves the real Valve loader here.
+            // Only restore a backup whose metadata identifies Valve OpenVR and
+            // whose contents do not contain OpenComposite. Anything ambiguous is
+            // left alone and Steam Verify is requested instead.
+            if (File.Exists(vanillaBackup) && IsTrustedVanillaOpenVr(vanillaBackup))
+            {
+                if (!File.Exists(mainDll))
+                {
+                    File.Copy(vanillaBackup, mainDll, overwrite: false);
+                    result.RestoredVanillaOpenVr = true;
+                }
+                MoveToBackup(vanillaBackup, backupDir, "openvr_api.dll.vanilla.bak");
+                result.RemovedFiles.Add("openvr_api.dll.vanilla.bak");
+            }
+            else if (removedOpenCompositeDll && !File.Exists(mainDll))
+            {
+                result.NeedsSteamVerify = true;
+            }
+
+            TryDeleteEmptyDirectory(Path.Combine(fullGameDir, "Gestures"));
+
+            if (result.RemovedFiles.Count == 0 && Directory.Exists(backupDir))
+                TryDeleteEmptyDirectory(backupDir);
+
+            return result;
+        }
+
+        private static string ResolveChildPath(string root, string relativePath)
+        {
+            if (Path.IsPathRooted(relativePath))
+                throw new InvalidOperationException("Refusing rooted runtime path: " + relativePath);
+
+            string fullRoot = Path.GetFullPath(root)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            string fullPath = Path.GetFullPath(Path.Combine(fullRoot, relativePath));
+            if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Refusing runtime path outside the selected root: " + relativePath);
+            return fullPath;
+        }
+
+        private static void MoveToBackup(string source, string backupDir, string relativePath)
+        {
+            string destination = ResolveChildPath(backupDir, relativePath);
+            string? destinationDir = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrEmpty(destinationDir))
+                Directory.CreateDirectory(destinationDir);
+            File.Move(source, destination, overwrite: false);
+        }
+
+        private static bool IsTrustedVanillaOpenVr(string path)
+        {
+            if (ContainsAsciiToken(path, "OpenComposite"))
+                return false;
+            try
+            {
+                FileVersionInfo version = FileVersionInfo.GetVersionInfo(path);
+                return string.Equals(version.OriginalFilename, "openvr_api.dll", StringComparison.OrdinalIgnoreCase)
+                    && (string.Equals(version.CompanyName, "Valve", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(version.ProductName, "OpenVR", StringComparison.OrdinalIgnoreCase));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool ContainsAsciiToken(string path, string token)
+        {
+            byte[] needle = Encoding.ASCII.GetBytes(token);
+            byte[] data = File.ReadAllBytes(path);
+            for (int i = 0; i <= data.Length - needle.Length; i++)
+            {
+                int j = 0;
+                while (j < needle.Length && data[i + j] == needle[j]) j++;
+                if (j == needle.Length) return true;
+            }
+            return false;
+        }
+
+        private static void TryDeleteEmptyDirectory(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
+                    Directory.Delete(path, recursive: false);
+            }
+            catch
+            {
+                // A non-empty or locked directory is not an uninstall failure.
             }
         }
 

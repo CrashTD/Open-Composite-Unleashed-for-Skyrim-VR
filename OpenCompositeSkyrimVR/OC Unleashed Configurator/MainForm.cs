@@ -30,10 +30,12 @@ namespace OpenCompositeConfigurator
         private Button _btnTabSettings = null!;
         private Button _btnTabKeyboard = null!;
         private Button _btnTabVideo = null!;
+        private Button _btnTabSteamHelp = null!;
         private Button _btnTabHaptics = null!;
         private Panel _tabSettings = null!;
         private Panel _tabKeyboard = null!;
         private Panel _tabVideo = null!;
+        private Panel _tabSteamHelp = null!;
         private Panel _tabHaptics = null!;
 
         // Video tab controls
@@ -97,7 +99,8 @@ namespace OpenCompositeConfigurator
         private NumericUpDown _nudFsr3MipBiasOffset = null!;
 
         // VRS controls
-        private CheckBox _chkVrsEnabled = null!;
+        private CheckBox _chkVrsFixedEnabled = null!;
+        private CheckBox _chkVrsEyeTracked = null!;
         private NumericUpDown _nudVrsInnerRadius = null!;
         private NumericUpDown _nudVrsMidRadius = null!;
         private NumericUpDown _nudVrsOuterRadius = null!;
@@ -131,7 +134,7 @@ namespace OpenCompositeConfigurator
 
         // General settings
         private NumericUpDown _nudSuperSample = null!;
-        private CheckBox _chkRenderHands = null!;
+        private ComboBox _cmbControllerModels = null!;
         private CheckBox _chkHaptics = null!;
 
         // Developer/tuning surfaces (haptics page, FBT capture recorder, live
@@ -186,6 +189,7 @@ namespace OpenCompositeConfigurator
         // Dead zones (Skyrim)
         private NumericUpDown _nudLeftDeadZone = null!;
         private NumericUpDown _nudRightDeadZone = null!;
+        private CheckBox _chkSwapThumbsticks = null!;
 
         // Controller axis adjustments (Skyrim)
         private Panel _pnlAxisAdjust = null!;
@@ -213,6 +217,11 @@ namespace OpenCompositeConfigurator
         private NumericUpDown _nudLeftLaserRotZ = null!;
         private CheckBox _chkRightLaserRotation = null!;
         private CheckBox _chkMenuLaserEnabled = null!;
+        private CheckBox _chkLaserSmoothing = null!;
+        private NumericUpDown _nudLaserPosSmoothMinCutoff = null!;
+        private NumericUpDown _nudLaserPosSmoothBeta = null!;
+        private NumericUpDown _nudLaserRotSmoothMinCutoff = null!;
+        private NumericUpDown _nudLaserRotSmoothBeta = null!;
         private NumericUpDown _nudRightLaserRotX = null!;
         private NumericUpDown _nudRightLaserRotY = null!;
         private NumericUpDown _nudRightLaserRotZ = null!;
@@ -227,13 +236,22 @@ namespace OpenCompositeConfigurator
         private Button _btnReload = null!;
 
         // Unsaved-changes indicator: breathing overlay banner + on-close save prompt
-        private Label _lblUnsavedBanner = null!;
+        private GlowingBannerLabel _lblUnsavedBanner = null!;
         private System.Windows.Forms.Timer _breatheTimer = null!;
-        private bool _flashOn = false;
+        private double _breathePhase = -Math.PI / 2.0;
+        private float _saveShinePosition;
+        private System.Windows.Forms.Timer _activeGlowTimer = null!;
+        private double _activeGlowPhase = -Math.PI / 2.0;
         private bool _dirty = false;
+        private readonly HashSet<Control> _dirtyTrackedControls = new();
+        private readonly HashSet<Control> _independentlySavedControls = new();
+        private readonly Dictionary<Control, string> _savedControlState = new();
+        private const string GeneralUnsavedMessage = "YOU HAVE UNSAVED CHANGES, REMEMBER TO SAVE.";
+        private const string PresetUnsavedMessage = "PRESET SELECTED — CLICK APPLY PRESET TO SAVE CHANGES.";
 
         // Status
         private Label _lblStatus = null!;
+        private Label _lblSteamHelpStatus = null!;
 
         // Button ID → checkbox mapping
         private readonly Dictionary<string, Func<CheckBox>> _btnCheckboxMap = new();
@@ -275,6 +293,7 @@ namespace OpenCompositeConfigurator
         private Button _btnApplyBindingPreset = null!;
         private Button _btnSaveAsBindingPreset = null!;
         private Button _btnDeleteBindingPreset = null!;
+        private string _appliedBindingPresetName = "VRIK V2.1.0";
 
         // User-saved presets persist between launches in app-data. Live entries get loaded into
         // _cmbBindingPreset on startup and into _userBindingPresets so Apply
@@ -290,10 +309,10 @@ namespace OpenCompositeConfigurator
         }
 
         private string? _selectedKeyId = null;
-        private Button? _selectedKeyButton = null;
+        private ModernKeyButton? _selectedKeyButton = null;
 
         private readonly Dictionary<string, int> _keyBindings = new();
-        private readonly Dictionary<string, Button> _keyButtons = new();
+        private readonly Dictionary<string, ModernKeyButton> _keyButtons = new();
 
         // Per-context bindings: context name → (action name → full field array)
         // Each field array has 20 elements matching controlmapvr.txt columns
@@ -418,11 +437,6 @@ namespace OpenCompositeConfigurator
         private Panel _comboListPanel = null!;
         private Label _lblComboStatus = null!;
 
-        // Color scheme for bound keys
-        private static readonly Color BoundKeyColor = Color.FromArgb(80, 140, 200);
-        private static readonly Color SelectedKeyColor = Color.FromArgb(200, 160, 60);
-        private static readonly Color UnboundKeyColor = Color.FromArgb(50, 50, 58);
-
         // ═══════════════════════════════════════════════════════════════════════
 
         public MainForm(string gameType = "skyrim")
@@ -439,7 +453,21 @@ namespace OpenCompositeConfigurator
             SetDefaults();
             LoadDefaultKeyBindings();
             ApplyCurrentGamePaths();
+            ModernUiTheme.Apply(this);
+            SwitchTab(0);
             WireDirtyTracking(this);   // subscribe AFTER initial population so loading never marks dirty
+            // These two live on the Gestures tab but are global INI settings;
+            // the remaining gesture editor fields use their own Save Gesture flow.
+            TrackDirtyControl(_chkGestureSounds);
+            TrackDirtyControl(_cmbFinishSound);
+            // Controller photo/model has its own Save button on Bindings, but
+            // still participates in the shared unsaved-state warning.
+            TrackIndependentDirtyControl(_cmbControllerModel);
+            // Selecting a binding preset is only a preview. Apply Preset is
+            // the sole operation that writes it to the live controlmap.
+            TrackIndependentDirtyControl(_cmbBindingPreset);
+            CaptureSavedState();
+            _activeGlowTimer.Start();
         }
 
         private void LoadControllerImage()
@@ -529,23 +557,24 @@ namespace OpenCompositeConfigurator
             Controls.Add(_lblInstallNotice);
 
             // Floating overlay on the top notice line (Visible=false until dirty) — big bold letters breathe, no box, no reflow
-            _lblUnsavedBanner = new Label
+            _lblUnsavedBanner = new GlowingBannerLabel
             {
                 Location = new Point(leftMargin + 225, y - 5),
                 Width = 860,
                 Height = 34,
                 Visible = false,
-                BackColor = Color.FromArgb(30, 30, 35),
-                ForeColor = Color.FromArgb(120, 75, 20),
-                Font = new Font("Segoe UI", 20f, FontStyle.Bold),
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 17f, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleCenter,
-                Text = "YOU HAVE UNSAVED CHANGES, REMEMBER TO SAVE."
+                Text = GeneralUnsavedMessage
             };
             Controls.Add(_lblUnsavedBanner);
             _lblUnsavedBanner.BringToFront();
 
-            _breatheTimer = new System.Windows.Forms.Timer { Interval = 450 };
+            _breatheTimer = new System.Windows.Forms.Timer { Interval = 60 };
             _breatheTimer.Tick += BreatheTimer_Tick;
+            _activeGlowTimer = new System.Windows.Forms.Timer { Interval = 70 };
+            _activeGlowTimer.Tick += ActiveGlowTimer_Tick;
 
             y += 40;
 
@@ -553,7 +582,7 @@ namespace OpenCompositeConfigurator
             // TAB BUTTONS (borderless — just two toggle buttons, no TabControl)
             // ══════════════════════════════════════════════════════════════════
 
-            _btnTabSettings = new Button
+            _btnTabSettings = new ModernPillButton
             {
                 Text = "Settings",
                 Location = new Point(leftMargin, y),
@@ -569,7 +598,7 @@ namespace OpenCompositeConfigurator
             _btnTabSettings.Click += (s, e) => SwitchTab(0);
             Controls.Add(_btnTabSettings);
 
-            _btnTabKeyboard = new Button
+            _btnTabKeyboard = new ModernPillButton
             {
                 Text = "Bindings",
                 Location = new Point(leftMargin + 125, y),
@@ -585,7 +614,7 @@ namespace OpenCompositeConfigurator
             _btnTabKeyboard.Click += (s, e) => SwitchTab(1);
             Controls.Add(_btnTabKeyboard);
 
-            _btnTabGestures = new Button
+            _btnTabGestures = new ModernPillButton
             {
                 Text = "Gestures",
                 Location = new Point(leftMargin + 230, y),
@@ -601,7 +630,7 @@ namespace OpenCompositeConfigurator
             _btnTabGestures.Click += (s, e) => SwitchTab(2);
             Controls.Add(_btnTabGestures);
 
-            _btnTabVideo = new Button
+            _btnTabVideo = new ModernPillButton
             {
                 Text = "Video",
                 Location = new Point(leftMargin + 330, y),
@@ -617,10 +646,26 @@ namespace OpenCompositeConfigurator
             _btnTabVideo.Click += (s, e) => SwitchTab(3);
             Controls.Add(_btnTabVideo);
 
-            _btnTabHaptics = new Button
+            _btnTabSteamHelp = new ModernPillButton
+            {
+                Text = "SteamVR / Help",
+                Location = new Point(leftMargin + 425, y),
+                Size = new Size(145, 30),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 10f),
+                ForeColor = Color.FromArgb(160, 160, 160),
+                BackColor = Color.FromArgb(35, 35, 40),
+                Cursor = Cursors.Hand,
+            };
+            _btnTabSteamHelp.FlatAppearance.BorderSize = 0;
+            _btnTabSteamHelp.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 55);
+            _btnTabSteamHelp.Click += (s, e) => SwitchTab(4);
+            Controls.Add(_btnTabSteamHelp);
+
+            _btnTabHaptics = new ModernPillButton
             {
                 Text = "Haptics",
-                Location = new Point(leftMargin + 425, y),
+                Location = new Point(leftMargin + 575, y),
                 Size = new Size(90, 30),
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 10f),
@@ -630,14 +675,14 @@ namespace OpenCompositeConfigurator
             };
             _btnTabHaptics.FlatAppearance.BorderSize = 0;
             _btnTabHaptics.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 55);
-            _btnTabHaptics.Click += (s, e) => SwitchTab(4);
+            _btnTabHaptics.Click += (s, e) => SwitchTab(5);
             _btnTabHaptics.Visible = ShowDevTools;
             Controls.Add(_btnTabHaptics);
 
-            _btnTabBody = new Button
+            _btnTabBody = new ModernPillButton
             {
                 Text = "Body Tracking",
-                Location = new Point(leftMargin + (ShowDevTools ? 520 : 425), y),
+                Location = new Point(leftMargin + (ShowDevTools ? 670 : 575), y),
                 Size = new Size(115, 30),
                 FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 10f),
@@ -647,7 +692,7 @@ namespace OpenCompositeConfigurator
             };
             _btnTabBody.FlatAppearance.BorderSize = 0;
             _btnTabBody.FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 50, 55);
-            _btnTabBody.Click += (s, e) => SwitchTab(5);
+            _btnTabBody.Click += (s, e) => SwitchTab(6);
             new ToolTip { AutoPopDelay = 12000, InitialDelay = 350 }.SetToolTip(
                 _btnTabBody,
                 "Opt-in local camera FBT. MediaPipe Lite runs on this PC; tracker output and walk-in-place remain off until you enable them.");
@@ -702,7 +747,18 @@ namespace OpenCompositeConfigurator
             };
             Controls.Add(_tabVideo);
 
-            // Panel 5: Haptics
+            // Panel 5: SteamVR / Help
+            _tabSteamHelp = new Panel
+            {
+                Location = new Point(leftMargin, y),
+                Size = new Size(rightEdge - leftMargin, 800), // resized after content built
+                BackColor = Color.FromArgb(30, 30, 35),
+                AutoScroll = false,
+                Visible = false,
+            };
+            Controls.Add(_tabSteamHelp);
+
+            // Panel 6: Haptics
             _tabHaptics = new Panel
             {
                 Location = new Point(leftMargin, y),
@@ -713,7 +769,7 @@ namespace OpenCompositeConfigurator
             };
             Controls.Add(_tabHaptics);
 
-            // Panel 6: Body Tracking
+            // Panel 7: Body Tracking
             _tabBody = new Panel
             {
                 Location = new Point(leftMargin, y),
@@ -729,17 +785,15 @@ namespace OpenCompositeConfigurator
             BuildKeyboardTab();
             BuildGesturesTab();
             BuildVideoTab();
+            BuildSteamVrHelpTab();
             BuildHapticsTab();
             BuildBodyTrackingTab();
 
             // Sync all tabs to the same height (tallest content)
-            int tallestTab = Math.Max(Math.Max(Math.Max(Math.Max(Math.Max(_tabSettings.Height, _tabKeyboard.Height), _tabGestures.Height), _tabVideo.Height), _tabHaptics.Height), _tabBody.Height);
-            _tabSettings.Size = new Size(_tabSettings.Width, tallestTab);
-            _tabKeyboard.Size = new Size(_tabKeyboard.Width, tallestTab);
-            _tabGestures.Size = new Size(_tabGestures.Width, tallestTab);
-            _tabVideo.Size = new Size(_tabVideo.Width, tallestTab);
-            _tabHaptics.Size = new Size(_tabHaptics.Width, tallestTab);
-            _tabBody.Size = new Size(_tabBody.Width, tallestTab);
+            var tabs = new[] { _tabSettings, _tabKeyboard, _tabGestures, _tabVideo, _tabSteamHelp, _tabHaptics, _tabBody };
+            int tallestTab = tabs.Max(tab => tab.Height);
+            foreach (Panel tab in tabs)
+                tab.Size = new Size(tab.Width, tallestTab);
 
             // Support footer right after the tabs
             int kofiY = _tabSettings.Location.Y + tallestTab + 4;
@@ -843,7 +897,7 @@ namespace OpenCompositeConfigurator
 
                 int newTabH = Math.Max(300, _tabSettings.Height - overflow);
                 int delta = _tabSettings.Height - newTabH;
-                foreach (var tab in new[] { _tabSettings, _tabKeyboard, _tabGestures, _tabVideo, _tabHaptics, _tabBody })
+                foreach (var tab in new[] { _tabSettings, _tabKeyboard, _tabGestures, _tabVideo, _tabSteamHelp, _tabHaptics, _tabBody })
                 {
                     tab.AutoScroll = true;
                     tab.Height = newTabH;
@@ -870,25 +924,6 @@ namespace OpenCompositeConfigurator
             int rightEdge = container.ClientSize.Width - 20;
             int col1 = leftMargin;
             int col2 = leftMargin + 220;
-
-            // MO2 Setup Instructions
-            var lblMO2Note = new Label
-            {
-                Location = new Point(leftMargin, y),
-                Size = new Size(rightEdge - leftMargin, 24),
-                Text = "This configurator edits the OCU files in this mod folder. Keep the EXE here and launch it from a shortcut.",
-                ForeColor = Color.FromArgb(150, 200, 250),
-                Font = new Font("Segoe UI", 8.5f, FontStyle.Italic),
-                BackColor = Color.FromArgb(40, 45, 60),
-                BorderStyle = BorderStyle.FixedSingle,
-                Padding = new Padding(6, 4, 6, 4),
-                AutoSize = false
-            };
-            container.Controls.Add(lblMO2Note);
-
-            y += 30;
-            container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
-            y += 8;
 
             // ── SAVE/RELOAD BUTTONS (top right corner) ──
             var btnSettingsMasterReset = MakeButton("Master Reset", rightEdge - 450, y, 130, 30);
@@ -1196,10 +1231,24 @@ namespace OpenCompositeConfigurator
             // Haptic master switch + strength moved to the dedicated Haptics tab
             y += 28;
 
-            _chkRenderHands = MakeCheckBox("Render custom hands", gc1, y);
-            _chkRenderHands.Checked = true;
-            container.Controls.Add(_chkRenderHands);
-            y += 24;
+            container.Controls.Add(MakeLabel("Controller models:", gc1, y + 3, 120));
+            _cmbControllerModels = new ComboBox
+            {
+                Location = new Point(gc1 + 120, y),
+                Width = 260,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(50, 50, 55),
+                ForeColor = Color.White
+            };
+            _cmbControllerModels.Items.AddRange(new object[]
+            {
+                "Automatic (SteamVR / Relos)",
+                "Legacy grey hands",
+                "Off"
+            });
+            _cmbControllerModels.SelectedIndex = 0;
+            container.Controls.Add(_cmbControllerModels);
+            y += 28;
 
             _chkHiddenMesh = MakeCheckBox("Enable hidden mesh fix", gc1, y);
             _chkHiddenMesh.Checked = true;
@@ -1353,6 +1402,10 @@ namespace OpenCompositeConfigurator
             };
             _pnlSkyrimOnly.Controls.Add(_nudRightDeadZone);
             sy2 += 28;
+
+            _chkSwapThumbsticks = MakeCheckBox("Swap sticks: right moves, left turns", sc3, sy2);
+            _pnlSkyrimOnly.Controls.Add(_chkSwapThumbsticks);
+            sy2 += 24;
 
             // Combat haptics moved to the dedicated Haptics tab (BuildHapticsTab)
 
@@ -1511,6 +1564,48 @@ namespace OpenCompositeConfigurator
                 _pnlAxisAdjust.Controls.Add(_chkMenuLaserEnabled);
                 ay += 24;
 
+                _chkLaserSmoothing = MakeCheckBox("Smooth laser aim", ax1, ay);
+                _chkLaserSmoothing.Checked = true;
+                _pnlAxisAdjust.Controls.Add(_chkLaserSmoothing);
+                var lblLaserPosHz = MakeLabel("Pos Hz:", ax1 + 190, ay + 3, 52);
+                _pnlAxisAdjust.Controls.Add(lblLaserPosHz);
+                _nudLaserPosSmoothMinCutoff = MakeAxisNud(ax1 + 242, ay, 0.01m, 20m, 0.25m, 2);
+                _nudLaserPosSmoothMinCutoff.Value = 6m;
+                _pnlAxisAdjust.Controls.Add(_nudLaserPosSmoothMinCutoff);
+                var lblLaserPosResponse = MakeLabel("Pos response:", ax1 + 320, ay + 3, 88);
+                _pnlAxisAdjust.Controls.Add(lblLaserPosResponse);
+                _nudLaserPosSmoothBeta = MakeAxisNud(ax1 + 408, ay, 0m, 100m, 0.5m, 2);
+                _nudLaserPosSmoothBeta.Value = 12m;
+                _pnlAxisAdjust.Controls.Add(_nudLaserPosSmoothBeta);
+
+                var lblLaserAimHz = MakeLabel("Aim Hz:", ax2, ay + 3, 55);
+                _pnlAxisAdjust.Controls.Add(lblLaserAimHz);
+                _nudLaserRotSmoothMinCutoff = MakeAxisNud(ax2 + 55, ay, 0.01m, 20m, 0.25m, 2);
+                _nudLaserRotSmoothMinCutoff.Value = 4m;
+                _pnlAxisAdjust.Controls.Add(_nudLaserRotSmoothMinCutoff);
+                var lblLaserAimResponse = MakeLabel("Aim response:", ax2 + 135, ay + 3, 92);
+                _pnlAxisAdjust.Controls.Add(lblLaserAimResponse);
+                _nudLaserRotSmoothBeta = MakeAxisNud(ax2 + 227, ay, 0m, 10m, 0.05m, 2);
+                _nudLaserRotSmoothBeta.Value = 0.35m;
+                _pnlAxisAdjust.Controls.Add(_nudLaserRotSmoothBeta);
+                _chkLaserSmoothing.CheckedChanged += (_, _) =>
+                {
+                    bool enabled = _chkLaserSmoothing.Checked;
+                    _nudLaserPosSmoothMinCutoff.Enabled = enabled;
+                    _nudLaserPosSmoothBeta.Enabled = enabled;
+                    _nudLaserRotSmoothMinCutoff.Enabled = enabled;
+                    _nudLaserRotSmoothBeta.Enabled = enabled;
+                    lblLaserPosHz.Enabled = enabled;
+                    lblLaserPosResponse.Enabled = enabled;
+                    lblLaserAimHz.Enabled = enabled;
+                    lblLaserAimResponse.Enabled = enabled;
+                };
+                _nudLaserPosSmoothMinCutoff.Enabled = true;
+                _nudLaserPosSmoothBeta.Enabled = true;
+                _nudLaserRotSmoothMinCutoff.Enabled = true;
+                _nudLaserRotSmoothBeta.Enabled = true;
+                ay += 26;
+
                 _chkLeftLaserRotation = MakeCheckBox("Left laser", ax1, ay);
                 _pnlAxisAdjust.Controls.Add(_chkLeftLaserRotation);
                 _pnlAxisAdjust.Controls.Add(MakeLabel("X:", ax1 + 140, ay + 3, 16));
@@ -1546,48 +1641,6 @@ namespace OpenCompositeConfigurator
                 };
                 ay += 28;
 
-                _pnlAxisAdjust.Controls.Add(MakeSeparator(ax1, ay, rightEdge - leftMargin));
-                ay += 12;
-
-                var lblSteamVrSection = MakeSectionLabel("SteamVR OCU Profile", ax1, ay);
-                _pnlAxisAdjust.Controls.Add(lblSteamVrSection);
-                ay += 28;
-
-                var btnApplySteamVrProfile = MakeButton("Apply SteamVR OCU Profile", ax1, ay, 220, 28);
-                btnApplySteamVrProfile.BackColor = Color.FromArgb(40, 120, 40);
-                btnApplySteamVrProfile.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-                btnApplySteamVrProfile.Click += BtnApplySteamVrProfile_Click;
-                _pnlAxisAdjust.Controls.Add(btnApplySteamVrProfile);
-
-                var btnRestoreSteamVrDefaults = MakeButton("Restore SteamVR Defaults", ax1 + 235, ay, 210, 28);
-                btnRestoreSteamVrDefaults.BackColor = Color.FromArgb(120, 60, 40);
-                btnRestoreSteamVrDefaults.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-                btnRestoreSteamVrDefaults.Click += BtnRestoreSteamVrDefaults_Click;
-                _pnlAxisAdjust.Controls.Add(btnRestoreSteamVrDefaults);
-
-                var btnOpenSteamVrSettings = MakeButton("Open SteamVR Settings Folder", ax1 + 460, ay, 225, 28);
-                btnOpenSteamVrSettings.Font = new Font("Segoe UI", 8.5f);
-                btnOpenSteamVrSettings.Click += BtnOpenSteamVrSettingsFolder_Click;
-                _pnlAxisAdjust.Controls.Add(btnOpenSteamVrSettings);
-
-                var lblSteamVrDesc = MakeLabel("Important for SteamVR/OpenXR headsets: set SteamVR as the active OpenXR runtime, then apply this profile. Patches %LOCALAPPDATA%\\openvr\\steamvr.vrsettings.", ax1 + 700, ay + 3, rightEdge - leftMargin - 710);
-                lblSteamVrDesc.ForeColor = Color.FromArgb(130, 130, 130);
-                lblSteamVrDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-                lblSteamVrDesc.Height = 40;
-                _pnlAxisAdjust.Controls.Add(lblSteamVrDesc);
-                ay += 48;
-
-                var btnOpenSetupReadme = MakeButton("Open Setup Readme", ax1, ay, 180, 28);
-                btnOpenSetupReadme.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-                btnOpenSetupReadme.Click += BtnOpenSetupReadme_Click;
-                _pnlAxisAdjust.Controls.Add(btnOpenSetupReadme);
-
-                var lblSetupReadmeDesc = MakeLabel("Opens the OCU setup manual in your external browser.", ax1 + 195, ay + 5, 520);
-                lblSetupReadmeDesc.ForeColor = Color.FromArgb(130, 130, 130);
-                lblSetupReadmeDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-                _pnlAxisAdjust.Controls.Add(lblSetupReadmeDesc);
-                ay += 40;
-
                 _pnlAxisAdjust.Size = new Size(rightEdge - leftMargin, ay);
                 if (_pnlAxisAdjust.Visible) y += ay;
             }
@@ -1599,6 +1652,120 @@ namespace OpenCompositeConfigurator
 
             // Auto-size panel to fit content
             container.Size = new Size(container.Width, y + 30);
+        }
+
+        private void BuildSteamVrHelpTab()
+        {
+            var container = _tabSteamHelp;
+            int y = 10;
+            int leftMargin = 10;
+            int rightEdge = container.ClientSize.Width - 20;
+
+            var lblSteamVrSection = MakeSectionLabel("SteamVR OCU Profile", leftMargin, y);
+            container.Controls.Add(lblSteamVrSection);
+            y += 26;
+
+            var lblSteamVrDesc = MakeLabel(
+                "For SteamVR/OpenXR headsets, set SteamVR as the active OpenXR runtime, then apply this profile. Direct VDXR users do not need it.",
+                leftMargin, y, rightEdge - leftMargin);
+            lblSteamVrDesc.ForeColor = Color.FromArgb(175, 175, 180);
+            lblSteamVrDesc.Font = new Font("Segoe UI", 9f);
+            lblSteamVrDesc.Height = 26;
+            container.Controls.Add(lblSteamVrDesc);
+            y += 32;
+
+            var btnApplySteamVrProfile = MakeButton("Apply SteamVR OCU Profile", leftMargin, y, 220, 30);
+            btnApplySteamVrProfile.BackColor = Color.FromArgb(40, 120, 40);
+            btnApplySteamVrProfile.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+            btnApplySteamVrProfile.Click += BtnApplySteamVrProfile_Click;
+            container.Controls.Add(btnApplySteamVrProfile);
+
+            var btnRestoreSteamVrDefaults = MakeButton("Restore SteamVR Defaults", leftMargin + 235, y, 210, 30);
+            btnRestoreSteamVrDefaults.BackColor = Color.FromArgb(120, 60, 40);
+            btnRestoreSteamVrDefaults.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+            btnRestoreSteamVrDefaults.Click += BtnRestoreSteamVrDefaults_Click;
+            container.Controls.Add(btnRestoreSteamVrDefaults);
+
+            var btnOpenSteamVrSettings = MakeButton("Open SteamVR Settings Folder", leftMargin + 460, y, 225, 30);
+            btnOpenSteamVrSettings.Font = new Font("Segoe UI", 8.5f);
+            btnOpenSteamVrSettings.Click += BtnOpenSteamVrSettingsFolder_Click;
+            container.Controls.Add(btnOpenSteamVrSettings);
+            y += 36;
+
+            var lblSteamVrPath = MakeLabel(
+                "OCU resolves SteamVR's active steamvr.vrsettings file automatically and creates a backup before either applying or restoring the profile.",
+                leftMargin, y, rightEdge - leftMargin);
+            lblSteamVrPath.ForeColor = Color.FromArgb(140, 140, 145);
+            lblSteamVrPath.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
+            lblSteamVrPath.Height = 24;
+            container.Controls.Add(lblSteamVrPath);
+            y += 30;
+
+            _lblSteamHelpStatus = MakeLabel("", leftMargin, y, rightEdge - leftMargin);
+            _lblSteamHelpStatus.ForeColor = Color.FromArgb(100, 200, 100);
+            container.Controls.Add(_lblSteamHelpStatus);
+            y += 26;
+
+            container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
+            y += 10;
+
+            var lblRuntimeRecovery = MakeSectionLabel("Skyrim Runtime Recovery", leftMargin, y);
+            container.Controls.Add(lblRuntimeRecovery);
+            y += 26;
+
+            var btnRemoveOcuRuntime = MakeButton("Remove OCU Game-Root Files", leftMargin, y, 245, 30);
+            btnRemoveOcuRuntime.BackColor = Color.FromArgb(130, 55, 45);
+            btnRemoveOcuRuntime.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+            btnRemoveOcuRuntime.Click += BtnRemoveOcuRuntime_Click;
+            container.Controls.Add(btnRemoveOcuRuntime);
+
+            var lblRuntimeRecoveryDesc = MakeLabel(
+                "Moves only positively identified OCU files out of the Skyrim VR folder into a recovery backup. It never deletes Data or the game folder. After removal, verify Skyrim VR through Steam before launching normally—even when the preserved Valve loader was restored.",
+                leftMargin + 260, y + 4, rightEdge - leftMargin - 270);
+            lblRuntimeRecoveryDesc.ForeColor = Color.FromArgb(175, 175, 180);
+            lblRuntimeRecoveryDesc.Font = new Font("Segoe UI", 8.5f);
+            lblRuntimeRecoveryDesc.Height = 48;
+            container.Controls.Add(lblRuntimeRecoveryDesc);
+            y += 54;
+
+            var lblRuntimeRecoveryNote = MakeLabel(
+                "Order: close Skyrim VR/SteamVR → disable OCU + Root Builder > Clear → remove OCU files → Steam Verify.\nKeep OCU disabled afterward. Removal does not change SteamVR settings; use Restore SteamVR Defaults above.",
+                leftMargin, y, rightEdge - leftMargin);
+            lblRuntimeRecoveryNote.ForeColor = Color.FromArgb(255, 190, 90);
+            lblRuntimeRecoveryNote.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
+            lblRuntimeRecoveryNote.Height = 42;
+            container.Controls.Add(lblRuntimeRecoveryNote);
+            y += 48;
+
+            container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
+            y += 10;
+
+            var lblHelpSection = MakeSectionLabel("Help", leftMargin, y);
+            container.Controls.Add(lblHelpSection);
+            y += 26;
+
+            var btnOpenSetupReadme = MakeButton("Open Setup Readme", leftMargin, y, 180, 30);
+            btnOpenSetupReadme.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+            btnOpenSetupReadme.Click += BtnOpenSetupReadme_Click;
+            container.Controls.Add(btnOpenSetupReadme);
+
+            var lblSetupReadmeDesc = MakeLabel(
+                "Open the full OCU install, runtime selection, SteamVR, and troubleshooting guide in your browser.",
+                leftMargin + 195, y + 5, rightEdge - leftMargin - 205);
+            lblSetupReadmeDesc.ForeColor = Color.FromArgb(140, 140, 145);
+            lblSetupReadmeDesc.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
+            container.Controls.Add(lblSetupReadmeDesc);
+            y += 36;
+
+            var lblInstallHelp = MakeLabel(
+                "Keep this EXE inside the OCU mod folder. A desktop shortcut is fine, but do not move the executable out of the mod.",
+                leftMargin, y, rightEdge - leftMargin);
+            lblInstallHelp.ForeColor = Color.FromArgb(150, 200, 250);
+            lblInstallHelp.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
+            container.Controls.Add(lblInstallHelp);
+            y += 28;
+
+            container.Size = new Size(container.Width, y + 10);
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -1817,7 +1984,7 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(_cmbContext);
 
             // Disable mouse checkbox
-            _chkDisableMouse = new CheckBox
+            _chkDisableMouse = new ModernCheckBox
             {
                 Text = "Disable Mouse Bindings (VR)",
                 Location = new Point(leftMargin + 400, y + 2),
@@ -1911,7 +2078,7 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(_keyboardPanel);
             CreateKeyboardLayout();
 
-            y += 305;
+            y += 302;
 
             // ══════════════════════════════════════════════════════════
             // CONTROLLER BINDINGS + COMBOS (side by side)
@@ -1919,7 +2086,7 @@ namespace OpenCompositeConfigurator
             // ══════════════════════════════════════════════════════════
 
             container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
-            y += 8;
+            y += 6;
 
             // ── Top row: Controller Bindings header + controls on the right ──
             int splitX = 440; // divider between combos (left) and controller (right)
@@ -1961,7 +2128,7 @@ namespace OpenCompositeConfigurator
 
             // Move Preset row down one line so it doesn't collide with the Type dropdown.
             // This is its own visually-distinct row of preset-management controls.
-            y += 28;
+            y += 26;
 
             // Binding preset dropdown — applies controller bindings while preserving keyboard.
             // Replaces the old single "VRIK V2.1.0" button. Active preset persists in
@@ -2003,7 +2170,7 @@ namespace OpenCompositeConfigurator
             // user preset under %AppData%\OpenCompositeConfigurator\Presets\ so the
             // user's edits survive across sessions and reappear in the dropdown.
             _btnSaveAsBindingPreset = MakeButton("Save As…", rightEdge - 255, y, 80, 24);
-            _btnSaveAsBindingPreset.BackColor = Color.FromArgb(40, 110, 60);
+            _btnSaveAsBindingPreset.BackColor = Color.FromArgb(40, 120, 40);
             _btnSaveAsBindingPreset.Font = new Font("Segoe UI", 8f);
             _btnSaveAsBindingPreset.Click += BtnSaveAsBindingPreset_Click;
             container.Controls.Add(_btnSaveAsBindingPreset);
@@ -2165,7 +2332,7 @@ namespace OpenCompositeConfigurator
             BuildControllerSwitcherRow(container, splitX + 10, sideY + imgHeight + 4, imgWidth);
 
             // Status label below both columns
-            y = sideY + imgHeight + 34;
+            y = sideY + imgHeight + 31;
 
             _lblKbStatus = MakeLabel("", leftMargin, y, 800);
             _lblKbStatus.ForeColor = Color.FromArgb(100, 200, 100);
@@ -2688,15 +2855,15 @@ namespace OpenCompositeConfigurator
 
                     if (isSelected)
                     {
-                        using var pen = new Pen(Color.FromArgb(230, 255, 180, 40), 2f);
-                        using var brush = new SolidBrush(Color.FromArgb(140, 255, 180, 40));
+                        using var pen = new Pen(Color.FromArgb(230, ModernUiTheme.KeyGlowBright), 2f);
+                        using var brush = new SolidBrush(Color.FromArgb(140, ModernUiTheme.KeyGlowFill));
                         g.FillPolygon(brush, triPts);
                         g.DrawPolygon(pen, triPts);
                     }
                     else if (isHovered)
                     {
-                        using var pen = new Pen(Color.FromArgb(200, 100, 200, 255), 1.8f);
-                        using var brush = new SolidBrush(Color.FromArgb(80, 100, 200, 255));
+                        using var pen = new Pen(Color.FromArgb(210, ModernUiTheme.KeyGlowHover), 1.8f);
+                        using var brush = new SolidBrush(Color.FromArgb(80, ModernUiTheme.KeyGlowFill));
                         g.FillPolygon(brush, triPts);
                         g.DrawPolygon(pen, triPts);
                     }
@@ -2716,15 +2883,15 @@ namespace OpenCompositeConfigurator
 
                     if (isSelected)
                     {
-                        using var pen = new Pen(Color.FromArgb(220, 255, 180, 40), 3f);
-                        using var brush = new SolidBrush(Color.FromArgb(100, 255, 180, 40));
+                        using var pen = new Pen(Color.FromArgb(230, ModernUiTheme.KeyGlowBright), 3f);
+                        using var brush = new SolidBrush(Color.FromArgb(110, ModernUiTheme.KeyGlowFill));
                         g.FillEllipse(brush, cx - r, cy - r, r * 2, r * 2);
                         g.DrawEllipse(pen, cx - r, cy - r, r * 2, r * 2);
                     }
                     else if (isHovered)
                     {
-                        using var pen = new Pen(Color.FromArgb(180, 100, 200, 255), 2.5f);
-                        using var brush = new SolidBrush(Color.FromArgb(60, 100, 200, 255));
+                        using var pen = new Pen(Color.FromArgb(210, ModernUiTheme.KeyGlowHover), 2.5f);
+                        using var brush = new SolidBrush(Color.FromArgb(70, ModernUiTheme.KeyGlowFill));
                         g.FillEllipse(brush, cx - r, cy - r, r * 2, r * 2);
                         g.DrawEllipse(pen, cx - r, cy - r, r * 2, r * 2);
                     }
@@ -2910,20 +3077,14 @@ namespace OpenCompositeConfigurator
 
         private void AddKey(string id, string label, int x, int y, int w, int h)
         {
-            var btn = new Button
+            var btn = new ModernKeyButton
             {
                 Text = label,
                 Location = new Point(x, y),
                 Size = new Size(w, h),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = UnboundKeyColor,
-                ForeColor = Color.White,
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
-                Cursor = Cursors.Hand,
                 Tag = id
             };
-            btn.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 80);
-            btn.FlatAppearance.BorderSize = 1;
             btn.Click += Key_Click;
 
             _keyboardPanel.Controls.Add(btn);
@@ -2932,8 +3093,8 @@ namespace OpenCompositeConfigurator
 
         private void Key_Click(object? sender, EventArgs e)
         {
-            if (sender is not Button btn) return;
-            string keyId = (string)btn.Tag;
+            if (sender is not ModernKeyButton btn) return;
+            string keyId = btn.Tag as string ?? string.Empty;
 
             // Deselect previous
             if (_selectedKeyButton != null)
@@ -2944,8 +3105,7 @@ namespace OpenCompositeConfigurator
             // Select new
             _selectedKeyId = keyId;
             _selectedKeyButton = btn;
-            btn.BackColor = SelectedKeyColor;
-            btn.FlatAppearance.BorderColor = Color.FromArgb(255, 200, 40);
+            btn.VisualState = KeyVisualState.Selected;
 
             _lblCurrentBinding.Text = keyId;
             _cmbAction.Enabled = true;
@@ -2964,14 +3124,13 @@ namespace OpenCompositeConfigurator
             }
         }
 
-        private void UpdateKeyColor(Button btn)
+        private void UpdateKeyColor(ModernKeyButton btn)
         {
-            string keyId = (string)btn.Tag;
+            string keyId = btn.Tag as string ?? string.Empty;
             int scancode = KeyScancodes.GetValueOrDefault(keyId, 0xFF);
             bool hasBind = _keyBindings.Any(kvp => kvp.Value == scancode);
 
-            btn.BackColor = hasBind ? BoundKeyColor : UnboundKeyColor;
-            btn.FlatAppearance.BorderColor = hasBind ? Color.FromArgb(100, 160, 220) : Color.FromArgb(70, 70, 80);
+            btn.VisualState = hasBind ? KeyVisualState.Bound : KeyVisualState.Unbound;
         }
 
         private void UpdateAllKeyColors()
@@ -3215,7 +3374,15 @@ namespace OpenCompositeConfigurator
         private void CmbBindingPreset_SelectedIndexChanged(object? sender, EventArgs e)
         {
             UpdateDeletePresetEnabled();
-            PreviewSelectedBindingPreset();
+            try
+            {
+                PreviewSelectedBindingPreset();
+            }
+            catch (Exception ex)
+            {
+                _lblKbStatus.Text = $"Preset preview unavailable: {ex.Message}";
+                _lblKbStatus.ForeColor = Color.FromArgb(255, 130, 110);
+            }
         }
 
         private void PreviewSelectedBindingPreset()
@@ -3231,9 +3398,13 @@ namespace OpenCompositeConfigurator
 
             if (_selectedCtrlButton != null)
             {
-                _lblKbStatus.Text += $" ({presetName} preview; click Apply Preset to write)";
-                _lblKbStatus.ForeColor = Color.FromArgb(255, 200, 100);
+                _lblKbStatus.Text += $" — {presetName} preview only. Click Apply Preset to save changes.";
             }
+            else
+            {
+                _lblKbStatus.Text = $"{presetName} preview selected. Click Apply Preset to save changes.";
+            }
+            _lblKbStatus.ForeColor = Color.FromArgb(121, 215, 137);
         }
 
         private bool TryReadBindingPresetText(string presetName, out string presetText, out string error)
@@ -3449,6 +3620,7 @@ namespace OpenCompositeConfigurator
 
             // Persist the active preset choice in opencomposite.ini so the dropdown
             // restores to the right value next launch.
+            _appliedBindingPresetName = presetName;
             _ini.Set("Configurator", "activeBindingPreset", presetName);
             _ini.Save();
 
@@ -3458,6 +3630,7 @@ namespace OpenCompositeConfigurator
             _keyBindings.Clear();
             LoadDefaultKeyBindings();
             TryLoadControlmapVR();
+            AcceptTrackedControlAsSaved(_cmbBindingPreset);
 
             string repairMsg = bindingRepairs > 0 ? $" + {bindingRepairs} validation repair(s)" : "";
             _lblKbStatus.Text = $"{presetName} controller bindings applied{repairMsg} (keyboard preserved). Restart the game to apply.";
@@ -3832,10 +4005,11 @@ namespace OpenCompositeConfigurator
             };
             var lbl = new Label { Left = 12, Top = 14, Width = 420, Text = prompt, ForeColor = Color.White };
             var tb = new TextBox { Left = 12, Top = 40, Width = 420, Text = defaultValue, BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
-            var ok = new Button { Text = "OK", Left = 268, Top = 78, Width = 75, DialogResult = DialogResult.OK, BackColor = Color.FromArgb(120, 80, 40), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            var cancel = new Button { Text = "Cancel", Left = 357, Top = 78, Width = 75, DialogResult = DialogResult.Cancel, BackColor = Color.FromArgb(60, 60, 65), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            var ok = new ModernPillButton { Text = "OK", Left = 268, Top = 78, Width = 75, DialogResult = DialogResult.OK, BackColor = Color.FromArgb(120, 80, 40), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            var cancel = new ModernPillButton { Text = "Cancel", Left = 357, Top = 78, Width = 75, DialogResult = DialogResult.Cancel, BackColor = Color.FromArgb(60, 60, 65), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
             f.Controls.Add(lbl); f.Controls.Add(tb); f.Controls.Add(ok); f.Controls.Add(cancel);
             f.AcceptButton = ok; f.CancelButton = cancel;
+            ModernUiTheme.Apply(f);
             return f.ShowDialog() == DialogResult.OK ? tb.Text.Trim() : "";
         }
 
@@ -4484,9 +4658,9 @@ namespace OpenCompositeConfigurator
 
             var (drawW, drawH, offX, offY) = GetImageBounds();
 
-            var highlightColor = Color.FromArgb(200, 255, 200, 40);
+            var highlightColor = Color.FromArgb(220, ModernUiTheme.KeyGlowBright);
             using var pen = new Pen(highlightColor, 2.5f);
-            using var brush = new SolidBrush(Color.FromArgb(70, 255, 200, 40));
+            using var brush = new SolidBrush(Color.FromArgb(85, ModernUiTheme.KeyGlowFill));
 
             var selected = GetSelectedButtons();
             float r = ShortcutDotRadius;
@@ -4510,7 +4684,7 @@ namespace OpenCompositeConfigurator
             {
                 string label = string.Join(" + ", selected.Select(FormatButtonName));
                 _lblStatus.Text = "Shortcut: " + label;
-                _lblStatus.ForeColor = Color.FromArgb(255, 200, 40);
+                _lblStatus.ForeColor = ModernUiTheme.KeyGlowBright;
             }
             else
             {
@@ -4658,7 +4832,7 @@ namespace OpenCompositeConfigurator
                 };
                 _comboListPanel.Controls.Add(lblCombo);
 
-                var btnEdit = new Button
+                var btnEdit = new ModernPillButton
                 {
                     Text = "Edit",
                     Location = new Point(pw - 120, y),
@@ -4672,7 +4846,7 @@ namespace OpenCompositeConfigurator
                 btnEdit.Click += (s, e) => EditCombo(idx);
                 _comboListPanel.Controls.Add(btnEdit);
 
-                var btnDelete = new Button
+                var btnDelete = new ModernPillButton
                 {
                     Text = "\u2715",
                     Location = new Point(pw - 62, y),
@@ -4803,9 +4977,9 @@ namespace OpenCompositeConfigurator
             var btnDlssBalanced = MakeButton("Balanced", dlssPx, y, 80, 26);
             btnDlssBalanced.Click += (s, e) => { _chkDlssEnabled.Checked = true; _cmbDlssPreset.SelectedIndex = 1; };
             container.Controls.Add(btnDlssBalanced); dlssPx += 84;
-            var btnDlssPerf = MakeButton("Performance", dlssPx, y, 95, 26);
+            var btnDlssPerf = MakeButton("Performance", dlssPx, y, 112, 26);
             btnDlssPerf.Click += (s, e) => { _chkDlssEnabled.Checked = true; _cmbDlssPreset.SelectedIndex = 2; };
-            container.Controls.Add(btnDlssPerf); dlssPx += 99;
+            container.Controls.Add(btnDlssPerf); dlssPx += 116;
             var btnDlssDlaa = MakeButton("DLAA", dlssPx, y, 60, 26);
             btnDlssDlaa.Click += (s, e) => { _chkDlssEnabled.Checked = true; _cmbDlssPreset.SelectedIndex = 4; };
             container.Controls.Add(btnDlssDlaa); dlssPx += 64;
@@ -4992,7 +5166,7 @@ namespace OpenCompositeConfigurator
                 fsrAdv.Controls.Add(_chkActorMV);
                 _chkFsr3CameraMV = MakeCheckBox("Camera MV", 300, ap);
                 fsrAdv.Controls.Add(_chkFsr3CameraMV);
-                var lblMvDesc = MakeLabel("SKSE/game, actor, and camera motion vectors feed temporal upscalers and ASW.", 395, ap + 3, advW - 411);
+                var lblMvDesc = MakeLabel("SKSE/game, actor, and camera motion vectors feed temporal upscalers. Standard DAPA uses depth and positional changes instead.", 395, ap + 3, advW - 411);
                 lblMvDesc.ForeColor = Color.FromArgb(130, 130, 130);
                 lblMvDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
                 fsrAdv.Controls.Add(lblMvDesc);
@@ -5143,10 +5317,10 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(btnBalanced);
             px += 89;
 
-            var btnPerformance = MakeButton("Performance", px, y, 95, 26);
+            var btnPerformance = MakeButton("Performance", px, y, 112, 26);
             btnPerformance.Click += (s, e) => { _chkFsrNativeAA.Checked = false; _chkFsrEnabled.Checked = true; _nudFsrRenderScale.Value = 0.50m; };
             container.Controls.Add(btnPerformance);
-            px += 99;
+            px += 116;
 
             var btnUltra = MakeButton("Ultra Perf", px, y, 85, 26);
             btnUltra.Click += (s, e) => { _chkFsrNativeAA.Checked = false; _chkFsrEnabled.Checked = true; _nudFsrRenderScale.Value = 0.33m; };
@@ -5165,9 +5339,9 @@ namespace OpenCompositeConfigurator
             y += 34;
 
 
-            // ── OCU ASW ──
+            // ── OCU DAPA ──
             Panel aswAdv = null!;
-            var lblSwSection = MakeSectionLabel("OCU ASW", leftMargin, y);
+            var lblSwSection = MakeSectionLabel("DAPA — Depth-Assisted Positional Reprojection", leftMargin, y);
             container.Controls.Add(lblSwSection);
             var btnAswAdv = MakeButton("\u25bc Advanced", rightEdge - 100, y + 2, 94, 22);
             btnAswAdv.Font = new Font("Segoe UI", 7.5f);
@@ -5182,18 +5356,18 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(btnAswAdv);
             y += 26;
 
-            _chkAswEnabled = MakeCheckBox("Enable OCU ASW", leftMargin, y);
+            _chkAswEnabled = MakeCheckBox("Enable DAPA", leftMargin, y);
             _chkAswEnabled.CheckedChanged += (s, e) => { };
             container.Controls.Add(_chkAswEnabled);
 
-            var lblSwDesc = MakeLabel("Experimental / future-use reprojection, mainly for Meta/Quest testing. Expect lateral parallax separation on walls, foliage, and overlays during strafing. Use VD/Meta SSW for normal play, and never combine both.", leftMargin + 230, y + 3, rightEdge - leftMargin - 250);
+            var lblSwDesc = MakeLabel("Experimental depth-assisted positional reprojection. Uses the previous color frame, depth, and positional changes; it does not use per-pixel motion vectors. Expect artifacts on moving objects, walls, foliage, and overlays. Never combine DAPA with SSW or runtime motion smoothing.", leftMargin + 230, y + 3, rightEdge - leftMargin - 250);
             lblSwDesc.ForeColor = Color.FromArgb(130, 130, 130);
             lblSwDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
             lblSwDesc.Height = 60;
             container.Controls.Add(lblSwDesc);
             y += 68;
 
-            // ── ASW ADVANCED OVERLAY PANEL (does not advance y — floats over content below) ──
+            // ── DAPA ADVANCED OVERLAY PANEL (does not advance y — floats over content below) ──
             {
                 int advW = rightEdge - leftMargin;
                 aswAdv = new Panel
@@ -5296,7 +5470,7 @@ namespace OpenCompositeConfigurator
                     BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
                 };
                 aswAdv.Controls.Add(_nudAswLocoScale);
-                var lblLocoDesc = MakeLabel("Game locomotion contribution to ASW warp. Default 0.50.", 195, ap + 3, advW - 211);
+                var lblLocoDesc = MakeLabel("Game locomotion contribution to the DAPA warp. Default 0.50.", 195, ap + 3, advW - 211);
                 lblLocoDesc.ForeColor = Color.FromArgb(130, 130, 130);
                 lblLocoDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
                 aswAdv.Controls.Add(lblLocoDesc);
@@ -5328,7 +5502,7 @@ namespace OpenCompositeConfigurator
                     BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
                 };
                 aswAdv.Controls.Add(_nudAswAutoEngageFps);
-                var lblAutoDesc = MakeLabel("Auto mode: run uncapped when the game is faster than this; engage ASW below it.", 215, ap + 3, advW - 231);
+                var lblAutoDesc = MakeLabel("Auto mode: run uncapped when the game is faster than this; engage DAPA below it.", 215, ap + 3, advW - 231);
                 lblAutoDesc.ForeColor = Color.FromArgb(130, 130, 130);
                 lblAutoDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
                 aswAdv.Controls.Add(lblAutoDesc);
@@ -5466,7 +5640,7 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
             y += 10;
 
-            // ── NVIDIA FIXED FOVEATED RENDERING (VRS) ──
+            // ── FOVEATED RENDERING: EYE TRACKING AUTO + EXPLICIT FIXED ──
             var lblMipSection = MakeSectionLabel("Texture MIP Bias", leftMargin, y);
             container.Controls.Add(lblMipSection);
             var lblMipSectionHint = MakeLabel("(Recommended for increased sharpness while using upscaling)", leftMargin + 150, y + 3, 420);
@@ -5550,7 +5724,7 @@ namespace OpenCompositeConfigurator
             y += 10;
 
             Panel vrsAdv = null!;
-            var lblVrsSection = MakeSectionLabel("NVIDIA Fixed Foveated Rendering (VRS)", leftMargin, y);
+            var lblVrsSection = MakeSectionLabel("Foveated Rendering (NVIDIA VRS)", leftMargin, y);
             container.Controls.Add(lblVrsSection);
             var btnVrsAdv = MakeButton("\u25bc Advanced", rightEdge - 100, y + 2, 94, 22);
             btnVrsAdv.Font = new Font("Segoe UI", 7.5f);
@@ -5565,22 +5739,36 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(btnVrsAdv);
             y += 26;
 
-            var lblVrsInfo = MakeLabel("Requires NVIDIA RTX or GTX 16xx series GPU. Reduces shading rate in peripheral vision for better performance. May cause pixel flashes if used with FSR 3 or DLSS 4.", leftMargin + 20, y, rightEdge - leftMargin - 20);
+            var lblVrsInfo = MakeLabel("Requires NVIDIA RTX or GTX 16xx. Eye Tracking and Fixed are separate choices. CSX and game menus remain full-rate.", leftMargin + 20, y, rightEdge - leftMargin - 20);
             lblVrsInfo.ForeColor = Color.White;
             lblVrsInfo.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
             container.Controls.Add(lblVrsInfo);
-            y += 18;
+            y += 24;
 
-            var lblVrsEyeTrackNote = MakeLabel("Note: If your headset has built-in eye-tracked foveated rendering, this fixed foveated rendering is redundant and should be left disabled.", leftMargin + 20, y, rightEdge - leftMargin - 20);
-            lblVrsEyeTrackNote.ForeColor = Color.FromArgb(255, 200, 100);
-            lblVrsEyeTrackNote.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
-            container.Controls.Add(lblVrsEyeTrackNote);
-            y += 22;
 
-            _chkVrsEnabled = MakeCheckBox("Enable VRS Foveated Rendering", leftMargin, y);
-            _chkVrsEnabled.CheckedChanged += (s, e) =>
+            var lblVrsEyeHeading = MakeLabel("EYE TRACKING", leftMargin, y + 2, 150);
+            lblVrsEyeHeading.ForeColor = Color.FromArgb(110, 180, 255);
+            lblVrsEyeHeading.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+            container.Controls.Add(lblVrsEyeHeading);
+
+            _chkVrsEyeTracked = MakeCheckBox("AUTO", leftMargin + 160, y);
+            _chkVrsEyeTracked.Checked = true;
+            container.Controls.Add(_chkVrsEyeTracked);
+            var lblVrsEyeHint = MakeLabel("Uses gaze when available. Never turns on Fixed by itself.", leftMargin + 250, y + 2, rightEdge - leftMargin - 250);
+            lblVrsEyeHint.ForeColor = Color.FromArgb(150, 150, 155);
+            lblVrsEyeHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
+            container.Controls.Add(lblVrsEyeHint);
+            y += 26;
+
+            var lblVrsFixedHeading = MakeLabel("FIXED", leftMargin, y + 2, 150);
+            lblVrsFixedHeading.ForeColor = Color.FromArgb(110, 180, 255);
+            lblVrsFixedHeading.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+            container.Controls.Add(lblVrsFixedHeading);
+
+            _chkVrsFixedEnabled = MakeCheckBox("ENABLE", leftMargin + 160, y);
+            _chkVrsFixedEnabled.CheckedChanged += (s, e) =>
             {
-                bool en = _chkVrsEnabled.Checked;
+                bool en = _chkVrsFixedEnabled.Checked || _chkVrsEyeTracked.Checked;
                 _cboVrsPreset.Enabled = en;
                 _nudVrsInnerRadius.Enabled = en;
                 _nudVrsMidRadius.Enabled = en;
@@ -5590,15 +5778,31 @@ namespace OpenCompositeConfigurator
                 _chkVrsFavorHorizontal.AutoCheck = en;
                 CheckPotatoMode();
             };
-            container.Controls.Add(_chkVrsEnabled);
+            _chkVrsEyeTracked.CheckedChanged += (s, e) =>
+            {
+                bool en = _chkVrsFixedEnabled.Checked || _chkVrsEyeTracked.Checked;
+                _cboVrsPreset.Enabled = en;
+                _nudVrsInnerRadius.Enabled = en;
+                _nudVrsMidRadius.Enabled = en;
+                _nudVrsOuterRadius.Enabled = en;
+                _chkVrsFavorHorizontal.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
+                _chkVrsFavorHorizontal.AutoCheck = en;
+                CheckPotatoMode();
+            };
+            container.Controls.Add(_chkVrsFixedEnabled);
+            var lblVrsFixedHint = MakeLabel("For non-eye-tracking headsets. With both checked, this is only the gaze fallback.", leftMargin + 250, y + 2, rightEdge - leftMargin - 250);
+            lblVrsFixedHint.ForeColor = Color.FromArgb(150, 150, 155);
+            lblVrsFixedHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
+            container.Controls.Add(lblVrsFixedHint);
+            y += 26;
 
             // Preset dropdown — same row as checkbox
-            var lblVrsPreset = MakeLabel("Preset:", leftMargin + 270, y + 3, 50);
+            var lblVrsPreset = MakeLabel("Preset:", leftMargin + 20, y + 3, 50);
             container.Controls.Add(lblVrsPreset);
 
             _cboVrsPreset = new ComboBox
             {
-                Location = new Point(leftMargin + 322, y), Width = 120,
+                Location = new Point(leftMargin + 82, y), Width = 120,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
             };
@@ -5620,7 +5824,7 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(_cboVrsPreset);
 
-            var lblPresetHint = MakeLabel("(Conservative recommended for pancake lenses)", leftMargin + 450, y + 3, 280);
+            var lblPresetHint = MakeLabel("Conservative is recommended for pancake lenses.", leftMargin + 212, y + 3, rightEdge - leftMargin - 212);
             lblPresetHint.ForeColor = Color.FromArgb(110, 110, 110);
             lblPresetHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
             container.Controls.Add(lblPresetHint);
@@ -5774,7 +5978,7 @@ namespace OpenCompositeConfigurator
         private void CheckPotatoMode()
         {
             if (_isLoading) return;
-            if (_chkFsrEnabled.Checked && _chkVrsEnabled.Checked)
+            if (_chkFsrEnabled.Checked && (_chkVrsFixedEnabled.Checked || _chkVrsEyeTracked.Checked))
             {
                 try
                 {
@@ -5934,41 +6138,34 @@ namespace OpenCompositeConfigurator
             _tabKeyboard.Visible = (index == 1);
             _tabGestures.Visible = (index == 2);
             _tabVideo.Visible = (index == 3);
-            _tabHaptics.Visible = (index == 4);
-            _tabBody.Visible = (index == 5);
+            _tabSteamHelp.Visible = (index == 4);
+            _tabHaptics.Visible = (index == 5);
+            _tabBody.Visible = (index == 6);
 
-            // Update button styles
-            _btnTabSettings.Font = new Font("Segoe UI", 10f, index == 0 ? FontStyle.Bold : FontStyle.Regular);
-            _btnTabSettings.ForeColor = index == 0 ? Color.White : Color.FromArgb(160, 160, 160);
-            _btnTabSettings.BackColor = index == 0 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
-
-            _btnTabKeyboard.Font = new Font("Segoe UI", 10f, index == 1 ? FontStyle.Bold : FontStyle.Regular);
-            _btnTabKeyboard.ForeColor = index == 1 ? Color.White : Color.FromArgb(160, 160, 160);
-            _btnTabKeyboard.BackColor = index == 1 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
-
-            _btnTabGestures.Font = new Font("Segoe UI", 10f, index == 2 ? FontStyle.Bold : FontStyle.Regular);
-            _btnTabGestures.ForeColor = index == 2 ? Color.White : Color.FromArgb(160, 160, 160);
-            _btnTabGestures.BackColor = index == 2 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
-
-            _btnTabVideo.Font = new Font("Segoe UI", 10f, index == 3 ? FontStyle.Bold : FontStyle.Regular);
-            _btnTabVideo.ForeColor = index == 3 ? Color.White : Color.FromArgb(160, 160, 160);
-            _btnTabVideo.BackColor = index == 3 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
-
-            _btnTabHaptics.Font = new Font("Segoe UI", 10f, index == 4 ? FontStyle.Bold : FontStyle.Regular);
-            _btnTabHaptics.ForeColor = index == 4 ? Color.White : Color.FromArgb(160, 160, 160);
-            _btnTabHaptics.BackColor = index == 4 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
-
-            _btnTabBody.Font = new Font("Segoe UI", 10f, index == 5 ? FontStyle.Bold : FontStyle.Regular);
-            _btnTabBody.ForeColor = index == 5 ? Color.White : Color.FromArgb(160, 160, 160);
-            _btnTabBody.BackColor = index == 5 ? Color.FromArgb(50, 50, 60) : Color.FromArgb(35, 35, 40);
+            Button[] tabs =
+            {
+                _btnTabSettings, _btnTabKeyboard, _btnTabGestures, _btnTabVideo,
+                _btnTabSteamHelp, _btnTabHaptics, _btnTabBody
+            };
+            for (int i = 0; i < tabs.Length; i++)
+                ModernUiTheme.StyleNavigationButton(tabs[i], i == index);
         }
 
         // ═══════════════════════════════════════════════════════════════════════
         // FILE OPERATIONS
         // ═══════════════════════════════════════════════════════════════════════
 
+        private void SetSteamHelpStatus(string text, Color color)
+        {
+            _lblStatus.Text = text;
+            _lblStatus.ForeColor = color;
+            _lblSteamHelpStatus.Text = text;
+            _lblSteamHelpStatus.ForeColor = color;
+        }
+
         private void BtnApplySteamVrProfile_Click(object? sender, EventArgs e)
         {
+            if (!EnsureSteamVrStoppedForSettings()) return;
             if (!TryGetSteamVrSettingsPath(out string path)) return;
 
             var confirm = MessageBox.Show(
@@ -5982,15 +6179,14 @@ namespace OpenCompositeConfigurator
             try
             {
                 string backupPath = ApplySteamVrOcuProfile(path);
-                _lblStatus.Text = $"SteamVR OCU profile applied. Backup: {Path.GetFileName(backupPath)}";
-                _lblStatus.ForeColor = Color.FromArgb(100, 200, 100);
+                SetSteamHelpStatus($"SteamVR OCU profile applied. Backup: {Path.GetFileName(backupPath)}",
+                    Color.FromArgb(100, 200, 100));
                 MessageBox.Show($"SteamVR settings patched.\n\nBackup created:\n{backupPath}", "SteamVR OCU Profile",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                _lblStatus.Text = $"SteamVR profile failed: {ex.Message}";
-                _lblStatus.ForeColor = Color.FromArgb(255, 100, 100);
+                SetSteamHelpStatus($"SteamVR profile failed: {ex.Message}", Color.FromArgb(255, 100, 100));
                 MessageBox.Show(ex.Message, "SteamVR OCU Profile Failed",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -5998,6 +6194,7 @@ namespace OpenCompositeConfigurator
 
         private void BtnRestoreSteamVrDefaults_Click(object? sender, EventArgs e)
         {
+            if (!EnsureSteamVrStoppedForSettings()) return;
             if (!TryGetSteamVrSettingsPath(out string path)) return;
 
             var confirm = MessageBox.Show(
@@ -6011,15 +6208,14 @@ namespace OpenCompositeConfigurator
             try
             {
                 string backupPath = RestoreSteamVrDefaults(path);
-                _lblStatus.Text = $"SteamVR defaults restored. Backup: {Path.GetFileName(backupPath)}";
-                _lblStatus.ForeColor = Color.FromArgb(255, 200, 40);
+                SetSteamHelpStatus($"SteamVR defaults restored. Backup: {Path.GetFileName(backupPath)}",
+                    Color.FromArgb(255, 200, 40));
                 MessageBox.Show($"SteamVR OCU overrides removed.\n\nBackup created:\n{backupPath}", "SteamVR Defaults Restored",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
-                _lblStatus.Text = $"SteamVR restore failed: {ex.Message}";
-                _lblStatus.ForeColor = Color.FromArgb(255, 100, 100);
+                SetSteamHelpStatus($"SteamVR restore failed: {ex.Message}", Color.FromArgb(255, 100, 100));
                 MessageBox.Show(ex.Message, "SteamVR Restore Failed",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -6030,6 +6226,78 @@ namespace OpenCompositeConfigurator
             string folder = GetSteamVrSettingsFolder();
             Directory.CreateDirectory(folder);
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(folder) { UseShellExecute = true });
+            SetSteamHelpStatus($"Opened SteamVR settings folder: {folder}", Color.FromArgb(100, 200, 100));
+        }
+
+        private bool EnsureSteamVrStoppedForSettings()
+        {
+            string[] running = new[] { "vrserver", "vrmonitor" }
+                .Where(name => System.Diagnostics.Process.GetProcessesByName(name).Length > 0)
+                .ToArray();
+            if (running.Length == 0) return true;
+
+            string message =
+                "Close SteamVR before changing its settings. If SteamVR is running, it can overwrite steamvr.vrsettings during shutdown.\n\nStill running: " +
+                string.Join(", ", running);
+            SetSteamHelpStatus(message, Color.FromArgb(255, 100, 100));
+            MessageBox.Show(message, "Close SteamVR First", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        private void BtnRemoveOcuRuntime_Click(object? sender, EventArgs e)
+        {
+            var confirm = MessageBox.Show(
+                "This will MOVE only positively identified OCU runtime files out of the Skyrim VR game folder. The files are kept in a recovery backup; Data and unrelated files are never touched.\n\n" +
+                "Before continuing:\n" +
+                "1. Close Skyrim VR and SteamVR.\n" +
+                "2. MO2 users: disable the OCU mod and run Root Builder > Clear.\n" +
+                "3. Launch this Configurator directly, not through MO2.\n\n" +
+                "After removal, verify Skyrim VR in Steam before launching normally:\n" +
+                "Properties > Installed Files > Verify integrity of game files.\n\n" +
+                "This does not undo the SteamVR OCU Profile. Use Restore SteamVR Defaults separately.\n\nContinue?",
+                "Remove OCU From Skyrim VR",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+
+            if (confirm != DialogResult.Yes) return;
+
+            try
+            {
+                RuntimeInstaller.RuntimeRemovalResult result =
+                    RuntimeInstaller.RemoveRuntime(this, GetConfiguratorDir());
+
+                var summary = new StringBuilder();
+                summary.AppendLine($"Skyrim VR folder:\n{result.GameDir}\n");
+                summary.AppendLine(result.RemovedFiles.Count > 0
+                    ? $"Moved {result.RemovedFiles.Count} OCU file(s) to:\n{result.BackupDir}"
+                    : "No positively identified OCU game-root files were present.");
+
+                if (result.RestoredVanillaOpenVr)
+                    summary.AppendLine("\nRestored the preserved Valve OpenVR loader.");
+                if (result.NeedsSteamVerify)
+                    summary.AppendLine("\nThe OCU DLL was removed, but no trusted Valve backup was available. Verify Skyrim VR files in Steam before launching normally.");
+                summary.AppendLine("\nNext required step: Steam > Skyrim VR > Properties > Installed Files > Verify integrity of game files. Do this before launching normally.");
+                if (result.SkippedFiles.Count > 0)
+                    summary.AppendLine($"\nLeft {result.SkippedFiles.Count} ambiguous file(s) untouched.");
+                if (result.IsMo2ModInstall)
+                    summary.AppendLine("\nKeep the OCU mod disabled. Enabling it lets Root Builder deploy OCU again.");
+
+                SetSteamHelpStatus(
+                    result.NeedsSteamVerify
+                        ? "OCU root files removed; Steam Verify is required to restore openvr_api.dll."
+                        : "OCU root files removed. Verify Skyrim VR in Steam before launching normally.",
+                    ModernUiTheme.Warning);
+
+                MessageBox.Show(summary.ToString(), "OCU Runtime Removal Complete",
+                    MessageBoxButtons.OK,
+                    result.NeedsSteamVerify ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                SetSteamHelpStatus($"OCU runtime removal stopped: {ex.Message}", Color.FromArgb(255, 100, 100));
+                MessageBox.Show(ex.Message, "OCU Runtime Removal Stopped",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void BtnOpenSetupReadme_Click(object? sender, EventArgs e)
@@ -6037,13 +6305,13 @@ namespace OpenCompositeConfigurator
             string readmePath = GetSetupReadmePath();
             if (!File.Exists(readmePath))
             {
-                _lblStatus.Text = $"Setup readme not found: {readmePath}";
-                _lblStatus.ForeColor = Color.FromArgb(255, 100, 100);
+                SetSteamHelpStatus($"Setup readme not found: {readmePath}", Color.FromArgb(255, 100, 100));
                 MessageBox.Show(readmePath, "Setup Readme Not Found", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(readmePath) { UseShellExecute = true });
+            SetSteamHelpStatus("Opened the OCU setup readme.", Color.FromArgb(100, 200, 100));
         }
 
         private static string GetSetupReadmePath()
@@ -6357,7 +6625,7 @@ namespace OpenCompositeConfigurator
                 _nudKbHapticStrength.Value = 50m;
 
                 _nudSuperSample.Value = 1.0m;
-                _chkRenderHands.Checked = true;
+                _cmbControllerModels.SelectedIndex = 0;
                 _chkHaptics.Checked = true;
                 _nudHapticStrength.Value = 0.10m;
                 _chkCombatHapticShield.Checked = true;
@@ -6387,6 +6655,7 @@ namespace OpenCompositeConfigurator
                 _chkGpuTiming.Checked = true;
                 _nudLeftDeadZone.Value = 0m;
                 _nudRightDeadZone.Value = 0m;
+                _chkSwapThumbsticks.Checked = false;
 
                 ResetAxisControls(updateStatus: false);
                 UpdateTimingLabel();
@@ -6453,25 +6722,136 @@ namespace OpenCompositeConfigurator
         private void BtnReload_Click(object? sender, EventArgs e)
         {
             LoadFromDir();
-            ClearDirty();   // reloaded state matches disk — no unsaved changes
+            ClearDirty();
+            // Reload restored this selection from activeBindingPreset on disk.
+            // The separately-saved controller picture is intentionally untouched.
+            AcceptTrackedControlAsSaved(_cmbBindingPreset);
         }
 
         private void MarkDirty()
         {
-            if (_isLoading || _dirty) return;
-            _dirty = true;
-            _lblUnsavedBanner.Visible = true;
-            _lblUnsavedBanner.BringToFront();
-            _flashOn = true;
-            _lblUnsavedBanner.ForeColor = Color.FromArgb(255, 205, 60);
-            _breatheTimer.Start();
+            if (_isLoading)
+                return;
+
+            bool hasActualChanges = _dirtyTrackedControls.Any(IsTrackedControlDirty);
+
+            _lblUnsavedBanner.Text = hasActualChanges && IsTrackedControlDirty(_cmbBindingPreset)
+                ? PresetUnsavedMessage
+                : GeneralUnsavedMessage;
+
+            SetDirtyState(hasActualChanges);
         }
 
         private void ClearDirty()
         {
-            _dirty = false;
-            _breatheTimer.Stop();
-            _lblUnsavedBanner.Visible = false;
+            // Save opencomposite.ini accepts only INI-backed settings. The
+            // controller picture and binding preset each have their own Save.
+            CaptureSavedState(includeIndependentlySaved: false);
+            MarkDirty();
+        }
+
+        private void SetDirtyState(bool dirty)
+        {
+            if (_dirty == dirty)
+                return;
+
+            _dirty = dirty;
+            if (dirty)
+            {
+                _lblUnsavedBanner.Visible = true;
+                _lblUnsavedBanner.BringToFront();
+                _breathePhase = -Math.PI / 2.0;
+                _saveShinePosition = 0f;
+                _lblUnsavedBanner.GlowIntensity = 0.42f;
+                _lblUnsavedBanner.ShinePosition = 0f;
+                _breatheTimer.Start();
+            }
+            else
+            {
+                _breatheTimer.Stop();
+                _lblUnsavedBanner.Visible = false;
+            }
+        }
+
+        private void CaptureSavedState(bool includeIndependentlySaved = true)
+        {
+            if (includeIndependentlySaved)
+                _savedControlState.Clear();
+
+            foreach (Control control in _dirtyTrackedControls)
+            {
+                if (!includeIndependentlySaved && _independentlySavedControls.Contains(control))
+                    continue;
+                if (!control.IsDisposed)
+                    _savedControlState[control] = GetTrackedControlValue(control);
+            }
+        }
+
+        private bool IsTrackedControlDirty(Control control)
+        {
+            return !_savedControlState.TryGetValue(control, out string? saved)
+                || !string.Equals(saved, GetTrackedControlValue(control), StringComparison.Ordinal);
+        }
+
+        private void AcceptTrackedControlAsSaved(Control control)
+        {
+            if (_dirtyTrackedControls.Contains(control) && !control.IsDisposed)
+                _savedControlState[control] = GetTrackedControlValue(control);
+
+            // Recompare everything: another tab may still contain a real
+            // unsaved change even though this independently-saved value is done.
+            MarkDirty();
+        }
+
+        private static string GetTrackedControlValue(Control control)
+        {
+            return control switch
+            {
+                CheckBox checkBox => checkBox.Checked ? "1" : "0",
+                RadioButton radioButton => radioButton.Checked ? "1" : "0",
+                NumericUpDown numeric => numeric.Value.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture),
+                TrackBar trackBar => trackBar.Value.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture),
+                ComboBox comboBox => $"{comboBox.SelectedIndex}\u001f{comboBox.Text}",
+                TextBox textBox => textBox.Text,
+                _ => string.Empty
+            };
+        }
+
+        private void TrackDirtyControl(Control control)
+        {
+            if (!_dirtyTrackedControls.Add(control))
+                return;
+
+            switch (control)
+            {
+                case CheckBox checkBox:
+                    checkBox.CheckedChanged += (_, _) => MarkDirty();
+                    break;
+                case RadioButton radioButton:
+                    radioButton.CheckedChanged += (_, _) => MarkDirty();
+                    break;
+                case NumericUpDown numeric:
+                    numeric.ValueChanged += (_, _) => MarkDirty();
+                    break;
+                case TrackBar trackBar:
+                    trackBar.ValueChanged += (_, _) => MarkDirty();
+                    break;
+                case ComboBox comboBox:
+                    comboBox.SelectedIndexChanged += (_, _) => MarkDirty();
+                    comboBox.TextChanged += (_, _) => MarkDirty();
+                    break;
+                case TextBox textBox:
+                    textBox.TextChanged += (_, _) => MarkDirty();
+                    break;
+            }
+        }
+
+        private void TrackIndependentDirtyControl(Control control)
+        {
+            _independentlySavedControls.Add(control);
+            TrackDirtyControl(control);
         }
 
         // Subscribe dirty-tracking to every settings input; skip the Bindings tab (own save + nav combos)
@@ -6485,34 +6865,73 @@ namespace OpenCompositeConfigurator
                 // not part of the ini). Only "Send trackers to the game" and
                 // "Enable Full-Body Walking" genuinely need Save.
                 if (c == _cmbBodyCamera || c == _txtBodyCamUrl || c == _chkBodyMirror
-                    || c == _chkBodyStream || c == _cmbBodyDevice || c == _cmbBodyPoseSource
-                    || c == _nudBodyOffX || c == _nudBodyOffY) continue;
+                    || c == _chkBodyStream || c == _chkBodyPreview || c == _chkBodySkeletonOnly
+                    || c == _cmbBodyDevice || c == _cmbBodyPoseSource || c == _nudBodyHeightCm
+                    || c == _nudBodyOffX || c == _nudBodyOffY || c == _cmbBodyCaptureView
+                    || c == _cmbBodyCaptureAction || c == _cmbBodyCaptureLeg
+                    || c == _nudBodyCaptureTake) continue;
                 switch (c)
                 {
-                    case CheckBox cb:     cb.CheckedChanged += (s, e) => MarkDirty(); break;
-                    case RadioButton rb:  rb.CheckedChanged += (s, e) => MarkDirty(); break;
-                    case NumericUpDown n: n.ValueChanged += (s, e) => MarkDirty(); break;
-                    case TrackBar t:      t.ValueChanged += (s, e) => MarkDirty(); break;
-                    case ComboBox cmb:    cmb.SelectedIndexChanged += (s, e) => MarkDirty(); break;
-                    case TextBox tb:      tb.TextChanged += (s, e) => MarkDirty(); break;
+                    case CheckBox:
+                    case RadioButton:
+                    case NumericUpDown:
+                    case TrackBar:
+                    case ComboBox:
+                    case TextBox:
+                        TrackDirtyControl(c);
+                        continue; // Do not track WinForms' private child editors/buttons.
                 }
                 if (c.HasChildren) WireDirtyTracking(c);
             }
         }
 
-        // Color-flash: alternate the big bold letters between gold and orange-red (~1Hz, attention-grabbing, not a strobe)
+        // Smooth green breathing glow: a little over three seconds per cycle.
         private void BreatheTimer_Tick(object? sender, EventArgs e)
         {
-            _flashOn = !_flashOn;
-            _lblUnsavedBanner.ForeColor = _flashOn ? Color.FromArgb(255, 205, 60) : Color.FromArgb(235, 75, 40);
+            _breathePhase += 0.12;
+            double wave = (Math.Sin(_breathePhase) + 1.0) * 0.5;
+            _lblUnsavedBanner.GlowIntensity = (float)(0.42 + wave * 0.58);
+            _saveShinePosition += 0.015f;
+            if (_saveShinePosition >= 1f)
+                _saveShinePosition -= 1f;
+            _lblUnsavedBanner.ShinePosition = _saveShinePosition;
         }
 
-        private static Color BannerLerp(Color a, Color b, double t)
+        // Bound keys and checked boxes breathe together so the teal-green pulse
+        // consistently means "active". Inactive controls do not animate.
+        private void ActiveGlowTimer_Tick(object? sender, EventArgs e)
         {
-            return Color.FromArgb(
-                (int)(a.R + (b.R - a.R) * t),
-                (int)(a.G + (b.G - a.G) * t),
-                (int)(a.B + (b.B - a.B) * t));
+            _activeGlowPhase += 0.10;
+            double wave = (Math.Sin(_activeGlowPhase) + 1.0) * 0.5;
+            float intensity = (float)(0.30 + wave * 0.70);
+
+            if (_tabKeyboard.Visible)
+            {
+                foreach (ModernKeyButton key in _keyButtons.Values)
+                {
+                    if (key.VisualState != KeyVisualState.Unbound)
+                        key.GlowIntensity = intensity;
+                }
+            }
+
+            UpdateCheckedControlGlow(this, intensity);
+        }
+
+        private static void UpdateCheckedControlGlow(Control root, float intensity)
+        {
+            foreach (Control child in root.Controls)
+            {
+                if (child is ModernCheckBox checkBox
+                    && checkBox.Visible
+                    && checkBox.Enabled
+                    && checkBox.Checked)
+                {
+                    checkBox.GlowIntensity = intensity;
+                }
+
+                if (child.HasChildren)
+                    UpdateCheckedControlGlow(child, intensity);
+            }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -6637,7 +7056,9 @@ namespace OpenCompositeConfigurator
 
             if (TryParseIniFloat(_ini.Get("", "supersampleRatio", "1.0"), out float ss))
                 _nudSuperSample.Value = (decimal)Math.Clamp(ss, 0.5f, 2.0f);
-            _chkRenderHands.Checked = ParseBool(_ini.Get("", "renderCustomHands", "true"));
+            bool renderControllerModels = ParseBool(_ini.Get("", "renderCustomHands", "true"));
+            bool useLegacyGreyHands = ParseBool(_ini.Get("", "useLegacyGreyHands", "false"));
+            _cmbControllerModels.SelectedIndex = !renderControllerModels ? 2 : useLegacyGreyHands ? 1 : 0;
             _chkHaptics.Checked = ParseBool(_ini.Get("", "haptics", "true"));
             if (TryParseIniFloat(_ini.Get("", "hapticStrength", "0.1"), out float hs))
                 _nudHapticStrength.Value = (decimal)Math.Clamp(hs, 0f, 1f);
@@ -6676,6 +7097,7 @@ namespace OpenCompositeConfigurator
             _chkDisableThumbrestTouch.Checked = ParseBool(_ini.Get("", "disableThumbrestTouch", "true"));
             _chkDisableTrackpad.Checked = ParseBool(_ini.Get("", "disableTrackPad", "false"));
             _chkVRIKKnuckles.Checked = ParseBool(_ini.Get("", "enableVRIKKnucklesTrackPadSupport", "false"));
+            _chkSwapThumbsticks.Checked = ParseBool(_ini.Get("", "swapThumbsticks", "false"));
 
             // Load any user-saved presets from %AppData% before we try to restore
             // the saved selection — otherwise a saved user-preset name wouldn't be
@@ -6690,6 +7112,7 @@ namespace OpenCompositeConfigurator
                 int idx = _cmbBindingPreset.Items.IndexOf(savedPreset);
                 if (idx >= 0) _cmbBindingPreset.SelectedIndex = idx;
             }
+            _appliedBindingPresetName = _cmbBindingPreset.SelectedItem?.ToString() ?? "VRIK V2.1.0";
             UpdateDeletePresetEnabled();
             _chkGpuTiming.Checked = ParseBool(_ini.Get("", "enableGpuTiming", "true"));
             _chkCombatHapticShield.Checked = ParseBool(_ini.Get("", "combatHapticShield", "true"));
@@ -6697,6 +7120,15 @@ namespace OpenCompositeConfigurator
             _chkCombatHapticBow.Checked = ParseBool(_ini.Get("", "combatHapticBow", "true"));
             _chkCombatHapticMagic.Checked = ParseBool(_ini.Get("", "combatHapticMagic", "true"));
             _chkMenuLaserEnabled.Checked = ParseBool(_ini.Get("", "menuLaserEnabled", "true"));
+            _chkLaserSmoothing.Checked = ParseBool(_ini.Get("", "enableLaserSmoothing", "true"));
+            if (TryParseIniFloat(_ini.Get("", "laserPosSmoothMinCutoff", "6.0"), out float laserPosCutoff))
+                _nudLaserPosSmoothMinCutoff.Value = (decimal)Math.Clamp(laserPosCutoff, 0.01f, 20f);
+            if (TryParseIniFloat(_ini.Get("", "laserPosSmoothBeta", "12.0"), out float laserPosBeta))
+                _nudLaserPosSmoothBeta.Value = (decimal)Math.Clamp(laserPosBeta, 0f, 100f);
+            if (TryParseIniFloat(_ini.Get("", "laserRotSmoothMinCutoff", "4.0"), out float laserRotCutoff))
+                _nudLaserRotSmoothMinCutoff.Value = (decimal)Math.Clamp(laserRotCutoff, 0.01f, 20f);
+            if (TryParseIniFloat(_ini.Get("", "laserRotSmoothBeta", "0.35"), out float laserRotBeta))
+                _nudLaserRotSmoothBeta.Value = (decimal)Math.Clamp(laserRotBeta, 0f, 10f);
             _chkNetTrackersEnabled.Checked = ParseBool(_ini.Get("", "networkTrackersEnabled", "false"));
             _chkCameraLegCalibration.Checked = ParseBool(_ini.Get("", "cameraLegCalibrationEnabled", "true"));
             _chkWalkInPlace.Checked = ParseBool(_ini.Get("", "walkInPlaceEnabled", "false"));
@@ -6918,7 +7350,8 @@ namespace OpenCompositeConfigurator
             }
 
             // VRS settings
-            _chkVrsEnabled.Checked = ParseBool(_ini.Get("", "vrsEnabled", "false"));
+            _chkVrsFixedEnabled.Checked = ParseBool(_ini.Get("", "vrsEnabled", "false"));
+            _chkVrsEyeTracked.Checked = ParseBool(_ini.Get("", "vrsEyeTracked", "true"));
             if (float.TryParse(_ini.Get("", "vrsInnerRadius", "0.60"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float vrsIR))
                 _nudVrsInnerRadius.Value = (decimal)Math.Clamp(vrsIR, 0.10f, 1.00f);
             if (float.TryParse(_ini.Get("", "vrsMidRadius", "0.80"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float vrsMR))
@@ -6927,7 +7360,7 @@ namespace OpenCompositeConfigurator
                 _nudVrsOuterRadius.Value = (decimal)Math.Clamp(vrsOR, 0.10f, 1.50f);
             _chkVrsFavorHorizontal.Checked = ParseBool(_ini.Get("", "vrsFavorHorizontal", "true"));
             {
-                bool en = _chkVrsEnabled.Checked;
+                bool en = _chkVrsFixedEnabled.Checked || _chkVrsEyeTracked.Checked;
                 _cboVrsPreset.Enabled = en;
                 _nudVrsInnerRadius.Enabled = en;
                 _nudVrsMidRadius.Enabled = en;
@@ -6998,9 +7431,17 @@ namespace OpenCompositeConfigurator
             _ini.Set("keyboard", "hapticStrength", ((int)_nudKbHapticStrength.Value).ToString());
 
             _ini.Set("", "supersampleRatio", _nudSuperSample.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
-            _ini.Set("", "renderCustomHands", _chkRenderHands.Checked ? "true" : "false");
+            bool renderControllerModels = _cmbControllerModels.SelectedIndex != 2;
+            bool useLegacyGreyHands = _cmbControllerModels.SelectedIndex == 1;
+            _ini.Set("", "renderCustomHands", renderControllerModels ? "true" : "false");
+            _ini.Set("", "useLegacyGreyHands", useLegacyGreyHands ? "true" : "false");
             _ini.Set("", "haptics", _chkHaptics.Checked ? "true" : "false");
             _ini.Set("", "menuLaserEnabled", _chkMenuLaserEnabled.Checked ? "true" : "false");
+            _ini.Set("", "enableLaserSmoothing", _chkLaserSmoothing.Checked ? "true" : "false");
+            _ini.Set("", "laserPosSmoothMinCutoff", _nudLaserPosSmoothMinCutoff.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            _ini.Set("", "laserPosSmoothBeta", _nudLaserPosSmoothBeta.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            _ini.Set("", "laserRotSmoothMinCutoff", _nudLaserRotSmoothMinCutoff.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            _ini.Set("", "laserRotSmoothBeta", _nudLaserRotSmoothBeta.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             // Always-visible control (both games) — must write unconditionally to match the unconditional read
             _ini.Set("", "hapticStrength", _nudHapticStrength.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "enableHiddenMeshFix", _chkHiddenMesh.Checked ? "true" : "false");
@@ -7040,6 +7481,7 @@ namespace OpenCompositeConfigurator
                 _ini.Set("", "combatHapticStrength", ((int)_nudCombatHapticStrength.Value).ToString());
                 _ini.Set("", "leftDeadZoneSize", _nudLeftDeadZone.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
                 _ini.Set("", "rightDeadZoneSize", _nudRightDeadZone.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+                _ini.Set("", "swapThumbsticks", _chkSwapThumbsticks.Checked ? "true" : "false");
 
                 // Controller axis adjustments
                 _ini.Set("", "adjustTilt", _chkAdjustTilt.Checked ? "true" : "false");
@@ -7145,14 +7587,17 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "fsr3MipBiasOffset", _nudFsr3MipBiasOffset.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
 
             // VRS settings (NVIDIA only)
-            _ini.Set("", "vrsEnabled", _chkVrsEnabled.Checked ? "true" : "false");
+            _ini.Set("", "vrsEnabled", _chkVrsFixedEnabled.Checked ? "true" : "false");
+            _ini.Set("", "vrsEyeTracked", _chkVrsEyeTracked.Checked ? "true" : "false");
             _ini.Set("", "vrsInnerRadius", _nudVrsInnerRadius.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "vrsMidRadius", _nudVrsMidRadius.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "vrsOuterRadius", _nudVrsOuterRadius.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "vrsFavorHorizontal", _chkVrsFavorHorizontal.Checked ? "true" : "false");
 
             WriteCombosToIni();
-            _ini.Set("configurator", "activeBindingPreset", _cmbBindingPreset.SelectedItem?.ToString() ?? "");
+            // A dropdown selection is only a preview. Apply Preset owns this
+            // value so Save opencomposite.ini cannot falsely commit a preview.
+            _ini.Set("configurator", "activeBindingPreset", _appliedBindingPresetName);
         }
 
         private void LoadConfiguratorSettings()
@@ -7198,11 +7643,16 @@ namespace OpenCompositeConfigurator
                 if (!_installWarningShown)
                 {
                     _installWarningShown = true;
-                    BeginInvoke(new Action(() =>
+                    void ShowInvalidInstallWarning()
                     {
                         MessageBox.Show(GetInvalidInstallMessage(), "Invalid Configurator Location",
                             MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    }));
+                    }
+
+                    if (IsHandleCreated)
+                        BeginInvoke((Action)ShowInvalidInstallWarning);
+                    else
+                        Shown += (_, _) => ShowInvalidInstallWarning();
                 }
             }
 
@@ -7254,19 +7704,19 @@ namespace OpenCompositeConfigurator
             Font = new Font("Segoe UI", 12f, FontStyle.Bold), ForeColor = Color.FromArgb(255, 200, 40)
         };
 
-        private static CheckBox MakeCheckBox(string text, int x, int y) => new()
+        private static CheckBox MakeCheckBox(string text, int x, int y) => new ModernCheckBox
         {
             Text = text, Location = new Point(x, y), AutoSize = true,
             ForeColor = Color.FromArgb(210, 210, 210)
         };
 
-        private static RadioButton MakeRadioButton(string text, int x, int y, int width) => new()
+        private static RadioButton MakeRadioButton(string text, int x, int y, int width) => new ModernRadioButton
         {
             Text = text, Location = new Point(x, y), Size = new Size(width, 24),
             ForeColor = Color.FromArgb(210, 210, 210)
         };
 
-        private static Button MakeButton(string text, int x, int y, int w, int h) => new()
+        private static Button MakeButton(string text, int x, int y, int w, int h) => new ModernPillButton()
         {
             Text = text, Location = new Point(x, y), Size = new Size(w, h),
             FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(55, 55, 65),
@@ -7282,7 +7732,8 @@ namespace OpenCompositeConfigurator
         private static NumericUpDown MakeAxisNud(int x, int y, decimal min, decimal max, decimal inc, int decimals) => new()
         {
             Location = new Point(x, y), Width = 65,
-            DecimalPlaces = decimals, Increment = inc, Minimum = min, Maximum = max, Value = 0m,
+            DecimalPlaces = decimals, Increment = inc, Minimum = min, Maximum = max,
+            Value = Math.Clamp(0m, min, max),
             BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
         };
 
@@ -7307,6 +7758,12 @@ namespace OpenCompositeConfigurator
             _nudLeftLaserRotX.Value = 0m; _nudLeftLaserRotY.Value = 0m; _nudLeftLaserRotZ.Value = 0m;
             _chkRightLaserRotation.Checked = false;
             _nudRightLaserRotX.Value = 0m; _nudRightLaserRotY.Value = 0m; _nudRightLaserRotZ.Value = 0m;
+            _chkMenuLaserEnabled.Checked = true;
+            _chkLaserSmoothing.Checked = true;
+            _nudLaserPosSmoothMinCutoff.Value = 6m;
+            _nudLaserPosSmoothBeta.Value = 12m;
+            _nudLaserRotSmoothMinCutoff.Value = 4m;
+            _nudLaserRotSmoothBeta.Value = 0.35m;
             if (updateStatus)
             {
                 _lblStatus.Text = "Controller axis and laser settings reset to defaults";

@@ -184,6 +184,7 @@ namespace OpenCompositeConfigurator
 
             LoadControllerImage();
             InitializeUI();
+            ModernUiTheme.Apply(this);
 
             if (existing != null)
                 LoadExisting(existing);
@@ -249,7 +250,7 @@ namespace OpenCompositeConfigurator
                 Text = "",
                 Location = new Point(leftMargin, y),
                 Size = new Size(710, 20),
-                ForeColor = Color.FromArgb(255, 200, 40),
+                ForeColor = ModernUiTheme.KeyGlowBright,
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleCenter
             };
@@ -344,7 +345,7 @@ namespace OpenCompositeConfigurator
             y += 40;
 
             // OK / Cancel
-            _btnOk = new Button
+            _btnOk = new ModernPillButton
             {
                 Text = "OK",
                 Location = new Point(ClientSize.Width / 2 - 110, y),
@@ -359,7 +360,7 @@ namespace OpenCompositeConfigurator
             _btnOk.Click += BtnOk_Click;
             Controls.Add(_btnOk);
 
-            _btnCancel = new Button
+            _btnCancel = new ModernPillButton
             {
                 Text = "Cancel",
                 Location = new Point(ClientSize.Width / 2 + 10, y),
@@ -419,7 +420,7 @@ namespace OpenCompositeConfigurator
 
         private RadioButton MakeRadio(string text, int x, int y, int width)
         {
-            return new RadioButton
+            return new ModernRadioButton
             {
                 Text = text,
                 Location = new Point(x, y),
@@ -476,15 +477,15 @@ namespace OpenCompositeConfigurator
 
                     if (isSelected)
                     {
-                        using var pen = new Pen(Color.FromArgb(230, 255, 180, 40), 2f);
-                        using var brush = new SolidBrush(Color.FromArgb(140, 255, 180, 40));
+                        using var pen = new Pen(Color.FromArgb(230, ModernUiTheme.KeyGlowBright), 2f);
+                        using var brush = new SolidBrush(Color.FromArgb(140, ModernUiTheme.KeyGlowFill));
                         g.FillPolygon(brush, triPts);
                         g.DrawPolygon(pen, triPts);
                     }
                     else if (isHovered)
                     {
-                        using var pen = new Pen(Color.FromArgb(200, 100, 200, 255), 1.8f);
-                        using var brush = new SolidBrush(Color.FromArgb(80, 100, 200, 255));
+                        using var pen = new Pen(Color.FromArgb(210, ModernUiTheme.KeyGlowHover), 1.8f);
+                        using var brush = new SolidBrush(Color.FromArgb(80, ModernUiTheme.KeyGlowFill));
                         g.FillPolygon(brush, triPts);
                         g.DrawPolygon(pen, triPts);
                     }
@@ -505,15 +506,15 @@ namespace OpenCompositeConfigurator
 
                     if (isSelected)
                     {
-                        using var pen = new Pen(Color.FromArgb(220, 255, 180, 40), 3f);
-                        using var brush = new SolidBrush(Color.FromArgb(100, 255, 180, 40));
+                        using var pen = new Pen(Color.FromArgb(230, ModernUiTheme.KeyGlowBright), 3f);
+                        using var brush = new SolidBrush(Color.FromArgb(110, ModernUiTheme.KeyGlowFill));
                         g.FillEllipse(brush, cx - r, cy - r, r * 2, r * 2);
                         g.DrawEllipse(pen, cx - r, cy - r, r * 2, r * 2);
                     }
                     else if (isHovered)
                     {
-                        using var pen = new Pen(Color.FromArgb(180, 100, 200, 255), 2.5f);
-                        using var brush = new SolidBrush(Color.FromArgb(60, 100, 200, 255));
+                        using var pen = new Pen(Color.FromArgb(210, ModernUiTheme.KeyGlowHover), 2.5f);
+                        using var brush = new SolidBrush(Color.FromArgb(70, ModernUiTheme.KeyGlowFill));
                         g.FillEllipse(brush, cx - r, cy - r, r * 2, r * 2);
                         g.DrawEllipse(pen, cx - r, cy - r, r * 2, r * 2);
                     }
@@ -613,7 +614,7 @@ namespace OpenCompositeConfigurator
                 string buttons = string.Join(" + ", _selectedButtons.Select(b =>
                     _buttons.TryGetValue(b, out var info) ? info.display : b));
                 _lblPreview.Text = buttons;
-                _lblPreview.ForeColor = Color.FromArgb(255, 200, 40);
+                _lblPreview.ForeColor = ModernUiTheme.KeyGlowBright;
             }
         }
 

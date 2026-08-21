@@ -218,6 +218,7 @@ int Config::ini_handler(void* user, const char* pSection,
 	    || section == "vrs"
 	    || section == "debug") {
 		CFGOPT(bool, renderCustomHands);
+		CFGOPT(bool, useLegacyGreyHands);
 		CFGOPT(HmdColor_t, handColour);
 		CFGOPT(float, supersampleRatio);
 		CFGOPT(bool, haptics);
@@ -342,6 +343,11 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(int, networkTrackerPort);
 		CFGOPT(bool, cameraLegCalibrationEnabled);
 		CFGOPT(bool, menuLaserEnabled);
+		CFGOPT(bool, enableLaserSmoothing);
+		CFGOPT(float, laserPosSmoothMinCutoff);
+		CFGOPT(float, laserPosSmoothBeta);
+		CFGOPT(float, laserRotSmoothMinCutoff);
+		CFGOPT(float, laserRotSmoothBeta);
 		CFGOPT(bool, walkInPlaceEnabled);
 		CFGOPT(float, walkInPlaceSpeed);
 		CFGOPT(string, walkInPlaceActivation);
@@ -387,6 +393,7 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, dlssMipBiasOffset);
 		CFGOPT(float, fsr3MipBiasOffset);
 		CFGOPT(bool, vrsEnabled);
+		CFGOPT(bool, vrsEyeTracked);
 		CFGOPT(float, vrsInnerRadius);
 		CFGOPT(float, vrsMidRadius);
 		CFGOPT(float, vrsOuterRadius);

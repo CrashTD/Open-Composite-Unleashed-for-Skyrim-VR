@@ -92,15 +92,16 @@ namespace OpenCompositeConfigurator
             catch { return "touch"; }
         }
 
-        private void SaveUiModelChoice()
+        private bool SaveUiModelChoice()
         {
             try
             {
                 File.WriteAllText(UiStatePath, JsonSerializer.Serialize(
                     new Dictionary<string, string> { ["controllerModel"] = _controllerModelKey },
                     new JsonSerializerOptions { WriteIndented = true }));
+                return true;
             }
-            catch { /* non-fatal: choice just will not persist */ }
+            catch { return false; }
         }
 
         private void LoadKnucklesImage()
@@ -159,17 +160,17 @@ namespace OpenCompositeConfigurator
             // Explicit Save button so the choice only sticks when the user commits it.
             // (Auto-saving on every dropdown change made an accidental flick to Index
             //  persist and greet Meta owners with knuckles on the next launch.)
-            var btnSaveController = new Button
+            var btnSaveController = new ModernPillButton
             {
                 Text = "Save",
                 Location = new Point(x + 222, y),
                 Size = new Size(66, 24),
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(40, 70, 50),
-                ForeColor = Color.FromArgb(210, 212, 220),
+                BackColor = Color.FromArgb(40, 120, 40),
+                ForeColor = Color.White,
                 Font = new Font("Segoe UI", 8.5f),
             };
-            btnSaveController.FlatAppearance.BorderColor = Color.FromArgb(70, 95, 75);
+            btnSaveController.FlatAppearance.BorderColor = Color.FromArgb(70, 145, 70);
 
             _cmbControllerModel.SelectedIndexChanged += (s, e) =>
             {
@@ -181,8 +182,17 @@ namespace OpenCompositeConfigurator
 
             btnSaveController.Click += (s, e) =>
             {
-                SaveUiModelChoice();
-                btnSaveController.Text = "Saved ✓";
+                if (SaveUiModelChoice())
+                {
+                    AcceptTrackedControlAsSaved(_cmbControllerModel);
+                    btnSaveController.Text = "Saved";
+                }
+                else
+                {
+                    btnSaveController.Text = "Retry";
+                    _lblKbStatus.Text = "Controller picture choice could not be saved.";
+                    _lblKbStatus.ForeColor = Color.FromArgb(255, 100, 100);
+                }
             };
             container.Controls.Add(btnSaveController);
 
@@ -191,7 +201,7 @@ namespace OpenCompositeConfigurator
             if (LoadUiModelChoice() == "knuckles")
                 _cmbControllerModel.SelectedIndex = 1;
 
-            _chkMoveDots = new CheckBox
+            _chkMoveDots = new ModernCheckBox
             {
                 Text = "Move dots (drag to calibrate, saves on release)",
                 Location = new Point(x + 296, y + 2),

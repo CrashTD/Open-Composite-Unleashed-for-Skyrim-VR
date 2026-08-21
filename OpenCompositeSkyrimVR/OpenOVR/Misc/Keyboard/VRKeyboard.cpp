@@ -15,6 +15,7 @@
 #include "resources.h"
 
 #include "BeamTexture.h"
+#include "LaserRaySmoothing.h"
 #include "Misc/Config.h"
 #include "Misc/LaserCalibration.h"
 #include "Misc/lodepng.h"
@@ -1741,6 +1742,7 @@ void VRKeyboard::UpdateLaserBeam(int side)
 const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 {
 	activeLayers.clear();
+	bool targetDotValid[3] = { false, false, false };
 
 #ifdef _WIN32
 	ULONGLONG now = GetTickCount64();
@@ -2226,14 +2228,28 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 						input->GetHandSpace((vr::TrackedDeviceIndex_t)(side + 1), aimSpace, true);
 						if (aimSpace != XR_NULL_HANDLE) {
 							XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
+							const XrTime grabSampleTime = xr_gbl->GetBestTime();
 							if (XR_SUCCEEDED(xrLocateSpace(aimSpace, layer.space,
-							        xr_gbl->GetBestTime(), &loc))
+							        grabSampleTime, &loc))
 							    && (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
 							    && (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
 								XrVector3f rayOrig = loc.pose.position;
+								float originDown = oovr_laser_calibration::OriginDown(side);
+								if (originDown != 0.0f) {
+									XrVector3f downWorld;
+									rotate_vector_by_quaternion(
+									    { 0.0f, -1.0f, 0.0f }, loc.pose.orientation, downWorld);
+									rayOrig.x += downWorld.x * originDown;
+									rayOrig.y += downWorld.y * originDown;
+									rayOrig.z += downWorld.z * originDown;
+								}
 								XrVector3f rayFwd = oovr_laser_calibration::LocalForward(side);
 								XrVector3f rayDir;
 								rotate_vector_by_quaternion(rayFwd, loc.pose.orientation, rayDir);
+								if (!oovr_laser_smoothing::Filter(
+								        oovr_laser_smoothing::Consumer::Keyboard, side, layer.space,
+								        grabSampleTime, rayOrig, rayDir))
+									rayDir = {};
 
 								XrVector3f planeN;
 								rotate_vector_by_quaternion({ 0, 0, 1 }, layer.pose.orientation, planeN);
@@ -2355,28 +2371,52 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 		if (input && input->AreActionsLoaded()) {
 			// Controller dots (0 and 1)
 			for (int side = 0; side < 2; side++) {
+				const XrTime targetSampleTime = xr_gbl->GetBestTime();
 				XrSpace aimSpace = XR_NULL_HANDLE;
 				input->GetHandSpace((vr::TrackedDeviceIndex_t)(side + 1), aimSpace, true);
-				if (aimSpace != XR_NULL_HANDLE) {
-					XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
-					XrResult result = xrLocateSpace(aimSpace, xr_gbl->floorSpace,
-					    xr_gbl->GetBestTime(), &location);
-					if (XR_SUCCEEDED(result)
-					    && (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
-					    && (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+				if (aimSpace == XR_NULL_HANDLE) {
+					oovr_laser_smoothing::Reset(
+					    oovr_laser_smoothing::Consumer::KeyboardTarget,
+					    side, xr_gbl->floorSpace);
+					continue;
+				}
+				XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
+				XrResult result = xrLocateSpace(aimSpace, xr_gbl->floorSpace,
+				    targetSampleTime, &location);
+				if (XR_FAILED(result)
+				    || !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
+				    || !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+					oovr_laser_smoothing::Reset(
+					    oovr_laser_smoothing::Consumer::KeyboardTarget,
+					    side, xr_gbl->floorSpace);
+					continue;
+				}
 						// Project 3 meters forward from controller
 						XrVector3f fwd = oovr_laser_calibration::LocalForward(side);
 						XrVector3f dir;
 						rotate_vector_by_quaternion(fwd, location.pose.orientation, dir);
-						targetDotLayer[side].pose.position = {
-							location.pose.position.x + dir.x * 3.0f,
-							location.pose.position.y + dir.y * 3.0f,
-							location.pose.position.z + dir.z * 3.0f
-						};
-						targetDotLayer[side].pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
-						targetDotLayer[side].space = xr_gbl->floorSpace;
-					}
-				}
+						XrVector3f origin = location.pose.position;
+						float originDown = oovr_laser_calibration::OriginDown(side);
+						if (originDown != 0.0f) {
+							XrVector3f downWorld;
+							rotate_vector_by_quaternion(
+							    { 0.0f, -1.0f, 0.0f }, location.pose.orientation, downWorld);
+							origin.x += downWorld.x * originDown;
+							origin.y += downWorld.y * originDown;
+							origin.z += downWorld.z * originDown;
+						}
+						if (oovr_laser_smoothing::Filter(
+						        oovr_laser_smoothing::Consumer::KeyboardTarget, side,
+						        xr_gbl->floorSpace, targetSampleTime, origin, dir)) {
+							targetDotLayer[side].pose.position = {
+								origin.x + dir.x * 3.0f,
+								origin.y + dir.y * 3.0f,
+								origin.z + dir.z * 3.0f
+							};
+							targetDotLayer[side].pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
+							targetDotLayer[side].space = xr_gbl->floorSpace;
+							targetDotValid[side] = true;
+						}
 			}
 			// Headset dot (index 2)
 			XrSpaceLocation headLoc = { XR_TYPE_SPACE_LOCATION };
@@ -2396,6 +2436,13 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				};
 				targetDotLayer[2].pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
 				targetDotLayer[2].space = xr_gbl->floorSpace;
+				targetDotValid[2] = true;
+			}
+		} else {
+			for (int side = 0; side < 2; ++side) {
+				oovr_laser_smoothing::Reset(
+				    oovr_laser_smoothing::Consumer::KeyboardTarget,
+				    side, xr_gbl->floorSpace);
 			}
 		}
 	}
@@ -2414,7 +2461,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 	}
 	if (s_targetMode) {
 		for (int i = 0; i < 3; i++) {
-			if (targetDotChain != XR_NULL_HANDLE)
+			if (targetDotValid[i] && targetDotChain != XR_NULL_HANDLE)
 				activeLayers.push_back((XrCompositionLayerBaseHeader*)&targetDotLayer[i]);
 		}
 	}
@@ -2440,28 +2487,50 @@ int VRKeyboard::HitTestLaser(int side)
 	laserOnSizeDown[side] = false;
 
 	std::shared_ptr<BaseInput> input = GetBaseInput();
-	if (!input || !input->AreActionsLoaded())
+	if (!input || !input->AreActionsLoaded()) {
+		oovr_laser_smoothing::Reset(
+		    oovr_laser_smoothing::Consumer::Keyboard, side, layer.space);
 		return -1;
+	}
 
 	XrSpace aimSpace = XR_NULL_HANDLE;
 	input->GetHandSpace((vr::TrackedDeviceIndex_t)(side + 1), aimSpace, true);
-	if (aimSpace == XR_NULL_HANDLE)
+	if (aimSpace == XR_NULL_HANDLE) {
+		oovr_laser_smoothing::Reset(
+		    oovr_laser_smoothing::Consumer::Keyboard, side, layer.space);
 		return -1;
+	}
 
 	// Locate controller in the keyboard's reference space (viewSpace or floorSpace)
 	XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
-	XrResult result = xrLocateSpace(aimSpace, layer.space,
-	    xr_gbl->GetBestTime(), &location);
+	const XrTime sampleTime = xr_gbl->GetBestTime();
+	XrResult result = xrLocateSpace(aimSpace, layer.space, sampleTime, &location);
 
 	if (XR_FAILED(result)
 	    || !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
-	    || !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+	    || !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+		oovr_laser_smoothing::Reset(
+		    oovr_laser_smoothing::Consumer::Keyboard, side, layer.space);
 		return -1;
+	}
 
 	XrVector3f rayOrigin = location.pose.position;
+	float originDown = oovr_laser_calibration::OriginDown(side);
+	if (originDown != 0.0f) {
+		XrVector3f downWorld;
+		rotate_vector_by_quaternion(
+		    { 0.0f, -1.0f, 0.0f }, location.pose.orientation, downWorld);
+		rayOrigin.x += downWorld.x * originDown;
+		rayOrigin.y += downWorld.y * originDown;
+		rayOrigin.z += downWorld.z * originDown;
+	}
 	XrVector3f fwd = oovr_laser_calibration::LocalForward(side);
 	XrVector3f rayDir;
 	rotate_vector_by_quaternion(fwd, location.pose.orientation, rayDir);
+	if (!oovr_laser_smoothing::Filter(
+	        oovr_laser_smoothing::Consumer::Keyboard, side, layer.space,
+	        sampleTime, rayOrigin, rayDir))
+		return -1;
 
 	// Oriented plane intersection — keyboard can face any direction in world space
 	XrVector3f kbCenter = layer.pose.position;

@@ -50,10 +50,28 @@
 ; Default: 1.0
 ;fsr3MipBiasOffset=1.0
 
+; FIXED foveated rendering for headsets without eye tracking. This keeps the
+; legacy key name for compatibility. It never changes CSX render scale,
+; swapchain dimensions, ASW depth, or motion vectors.
+; Default: false
+;vrsEnabled=false
+
+; EYE TRACKING / AUTO. Uses XR_EXT_eye_gaze_interaction only when the active
+; runtime and headset provide a valid fresh gaze pose. If gaze is unavailable,
+; VRS stays off unless FIXED above was also explicitly enabled. CSX/game menus
+; are always full-rate.
+; Default: true
+;vrsEyeTracked=true
+
 ; Render the default OpenComposite controller models.
 ; Set to false if you prefer in-game hand models or use a mod like VRIK.
 ; Default: true
 ;renderCustomHands=true
+
+; Use OCU's original grey hand meshes instead of installed SteamVR controller models.
+; This does not turn hand rendering on or off; renderCustomHands remains the master switch.
+; Default: false
+;useLegacyGreyHands=false
 
 ; Colour of the rendered controller models (hex #RRGGBB).
 ; Only matters when renderCustomHands is true.
@@ -205,10 +223,31 @@
 ;rightLaserYRotation=0.0
 ;rightLaserZRotation=0.0
 
+; Smooth only OCU's rendered menu and keyboard rays. The calibrated raw
+; OC_AIM_POSES export stays unsmoothed so Prisma UI can apply exactly one filter.
+; Default: true
+;enableLaserSmoothing=true
+
+; Adaptive ray-filter tuning. Cutoffs are Hz at rest. Response adds cutoff Hz
+; per metre/second for position and per radian/second for aim direction. Motion
+; speed is low-pass filtered at 1 Hz so sensor noise cannot disable smoothing.
+; Higher cutoff/response reacts faster; lower values smooth more but add lag.
+;laserPosSmoothMinCutoff=6.0
+;laserPosSmoothBeta=12.0
+;laserRotSmoothMinCutoff=4.0
+;laserRotSmoothBeta=0.35
+
 
 ; ----------------------------------------------------------------------------
 ;  DEAD ZONES  (thumbstick)
 ; ----------------------------------------------------------------------------
+
+; Swap the physical thumbstick values and capacitive touch so the right stick
+; drives locomotion and the left stick drives turning. Stick press/click and
+; all other buttons stay on their original hands. Dead-zone settings still
+; follow the physical controllers so drift is filtered correctly.
+; Default: false
+;swapThumbsticks=false
 
 ; Uniform dead zone radius. Set > 0 to ignore small stick movements.
 ; Default: 0.0

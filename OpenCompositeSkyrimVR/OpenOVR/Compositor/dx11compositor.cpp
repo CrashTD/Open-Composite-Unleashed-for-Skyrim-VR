@@ -3,12 +3,15 @@
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
 
 #include "../Reimpl/BaseCompositor.h"
+#include "../Reimpl/BaseInput.h"
 #include "dx11compositor.h"
+#include "VRSGaze.h"
 
 
 #include "../Misc/Config.h"
 #include "../Misc/MipBiasHook.h"
 #include "../Misc/xr_ext.h"
+#include "generated/static_bases.gen.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -287,6 +290,17 @@ int OCBridge_ConsoleState()
 	if (!s_pBridge)
 		return -1;
 	return s_pBridge->isConsoleOpen ? 1 : 0;
+}
+
+// Read-only menu signal from the same bridge CSX/ASW already share. VRS uses
+// it only as a safety gate: menus render at full shading rate. No bridge image,
+// dimension, renderScale, depth, or motion-vector field is read or modified.
+static int OCBridge_MenuState()
+{
+	OpenRenderTargetBridge();
+	if (!s_pBridge)
+		return -1;
+	return s_pBridge->isMenuOpen ? 1 : 0;
 }
 static void OpenRenderTargetBridge()
 {
@@ -4516,8 +4530,15 @@ void DX11Compositor::CheckCreateSwapChain(const vr::Texture_t* texture, const vr
 // and read by the inner Invoke (FSR code) to pass per-eye projection centers to shaders.
 static float s_vrsProjX[2] = { 0.5f, 0.5f };
 static float s_vrsProjY[2] = { 0.5f, 0.5f };
+static float s_vrsTanL[2] = {};
+static float s_vrsTanR[2] = {};
+static float s_vrsTanU[2] = {};
+static float s_vrsTanD[2] = {};
+static ocu_vrs_gaze::Center s_vrsSmoothedGaze[2];
+static bool s_vrsHasSmoothedGaze = false;
 static int s_vrsEyeW = 0, s_vrsEyeH = 0;
 static bool s_vrsInitialFrameDone = false;
+static bool s_vrsPatternReady = false;
 static int s_currentEyeIdx = 0;
 
 void DX11Compositor::ReleaseFsr3PostAASRVs()
@@ -6596,20 +6617,27 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 
 	// ── VRS: lazy-init on dxcomp only, then disable before our post-processing shaders ──
 	VRSManager* vrsMgr = nullptr;
-	if (BaseCompositor::dxcomp && oovr_global_configuration.VrsEnabled()) {
+	if (BaseCompositor::dxcomp) {
 		vrsMgr = BaseCompositor::dxcomp->GetVRSManager();
-		// Lazy-init: only initialize VRS on the dxcomp compositor (not temporary compositors)
-		if (vrsMgr && !vrsMgr->IsAvailable()) {
+		// Always clear a previously applied pattern before OCU post-processing,
+		// including after both modes are disabled by an INI hot reload.
+		if (vrsMgr && vrsMgr->IsAvailable())
+			vrsMgr->Disable();
+
+		// Lazy-init only when Eye Tracking or Fixed was explicitly requested.
+		if (vrsMgr && oovr_global_configuration.VrsAnyEnabled() && !vrsMgr->IsAvailable()) {
 			if (vrsMgr->Initialize(BaseCompositor::dxcomp->GetDevice())) {
 				OOVR_LOG("VRS: NVIDIA Variable Rate Shading initialized (lazy, on dxcomp)");
 			} else {
 				OOVR_LOG("VRS: Not available (requires NVIDIA RTX or GTX 16xx series)");
 			}
 		}
-		if (vrsMgr->IsAvailable()) {
+		if (vrsMgr && vrsMgr->IsAvailable() && oovr_global_configuration.VrsAnyEnabled()) {
 			vrsMgr->Disable();
 		} else {
-			vrsMgr = nullptr; // Not available, skip all VRS code below
+			vrsMgr = nullptr;
+			s_vrsPatternReady = false;
+			s_vrsHasSmoothedGaze = false;
 		}
 	}
 
@@ -7387,23 +7415,23 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 					if (fabsf(yawDelta) > 0.5f)
 						yawDelta = 0.0f;
 
-					// Read right thumbstick X directly from OpenXR — clean signal
-					// with zero head-yaw contamination. Non-zero = player is
-					// intentionally rotating via stick.
-					float rightStickX = 0.0f;
+					// Read the configured turn-stick X directly from OpenXR. The
+					// exported handle already follows swapThumbsticks, so this is
+					// the physical left stick when the roles are swapped.
+					float turnStickX = 0.0f;
 					if (xr_rightStickX_action != XR_NULL_HANDLE && xr_session.get() != XR_NULL_HANDLE) {
 						XrActionStateGetInfo info = { XR_TYPE_ACTION_STATE_GET_INFO };
 						info.action = xr_rightStickX_action;
 						XrActionStateFloat state = { XR_TYPE_ACTION_STATE_FLOAT };
 						if (XR_SUCCEEDED(xrGetActionStateFloat(xr_session.get(), &info, &state)) && state.isActive)
-							rightStickX = state.currentState;
+							turnStickX = state.currentState;
 					}
 
 					// Use actorYaw delta for the actual rotation amount (warp correction),
 					// but gate it on thumbstick deflection to avoid head-yaw contamination.
 					// When stick is released, decay smoothly instead of snapping to zero.
 					static constexpr float kStickDeadZone = 0.05f; // ~5% deflection
-					bool stickActive = fabsf(rightStickX) > kStickDeadZone;
+					bool stickActive = fabsf(turnStickX) > kStickDeadZone;
 					if (stickActive) {
 						// Active rotation: use raw yaw delta (responsive)
 						s_smoothYaw = yawDelta;
@@ -7484,14 +7512,19 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 #endif
 
 	// ── VRS: update projection centers and re-enable for the NEXT eye's rendering ──
-	if (vrsMgr && vrsMgr->IsAvailable() && oovr_global_configuration.VrsEnabled()) {
+	if (vrsMgr && vrsMgr->IsAvailable() && oovr_global_configuration.VrsAnyEnabled()) {
 		int eyeIdx = (eye == XruEyeLeft) ? 0 : 1;
+		const bool menuOpen = OCBridge_MenuState() == 1;
 
 		// Extract projection center from this eye's FOV
 		float tanL = tanf(layer.fov.angleLeft);
 		float tanR = tanf(layer.fov.angleRight);
 		float tanU = tanf(layer.fov.angleUp);
 		float tanD = tanf(layer.fov.angleDown);
+		s_vrsTanL[eyeIdx] = tanL;
+		s_vrsTanR[eyeIdx] = tanR;
+		s_vrsTanU[eyeIdx] = tanU;
+		s_vrsTanD[eyeIdx] = tanD;
 		s_vrsProjX[eyeIdx] = (-tanL) / (tanR - tanL);
 		s_vrsProjY[eyeIdx] = tanU / (tanU - tanD);
 
@@ -7508,11 +7541,56 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 		}
 
 		// After right eye (frame complete): update patterns for both eyes
-		if (eyeIdx == 1 && s_vrsEyeW > 0 && s_vrsEyeH > 0) {
-			vrsMgr->SetProjectionCenters(s_vrsProjX[0], s_vrsProjY[0], s_vrsProjX[1], s_vrsProjY[1]);
-			vrsMgr->UpdatePatterns(s_vrsEyeW, s_vrsEyeH);
+		if (eyeIdx == 1 && !menuOpen && s_vrsEyeW > 0 && s_vrsEyeH > 0) {
+			bool gazeUsed = false;
+			if (oovr_global_configuration.VrsEyeTracked()) {
+				if (BaseInput* input = GetUnsafeBaseInput()) {
+					XrVector3f gazeDirection{};
+					XrTime gazeSampleTime = 0;
+					if (input->SampleEyeGazeDirection(xr_gbl->nextPredictedFrameTime,
+					        gazeDirection, gazeSampleTime)) {
+						ocu_vrs_gaze::Center target[2];
+						gazeUsed = ocu_vrs_gaze::Project(gazeDirection.x, gazeDirection.y, gazeDirection.z,
+						               s_vrsTanL[0], s_vrsTanR[0], s_vrsTanU[0], s_vrsTanD[0], target[0]) &&
+						    ocu_vrs_gaze::Project(gazeDirection.x, gazeDirection.y, gazeDirection.z,
+						        s_vrsTanL[1], s_vrsTanR[1], s_vrsTanU[1], s_vrsTanD[1], target[1]);
+						if (gazeUsed) {
+							const XrDuration period = xr_gbl->nextPredictedFramePeriod.load(std::memory_order_acquire);
+							const float dt = period > 0 ? (float)((double)period / 1000000000.0) : (1.0f / 90.0f);
+							for (int gazeEye = 0; gazeEye < 2; ++gazeEye) {
+								s_vrsSmoothedGaze[gazeEye] = ocu_vrs_gaze::Smooth(
+								    s_vrsSmoothedGaze[gazeEye], target[gazeEye], dt, s_vrsHasSmoothedGaze);
+								s_vrsProjX[gazeEye] = s_vrsSmoothedGaze[gazeEye].x;
+								s_vrsProjY[gazeEye] = s_vrsSmoothedGaze[gazeEye].y;
+							}
+							s_vrsHasSmoothedGaze = true;
+						}
+					}
+				}
+			}
+			const auto vrsMode = ocu_vrs_gaze::SelectMode(
+			    oovr_global_configuration.VrsEyeTracked(),
+			    oovr_global_configuration.VrsFixedEnabled(), gazeUsed, menuOpen);
+			if (vrsMode != ocu_vrs_gaze::Mode::EyeTracked)
+				s_vrsHasSmoothedGaze = false;
 
-			if (!s_vrsInitialFrameDone) {
+			static int s_lastVrsMode = -1;
+			const int modeValue = static_cast<int>(vrsMode);
+			if (modeValue != s_lastVrsMode) {
+				const char* modeName = vrsMode == ocu_vrs_gaze::Mode::EyeTracked ? "eye-tracked" :
+				    (vrsMode == ocu_vrs_gaze::Mode::Fixed ? "fixed-center (explicit)" :
+				                                              "off (Auto gaze unavailable; Fixed disabled)");
+				OOVR_LOGF("VRS mode: %s", modeName);
+				s_lastVrsMode = modeValue;
+			}
+
+			s_vrsPatternReady = vrsMode != ocu_vrs_gaze::Mode::Off;
+			if (s_vrsPatternReady) {
+				vrsMgr->SetProjectionCenters(s_vrsProjX[0], s_vrsProjY[0], s_vrsProjX[1], s_vrsProjY[1]);
+				vrsMgr->UpdatePatterns(s_vrsEyeW, s_vrsEyeH);
+			}
+
+			if (s_vrsPatternReady && !s_vrsInitialFrameDone) {
 				OOVR_LOGF("VRS: First frame complete — eye %dx%d, projL=(%.3f,%.3f) projR=(%.3f,%.3f)",
 				    s_vrsEyeW, s_vrsEyeH,
 				    s_vrsProjX[0], s_vrsProjY[0], s_vrsProjX[1], s_vrsProjY[1]);
@@ -7522,9 +7600,16 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 
 		// After left eye submit: apply RIGHT eye VRS pattern for game's right eye rendering
 		// After right eye submit: apply LEFT eye VRS pattern for next frame's left eye rendering
-		if (s_vrsInitialFrameDone) {
+		// VRS is intentionally withheld from CSX/game menus. Disable() already ran
+		// before OCU post-processing, so this only controls the next game eye and
+		// cannot alter CSX render scale, ASW color/depth/MV, or swapchain bounds.
+		if (s_vrsPatternReady && !menuOpen) {
 			int nextEye = (eyeIdx == 0) ? 1 : 0;
 			vrsMgr->ApplyForEye(nextEye);
+		}
+		if (menuOpen) {
+			s_vrsHasSmoothedGaze = false;
+			s_vrsPatternReady = false;
 		}
 	}
 

@@ -579,8 +579,14 @@ EVRRenderModelError BaseRenderModels::LoadRenderModel_Async(const char* pchRende
 	string name = pchRenderModelName;
 
 	// Real SteamVR models first — colour controllers instead of gray hands
-	if (TryLoadSteamVrModel(name, renderModel))
+	// Keep controller visibility and model selection independent. The legacy
+	// option bypasses SteamVR model passthrough and reaches OCU's original grey
+	// hand meshes below; renderCustomHands remains the visibility control.
+	if (!oovr_global_configuration.UseLegacyGreyHands() &&
+	    TryLoadSteamVrModel(name, renderModel))
 		return VRRenderModelError_None;
+	if (oovr_global_configuration.UseLegacyGreyHands())
+		OOVR_LOG_ONCE("RenderModels: legacy grey hand meshes selected; SteamVR model passthrough disabled");
 	int rid;
 	float sided;
 	bool isQuest3 = false; // Quest 3 support archived — see ARCHIVE_Quest3Controllers.cpp.disabled
@@ -699,6 +705,7 @@ EVRRenderModelError BaseRenderModels::LoadRenderModel_Async(const char* pchRende
 
 	*renderModel = new RenderModel_t();
 	RenderModel_t& rm = **renderModel;
+	rm.diffuseTextureId = 0; // stable built-in 1x1 handColour texture
 
 	rm.unVertexCount = (uint32_t)vertexData.size();
 	OOVR_RenderModel_Vertex_t* vertexData_arr = new OOVR_RenderModel_Vertex_t[rm.unVertexCount];
@@ -726,8 +733,8 @@ EVRRenderModelError BaseRenderModels::LoadRenderModel_Async(const char* pchRende
 
 void BaseRenderModels::FreeRenderModel(RenderModel_t* renderModel)
 {
-	delete renderModel->rVertexData;
-	delete renderModel->rIndexData;
+	delete[] renderModel->rVertexData;
+	delete[] renderModel->rIndexData;
 	delete renderModel;
 }
 
@@ -782,7 +789,7 @@ EVRRenderModelError BaseRenderModels::LoadTexture_Async(TextureID_t textureId, R
 
 void BaseRenderModels::FreeTexture(RenderModel_TextureMap_t* texture)
 {
-	delete texture->rubTextureMapData;
+	delete[] texture->rubTextureMapData;
 	delete texture;
 }
 

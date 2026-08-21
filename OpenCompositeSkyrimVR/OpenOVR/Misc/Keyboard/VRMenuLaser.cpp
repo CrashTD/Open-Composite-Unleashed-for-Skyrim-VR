@@ -10,6 +10,7 @@
 #include "Reimpl/BaseInput.h"
 #include "Reimpl/BaseSystem.h"
 #include "Misc/LaserCalibration.h"
+#include "LaserRaySmoothing.h"
 #include "BeamTexture.h"
 #include "generated/static_bases.gen.h"
 
@@ -713,14 +714,22 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
     XrTime predictedTime, const bool keyboardHitSide[2])
 {
 	activeLayers.clear();
+	for (int side = 0; side < 2; ++side) {
+		rayValid[side] = false;
+		hitActive[side] = false;
+	}
+	XrSpace appSpace = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
 
-	if (!menuValid)
+	if (!menuValid) {
+		for (int side = 0; side < 2; ++side)
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 		return activeLayers;
+	}
 
 	// Use the exact reference space selected by the game for its projection
 	// layer. The exported RoomNode-local menu mesh, controller rays, dot, beam,
 	// and debug quad must all be expressed in this same space.
-	XrSpace appSpace = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
 	for (int side = 0; side < 2; ++side) {
 		beamLayer[side].space = appSpace;
 		dotLayer[side].space = appSpace;
@@ -742,8 +751,12 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 
 	// Get input system for controller poses
 	std::shared_ptr<BaseInput> input = GetBaseInput();
-	if (!input || !input->AreActionsLoaded())
+	if (!input || !input->AreActionsLoaded()) {
+		for (int side = 0; side < 2; ++side)
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 		return activeLayers;
+	}
 
 	// Get controller states for trigger tracking
 	BaseSystem* sys = GetUnsafeBaseSystem();
@@ -763,19 +776,28 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 		rayValid[side] = false;
 
 		// Skip this hand if keyboard has it
-		if (keyboardHitSide[side])
+		if (keyboardHitSide[side]) {
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 			continue;
+		}
 
 		// Get controller aim space
 		XrSpace aimSpace = XR_NULL_HANDLE;
 		input->GetHandSpace((vr::TrackedDeviceIndex_t)(side + 1), aimSpace, true);
-		if (aimSpace == XR_NULL_HANDLE)
+		if (aimSpace == XR_NULL_HANDLE) {
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 			continue;
+		}
 
 		XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
 		XrResult result = xrLocateSpace(aimSpace, appSpace, predictedTime, &location);
-		if (XR_FAILED(result) || !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) || !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+		if (XR_FAILED(result) || !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) || !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 			continue;
+		}
 
 		XrVector3f rayOrigin = location.pose.position;
 		float originDown = oovr_laser_calibration::OriginDown(side);
@@ -789,6 +811,10 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 		XrVector3f fwd = oovr_laser_calibration::LocalForward(side);
 		XrVector3f rayDir;
 		rotate_vector_by_quaternion(fwd, location.pose.orientation, rayDir);
+		if (!oovr_laser_smoothing::Filter(
+		        oovr_laser_smoothing::Consumer::Menu, side, appSpace,
+		        predictedTime, rayOrigin, rayDir))
+			continue;
 		rayValid[side] = true;
 
 		// Store ray data for calibration/diagnostics
@@ -918,6 +944,10 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::UpdateWorld(
 
 	XrSpace appSpace = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
 	for (int side = 0; side < 2; ++side) {
+		rayValid[side] = false;
+		hitActive[side] = false;
+	}
+	for (int side = 0; side < 2; ++side) {
 		beamLayer[side].space = appSpace;
 		dotLayer[side].space = appSpace;
 	}
@@ -926,12 +956,20 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::UpdateWorld(
 	XrResult headResult = xrLocateSpace(xr_gbl->viewSpace, appSpace, predictedTime, &headLoc);
 	if (XR_FAILED(headResult) ||
 	    !(headLoc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
-	    !(headLoc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+	    !(headLoc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+		for (int side = 0; side < 2; ++side)
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 		return activeLayers;
+	}
 
 	std::shared_ptr<BaseInput> input = GetBaseInput();
-	if (!input || !input->AreActionsLoaded())
+	if (!input || !input->AreActionsLoaded()) {
+		for (int side = 0; side < 2; ++side)
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 		return activeLayers;
+	}
 	BaseSystem* sys = GetUnsafeBaseSystem();
 	constexpr float kWorldNoHitBeam = 20.0f;
 	constexpr float kMaxWorldHit = 120.0f;
@@ -968,20 +1006,29 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::UpdateWorld(
 		beamLayer[side].subImage.swapchain = beamChain[colorState];
 		dotLayer[side].subImage.swapchain = dotChain[colorState];
 
-		if (keyboardHitSide[side])
+		if (keyboardHitSide[side]) {
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 			continue;
+		}
 
 		XrSpace aimSpace = XR_NULL_HANDLE;
 		input->GetHandSpace((vr::TrackedDeviceIndex_t)(side + 1), aimSpace, true);
-		if (aimSpace == XR_NULL_HANDLE)
+		if (aimSpace == XR_NULL_HANDLE) {
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 			continue;
+		}
 
 		XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
 		XrResult result = xrLocateSpace(aimSpace, appSpace, predictedTime, &location);
 		if (XR_FAILED(result) ||
 		    !(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ||
-		    !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+		    !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+			oovr_laser_smoothing::Reset(
+			    oovr_laser_smoothing::Consumer::Menu, side, appSpace);
 			continue;
+		}
 
 		XrVector3f rayOrigin = location.pose.position;
 		float originDown = oovr_laser_calibration::OriginDown(side);
@@ -996,13 +1043,10 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::UpdateWorld(
 		XrVector3f localForward = oovr_laser_calibration::LocalForward(side);
 		XrVector3f rayDir;
 		rotate_vector_by_quaternion(localForward, location.pose.orientation, rayDir);
-
-		float dirMag = sqrtf(rayDir.x * rayDir.x + rayDir.y * rayDir.y + rayDir.z * rayDir.z);
-		if (!std::isfinite(dirMag) || dirMag < 0.5f)
+		if (!oovr_laser_smoothing::Filter(
+		        oovr_laser_smoothing::Consumer::Menu, side, appSpace,
+		        predictedTime, rayOrigin, rayDir))
 			continue;
-		rayDir.x /= dirMag;
-		rayDir.y /= dirMag;
-		rayDir.z /= dirMag;
 
 		rayValid[side] = true;
 		lastRayOrigin[side] = rayOrigin;

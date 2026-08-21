@@ -11,6 +11,7 @@
 #include "XrHMD.h"
 #include "XrNetworkTracker.h"
 
+#include <chrono>
 #include <memory>
 
 class XrBackend : public IBackend {
@@ -78,7 +79,11 @@ private:
 	 * This allows for games to retrieve correct per-controller OpenVR properties that they request.
 	 * Called from PumpEvents on an INTERACTION_PROFILE_CHANGED event.
 	 */
-	void UpdateInteractionProfile();
+	bool UpdateInteractionProfile();
+	bool interactionProfileRefreshPending = true;
+	std::chrono::steady_clock::time_point nextInteractionProfileRetry{};
+	XrPath lastReportedInteractionProfiles[2] = { XR_NULL_PATH, XR_NULL_PATH };
+	bool interactionProfileStateReported[2] = { false, false };
 
 	/**
 	 * Attempts to force the runtime to expose an interaction profile

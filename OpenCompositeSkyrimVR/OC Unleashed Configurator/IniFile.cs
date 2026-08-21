@@ -35,6 +35,7 @@ namespace OpenCompositeConfigurator
         {
             ["supersampleRatio"] = "general",
             ["renderCustomHands"] = "general",
+            ["useLegacyGreyHands"] = "general",
             ["handColour"] = "general",
             ["haptics"] = "general",
             ["menuLaserEnabled"] = "general",
@@ -117,6 +118,11 @@ namespace OpenCompositeConfigurator
             ["rightLaserXRotation"] = "laser_aim",
             ["rightLaserYRotation"] = "laser_aim",
             ["rightLaserZRotation"] = "laser_aim",
+            ["enableLaserSmoothing"] = "laser_aim",
+            ["laserPosSmoothMinCutoff"] = "laser_aim",
+            ["laserPosSmoothBeta"] = "laser_aim",
+            ["laserRotSmoothMinCutoff"] = "laser_aim",
+            ["laserRotSmoothBeta"] = "laser_aim",
 
             ["dlaaEnabled"] = "upscaling",
             ["dlaaLambda"] = "upscaling",
@@ -205,6 +211,7 @@ namespace OpenCompositeConfigurator
             ["fsr3MipBiasOffset"] = "mip_bias",
 
             ["vrsEnabled"] = "vrs",
+            ["vrsEyeTracked"] = "vrs",
             ["vrsInnerRadius"] = "vrs",
             ["vrsMidRadius"] = "vrs",
             ["vrsOuterRadius"] = "vrs",

@@ -341,7 +341,7 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(_txtBodyCamUrl);
 
-            _btnBodyStartStop = new Button
+            _btnBodyStartStop = new ModernPillButton
             {
                 Location = new Point(leftMargin + 508, y - 2), Size = new Size(90, 26),
                 Text = "Start",
@@ -561,7 +561,7 @@ namespace OpenCompositeConfigurator
             };
             pnlCapture.Controls.Add(_nudBodyCaptureTake);
 
-            _btnBodyCaptureRecord = new Button
+            _btnBodyCaptureRecord = new ModernPillButton
             {
                 Location = new Point(674, 25), Size = new Size(132, 27),
                 Text = "Record sample",

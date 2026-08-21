@@ -113,13 +113,24 @@ XrSessionGlobals::XrSessionGlobals()
 	spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
 	OOVR_FAILED_XR_ABORT(xrCreateReferenceSpace(xr_session.get(), &spaceInfo, &viewSpace));
 
-	// Read the system properties, including those for hand-tracking
-	if (xr_ext->handTrackingExtensionAvailable())
-		systemProperties.next = &handTrackingProperties;
+	// Read optional capability structures in one xrGetSystemProperties chain.
+	// Keep this independent of swapchain/render-scale features: gaze is an input
+	// capability and never participates in CSX/ASW image sizing.
+	void* propertyChain = nullptr;
+	if (xr_ext->handTrackingExtensionAvailable()) {
+		handTrackingProperties.next = propertyChain;
+		propertyChain = &handTrackingProperties;
+	}
+	if (xr_extEyeGazeInteraction) {
+		eyeGazeProperties.next = propertyChain;
+		propertyChain = &eyeGazeProperties;
+	}
+	systemProperties.next = propertyChain;
 	OOVR_FAILED_XR_ABORT(xrGetSystemProperties(xr_instance, xr_system, &systemProperties));
 }
 
 bool xr_htcxViveTrackers = false;
+bool xr_extEyeGazeInteraction = false;
 
 XrTime XrSessionGlobals::GetBestTime()
 {

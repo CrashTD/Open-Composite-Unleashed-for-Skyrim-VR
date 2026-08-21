@@ -43,6 +43,7 @@ build-deploy-openvr-api.ps1
 
 # Configurator publish bundles (build artifacts)
 ConfiguratorPublish-*/
+OpenCompositeSkyrimVR/OC Unleashed Configurator/publish-runtime-recovery/
 
 # Body tracking runtime output
 world3d_diag.csv

@@ -329,7 +329,7 @@ namespace OpenCompositeConfigurator
             btnSmooth.Click += (s, e) => { _gestureLeft.SmoothStrokes(); _gestureRight.SmoothStrokes(); };
             container.Controls.Add(btnSmooth);
 
-            var chkAutoSmooth = new CheckBox
+            var chkAutoSmooth = new ModernCheckBox
             {
                 Text = "Smooth as you draw (lines, squares, W's snap clean; curves and spirals de-jitter)",
                 Location = new Point(startX + 128, y + 4),
@@ -420,7 +420,7 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(_cmbGestureHold);
 
             var btnSave = MakeGestureButton("Save Gesture", new Point(leftMargin + 724, y), 120);
-            btnSave.BackColor = Color.FromArgb(40, 70, 50);
+            btnSave.BackColor = Color.FromArgb(40, 120, 40);
             btnSave.Click += (s, e) => SaveCurrentGesture();
             container.Controls.Add(btnSave);
 
@@ -490,7 +490,7 @@ namespace OpenCompositeConfigurator
             btnReloadSpells.Click += (s, e) => LoadSpellList();
             container.Controls.Add(btnReloadSpells);
 
-            _chkKnownSpellsOnly = new CheckBox
+            _chkKnownSpellsOnly = new ModernCheckBox
             {
                 Text = "Only spells I know",
                 Location = new Point(leftMargin + 630, y + 2),
@@ -568,7 +568,7 @@ namespace OpenCompositeConfigurator
 
             CheckBox MakeTrailCheck(string text, int x, bool check)
             {
-                var chk = new CheckBox
+                var chk = new ModernCheckBox
                 {
                     Text = text,
                     Location = new Point(x, y + 2),
@@ -617,16 +617,21 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(lblStyle);
 
-            _chkTrailTransparent = MakeTrailCheck("Transparent", leftMargin + 48, false);
-            _chkTrailSmoky = MakeTrailCheck("Smoky", leftMargin + 156, false);
-            _chkTrailWispy = MakeTrailCheck("Wispy", leftMargin + 226, false);
-            _chkTrailGlowing = MakeTrailCheck("Glowing", leftMargin + 294, true);
+            int styleX = leftMargin + 48;
+            _chkTrailTransparent = MakeTrailCheck("Transparent", styleX, false);
+            styleX = _chkTrailTransparent.Right + 8;
+            _chkTrailSmoky = MakeTrailCheck("Smoky", styleX, false);
+            styleX = _chkTrailSmoky.Right + 8;
+            _chkTrailWispy = MakeTrailCheck("Wispy", styleX, false);
+            styleX = _chkTrailWispy.Right + 8;
+            _chkTrailGlowing = MakeTrailCheck("Glowing", styleX, true);
+            styleX = _chkTrailGlowing.Right + 12;
 
             var lblTrailHint = new Label
             {
                 Text = "Trail = the ribbon while you draw; Rune = the flash when the shape completes. Smoky = billowing puffs, wispy = thin tendrils.",
-                Location = new Point(leftMargin + 380, y + 4),
-                Size = new Size(rightEdge - leftMargin - 380, 20),
+                Location = new Point(styleX, y + 4),
+                Size = new Size(Math.Max(0, rightEdge - styleX), 20),
                 Font = new Font("Segoe UI", 8f, FontStyle.Italic),
                 ForeColor = Color.FromArgb(120, 122, 132),
             };
@@ -634,7 +639,7 @@ namespace OpenCompositeConfigurator
             y += 30;
 
             // ── Cast sounds (global, saved to opencomposite.ini on Save) ──
-            _chkGestureSounds = new CheckBox
+            _chkGestureSounds = new ModernCheckBox
             {
                 Text = "Cast sounds",
                 Location = new Point(leftMargin, y + 2),
@@ -643,7 +648,6 @@ namespace OpenCompositeConfigurator
                 ForeColor = Color.FromArgb(190, 192, 200),
                 Checked = true,
             };
-            _chkGestureSounds.CheckedChanged += (s, e) => MarkDirty();
             container.Controls.Add(_chkGestureSounds);
 
             var lblFinish = new Label
@@ -669,7 +673,6 @@ namespace OpenCompositeConfigurator
             _cmbFinishSound.Items.Add("Impact");
             _cmbFinishSound.Items.Add("Dark");
             _cmbFinishSound.SelectedIndex = 0;
-            _cmbFinishSound.SelectedIndexChanged += (s, e) => MarkDirty();
             container.Controls.Add(_cmbFinishSound);
 
             var lblSoundHint = new Label
@@ -690,7 +693,7 @@ namespace OpenCompositeConfigurator
 
         private Button MakeGestureButton(string text, Point loc, int width)
         {
-            var b = new Button
+            var b = new ModernPillButton
             {
                 Text = text,
                 Location = loc,
@@ -1024,7 +1027,7 @@ namespace OpenCompositeConfigurator
             };
             card.Controls.Add(lblInfo);
 
-            var btnDelete = new Button
+            var btnDelete = new ModernPillButton
             {
                 Text = "Delete",
                 Location = new Point(112, 134),

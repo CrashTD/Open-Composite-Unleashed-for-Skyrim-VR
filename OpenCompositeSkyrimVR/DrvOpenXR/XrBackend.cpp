@@ -1949,11 +1949,6 @@ bool XrBackend::IsInputAvailable()
 void XrBackend::PumpEvents()
 {
 	BaseInput* input = GetUnsafeBaseInput();
-	if (input && sessionState == XR_SESSION_STATE_FOCUSED && !hand_left && !hand_right) {
-		if (input->AreActionsLoaded()) {
-			UpdateInteractionProfile();
-		}
-	}
 
 	// Build raw HTCX role readers after actions are attached. These never become
 	// public devices themselves: the publication pass below gives each physical
@@ -2320,7 +2315,8 @@ void XrBackend::PumpEvents()
 				break;
 			}
 		} else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
-			UpdateInteractionProfile();
+			interactionProfileRefreshPending = !UpdateInteractionProfile();
+			nextInteractionProfileRetry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 			break;
 		}
 
@@ -2335,15 +2331,25 @@ void XrBackend::PumpEvents()
 	      would be ones where an action manifest is loaded but UpdateActionState is not being called
 	      (because the game checks IsTrackedDeviceConnected or something),
 	      and hopefully no game like that exists.
-	   Some runtimes (WMR) do not instantly return an interaction profile,
-	   so we will keep tryinig to query it until it does.
+	   Some runtimes do not instantly return an interaction profile, and some
+	   SteamVR controller drivers can publish the two hands on different frames.
+	   Do not rely solely on the change event: retry the current session after
+	   input focus until both hands have independently resolved.
 
 	   Note that we check that the session is focused because this means that the application
 	   has already submitted a frame, that frame is visible, and we have input focus.
 	   Waiting until the application has input focus allows us to avoid unnecessarily restarting the
 	   session when we can't even receive input anyway, as well as before the session is restarted for
 	   the temporary session.
-   */
+	 */
+	if (sessionState == XR_SESSION_STATE_FOCUSED && input && input->AreActionsLoaded()
+	    && (interactionProfileRefreshPending || !hand_left || !hand_right)) {
+		const auto now = std::chrono::steady_clock::now();
+		if (now >= nextInteractionProfileRetry) {
+			interactionProfileRefreshPending = !UpdateInteractionProfile();
+			nextInteractionProfileRetry = now + std::chrono::seconds(1);
+		}
+	}
 }
 
 void XrBackend::OnSessionCreated()
@@ -2351,6 +2357,12 @@ void XrBackend::OnSessionCreated()
 	sessionState = XR_SESSION_STATE_UNKNOWN;
 	sessionActive = false;
 	renderingFrame = false;
+	interactionProfileRefreshPending = true;
+	nextInteractionProfileRetry = {};
+	interactionProfileStateReported[0] = false;
+	interactionProfileStateReported[1] = false;
+	lastReportedInteractionProfiles[0] = XR_NULL_PATH;
+	lastReportedInteractionProfiles[1] = XR_NULL_PATH;
 
 	PumpEvents();
 
@@ -2415,17 +2427,32 @@ void XrBackend::OnOverlayTexture(const vr::Texture_t* texture)
 		CheckOrInitCompositors(texture);
 }
 
-void XrBackend::UpdateInteractionProfile()
+bool XrBackend::UpdateInteractionProfile()
 {
 	struct hand_info {
 		const char* pathstr;
 		std::unique_ptr<XrController>& controller;
 		const XrController::XrControllerType hand;
+		const size_t index;
 	};
 
 	hand_info hands[] = {
-		{ .pathstr = "/user/hand/left", .controller = hand_left, .hand = XrController::XCT_LEFT },
-		{ .pathstr = "/user/hand/right", .controller = hand_right, .hand = XrController::XCT_RIGHT }
+		{ .pathstr = "/user/hand/left", .controller = hand_left, .hand = XrController::XCT_LEFT, .index = 0 },
+		{ .pathstr = "/user/hand/right", .controller = hand_right, .hand = XrController::XCT_RIGHT, .index = 1 }
+	};
+	bool allHandsResolved = true;
+
+	auto deactivateController = [](hand_info& info) {
+		if (!info.controller)
+			return;
+		info.controller.reset();
+		if (BaseSystem* system = GetUnsafeBaseSystem()) {
+			VREvent_t event = {
+				.eventType = VREvent_TrackedDeviceDeactivated,
+				.trackedDeviceIndex = (TrackedDeviceIndex_t)info.hand + 1
+			};
+			system->_EnqueueEvent(event);
+		}
 	};
 
 	for (hand_info& info : hands) {
@@ -2434,53 +2461,69 @@ void XrBackend::UpdateInteractionProfile()
 		OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, info.pathstr, &path));
 		OOVR_FAILED_XR_ABORT(xrGetCurrentInteractionProfile(xr_session.get(), path, &state));
 
-		// interaction profile detected
+		// Resolve each hand independently. Previously an already-created controller
+		// on one hand masked an unsupported/missing profile on the other hand, which
+		// left stale input until a later session or game launch happened to refresh it.
 		if (state.interactionProfile != XR_NULL_PATH) {
 			uint32_t tmp;
 			char path_name[XR_MAX_PATH_LENGTH];
 			OOVR_FAILED_XR_ABORT(xrPathToString(xr_instance, state.interactionProfile, XR_MAX_PATH_LENGTH, &tmp, path_name));
 
+			const InteractionProfile* matchedProfile = nullptr;
 			for (const std::unique_ptr<InteractionProfile>& profile : InteractionProfile::GetProfileList()) {
 				if (profile->GetPath() == path_name) {
-					OOVR_LOGF("%s - Using interaction profile: %s", info.pathstr, path_name);
-					info.controller = std::make_unique<XrController>(info.hand, *profile);
-					hmd->SetInteractionProfile(profile.get());
-					BaseSystem* system = GetUnsafeBaseSystem();
-					if (system) {
-						VREvent_t event = {
-							.eventType = VREvent_TrackedDeviceActivated,
-							.trackedDeviceIndex = (TrackedDeviceIndex_t)info.hand + 1
-						};
-						system->_EnqueueEvent(event);
-						event = {
-							.eventType = VREvent_TrackedDeviceUpdated,
-							.trackedDeviceIndex = 0
-						};
-						system->_EnqueueEvent(event);
-					}
+					matchedProfile = profile.get();
 					break;
 				}
 			}
-			if (!hand_left && !hand_right) {
-				// Runtime returned an unknown interaction profile!
-				OOVR_ABORTF("Runtiime unexpectedly returned an unknown interaction profile: %s", path_name);
+
+			if (!matchedProfile) {
+				allHandsResolved = false;
+				if (!interactionProfileStateReported[info.index]
+				    || lastReportedInteractionProfiles[info.index] != state.interactionProfile) {
+					OOVR_LOGF("%s - Unsupported interaction profile: %s. SteamVR must map this controller to an OpenXR profile supported by OCU.",
+					    info.pathstr, path_name);
+				}
+				deactivateController(info);
+				lastReportedInteractionProfiles[info.index] = state.interactionProfile;
+				interactionProfileStateReported[info.index] = true;
+				continue;
 			}
-		} else {
-			// interaction profile lost/not detected
-			OOVR_LOGF("%s - No interaction profile detected", info.pathstr);
-			if (info.controller) {
-				info.controller.reset();
-				BaseSystem* system = GetUnsafeBaseSystem();
-				if (system) {
+
+			const bool profileChanged = !info.controller
+			    || info.controller->GetInteractionProfile() != matchedProfile;
+			if (profileChanged) {
+				OOVR_LOGF("%s - Using interaction profile: %s", info.pathstr, path_name);
+				info.controller = std::make_unique<XrController>(info.hand, *matchedProfile);
+				hmd->SetInteractionProfile(matchedProfile);
+				if (BaseSystem* system = GetUnsafeBaseSystem()) {
 					VREvent_t event = {
-						.eventType = VREvent_TrackedDeviceDeactivated,
+						.eventType = VREvent_TrackedDeviceActivated,
 						.trackedDeviceIndex = (TrackedDeviceIndex_t)info.hand + 1
+					};
+					system->_EnqueueEvent(event);
+					event = {
+						.eventType = VREvent_TrackedDeviceUpdated,
+						.trackedDeviceIndex = 0
 					};
 					system->_EnqueueEvent(event);
 				}
 			}
+			lastReportedInteractionProfiles[info.index] = state.interactionProfile;
+			interactionProfileStateReported[info.index] = true;
+		} else {
+			allHandsResolved = false;
+			if (!interactionProfileStateReported[info.index]
+			    || lastReportedInteractionProfiles[info.index] != XR_NULL_PATH) {
+				OOVR_LOGF("%s - No interaction profile detected; OCU will retry after input focus", info.pathstr);
+			}
+			deactivateController(info);
+			lastReportedInteractionProfiles[info.index] = XR_NULL_PATH;
+			interactionProfileStateReported[info.index] = true;
 		}
 	}
+
+	return allHandsResolved;
 }
 
 void XrBackend::MaybeRestartForInputs()

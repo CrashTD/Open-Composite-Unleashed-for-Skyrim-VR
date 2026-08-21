@@ -271,6 +271,7 @@ add_library(OCCore STATIC
 	OpenOVR/Compositor/DlssUpscaler.h
 	OpenOVR/Compositor/VRSManager.cpp
 	OpenOVR/Compositor/VRSManager.h
+	OpenOVR/Compositor/VRSGaze.h
 	OpenOVR/Compositor/dx10compositor.cpp
 	OpenOVR/Compositor/dx12compositor.cpp
 	OpenOVR/Compositor/glcompositor.cpp
@@ -302,6 +303,7 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/OneEuroFilterPosition.cpp
 	OpenOVR/Misc/Keyboard/KeyboardLayout.cpp
 	OpenOVR/Misc/Keyboard/SudoFontMeta.cpp
+	OpenOVR/Misc/Keyboard/LaserRaySmoothing.cpp
 	OpenOVR/Misc/Keyboard/VRKeyboard.cpp
 	OpenOVR/Misc/Keyboard/VRMenuLaser.cpp
 	OpenOVR/Misc/Input/InteractionProfile.cpp
@@ -370,6 +372,7 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/json/json-forwards.h
 	OpenOVR/Misc/Keyboard/KeyboardLayout.h
 	OpenOVR/Misc/Keyboard/SudoFontMeta.h
+	OpenOVR/Misc/Keyboard/LaserRaySmoothing.h
 	OpenOVR/Misc/Keyboard/VRKeyboard.h
 	OpenOVR/Misc/Input/InteractionProfile.h
 	OpenOVR/Misc/Input/OculusInteractionProfile.h
@@ -631,5 +634,12 @@ if (WIN32)
 		${CMAKE_CURRENT_SOURCE_DIR})
 	target_link_libraries(OCURuntimeSemanticsSelfTest PRIVATE ws2_32)
 	set_target_properties(OCURuntimeSemanticsSelfTest PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
+	add_executable(OCUVRSGazeSelfTest EXCLUDE_FROM_ALL
+		tests/VRSGazeTests.cpp)
+	target_include_directories(OCUVRSGazeSelfTest PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR})
+	set_target_properties(OCUVRSGazeSelfTest PROPERTIES
 		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 endif()

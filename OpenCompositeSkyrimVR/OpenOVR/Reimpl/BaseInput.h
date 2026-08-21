@@ -347,6 +347,11 @@ public: // INTERNAL FUNCTIONS
 	// must be destroyed and recreated for the replacement session.
 	void PrepareForSessionShutdown();
 
+	// Read the standard OpenXR combined-eye pose in VIEW space. Failure means
+	// callers must use their existing fixed fallback; this never mutates image,
+	// render-scale, controller, or ASW state.
+	bool SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction, XrTime& sampleTime);
+
 	/**
 	 * Similar to setting the manifest, but doesn't actually load one. Equivalent to passing in a blank manifest.
 	 *
@@ -724,6 +729,12 @@ private:
 	std::unordered_map<std::string, std::unique_ptr<InputValueHandle>> inputHandleRegistry;
 
 	XrActionSet legacyInputsSet = XR_NULL_HANDLE;
+	XrAction eyeGazeAction = XR_NULL_HANDLE; // owned by legacyInputsSet
+	XrSpace eyeGazeSpace = XR_NULL_HANDLE;   // owned by the current session
+	void CreateEyeGazeAction();
+	void CreateEyeGazeSpace();
+	void DestroyEyeGazeSpace();
+	void ResetEyeGazeActionHandle();
 
 	// Body tracker pose actions (XR_HTCX_vive_tracker_interaction), one per
 	// role in OCU_TRACKER_ROLES; only ini-enabled roles get created. Live in
@@ -733,7 +744,9 @@ private:
 	XrAction bodyTrackerHaptics[14] = {}; // vibration outputs; null if runtime rejected them
 	std::map<vr::TrackedDeviceIndex_t, int> bodyTrackerDeviceRoles; // OpenVR device index -> role
 	void CreateBodyTrackerActions();
+	void CreateBodyTrackerSpaces();
 	void DestroyBodyTrackerSpaces();
+	void DestroyLegacyControllerSpaces();
 	void ResetBodyTrackerActionHandles();
 
 	/**

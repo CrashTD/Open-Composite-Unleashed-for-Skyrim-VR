@@ -64,10 +64,15 @@ bool VRSManager::Initialize(ID3D11Device* dev)
 
 void VRSManager::SetProjectionCenters(float leftPX, float leftPY, float rightPX, float rightPY)
 {
-	projX[0] = leftPX;
-	projY[0] = leftPY;
-	projX[1] = rightPX;
-	projY[1] = rightPY;
+	const float nextX[2] = { leftPX, rightPX };
+	const float nextY[2] = { leftPY, rightPY };
+	for (int eye = 0; eye < 2; ++eye) {
+		if (std::fabs(projX[eye] - nextX[eye]) > 0.0001f ||
+		    std::fabs(projY[eye] - nextY[eye]) > 0.0001f)
+			patternDirty[eye] = true;
+		projX[eye] = nextX[eye];
+		projY[eye] = nextY[eye];
+	}
 }
 
 void VRSManager::UpdatePatterns(int eyeWidth, int eyeHeight)
@@ -99,10 +104,10 @@ void VRSManager::UpdatePatterns(int eyeWidth, int eyeHeight)
 
 	for (int eye = 0; eye < 2; ++eye) {
 		bool sizeChanged = (tileW != patternWidth[eye] || tileH != patternHeight[eye]);
-		if (!sizeChanged && !configChanged && vrsTex[eye])
-			continue;
-
-		SetupEyePattern(eye, eyeWidth, eyeHeight);
+		if (sizeChanged || configChanged || !vrsTex[eye])
+			SetupEyePattern(eye, eyeWidth, eyeHeight);
+		else if (patternDirty[eye])
+			UploadEyePattern(eye);
 	}
 }
 
@@ -188,6 +193,17 @@ void VRSManager::SetupEyePattern(int eye, int eyeWidth, int eyeHeight)
 		available = false;
 		return;
 	}
+	patternDirty[eye] = false;
+}
+
+void VRSManager::UploadEyePattern(int eye)
+{
+	if (!available || !context || !vrsTex[eye] || patternWidth[eye] <= 0 || patternHeight[eye] <= 0)
+		return;
+
+	auto data = CreatePattern(patternWidth[eye], patternHeight[eye], projX[eye], projY[eye]);
+	context->UpdateSubresource(vrsTex[eye], 0, nullptr, data.data(), patternWidth[eye], 0);
+	patternDirty[eye] = false;
 }
 
 void VRSManager::EnableShadingRates()
@@ -276,6 +292,7 @@ void VRSManager::ReleaseEyeResources(int eye)
 	}
 	patternWidth[eye] = 0;
 	patternHeight[eye] = 0;
+	patternDirty[eye] = true;
 }
 
 void VRSManager::Shutdown()

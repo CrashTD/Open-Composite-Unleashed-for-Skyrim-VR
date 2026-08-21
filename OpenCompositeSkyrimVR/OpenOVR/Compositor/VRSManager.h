@@ -49,6 +49,7 @@ private:
 	// Projection centers per eye
 	float projX[2] = { 0.5f, 0.5f };
 	float projY[2] = { 0.5f, 0.5f };
+	bool patternDirty[2] = { true, true };
 
 	// Cached config values used to detect changes
 	float cachedInnerRadius = 0.0f;
@@ -65,6 +66,9 @@ private:
 
 	// Create the pattern texture and NVAPI shading rate resource view for one eye
 	void SetupEyePattern(int eye, int eyeWidth, int eyeHeight);
+	// Upload a new center into an existing texture without recreating its NVAPI
+	// resource view. Used by eye tracking once per real stereo frame.
+	void UploadEyePattern(int eye);
 
 	// Release resources for one eye
 	void ReleaseEyeResources(int eye);

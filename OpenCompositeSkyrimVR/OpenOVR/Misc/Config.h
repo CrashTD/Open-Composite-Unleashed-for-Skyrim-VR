@@ -6,6 +6,7 @@ public:
 	~Config();
 
 	bool RenderCustomHands() const { return renderCustomHands; }
+	bool UseLegacyGreyHands() const { return useLegacyGreyHands; }
 	vr::HmdColor_t HandColour() const { return handColour; }
 	float SupersampleRatio() const { return supersampleRatio; }
 	bool Haptics() const { return haptics; }
@@ -116,6 +117,11 @@ public:
 	int NetworkTrackerPort() const { return networkTrackerPort; }
 	bool CameraLegCalibrationEnabled() const { return cameraLegCalibrationEnabled; }
 	bool MenuLaserEnabled() const { return menuLaserEnabled; }
+	bool EnableLaserSmoothing() const { return enableLaserSmoothing; }
+	float LaserPosSmoothMinCutoff() const { return laserPosSmoothMinCutoff; }
+	float LaserPosSmoothBeta() const { return laserPosSmoothBeta; }
+	float LaserRotSmoothMinCutoff() const { return laserRotSmoothMinCutoff; }
+	float LaserRotSmoothBeta() const { return laserRotSmoothBeta; }
 	bool WalkInPlaceEnabled() const { return walkInPlaceEnabled; }
 	float WalkInPlaceSpeed() const { return walkInPlaceSpeed; }
 	const std::string& WalkInPlaceActivation() const { return walkInPlaceActivation; }
@@ -229,8 +235,12 @@ public:
 	inline float DlssMipBiasOffset() const { return dlssMipBiasOffset; }
 	inline float Fsr3MipBiasOffset() const { return fsr3MipBiasOffset; }
 
-	// NVIDIA VRS foveated rendering
+	// NVIDIA VRS foveated rendering. The legacy vrsEnabled key now means the
+	// explicit fixed-center mode; Auto eye tracking is an independent mode.
 	inline bool VrsEnabled() const { return vrsEnabled; }
+	inline bool VrsFixedEnabled() const { return vrsEnabled; }
+	inline bool VrsEyeTracked() const { return vrsEyeTracked; }
+	inline bool VrsAnyEnabled() const { return vrsEnabled || vrsEyeTracked; }
 	inline float VrsInnerRadius() const { return vrsInnerRadius; }
 	inline float VrsMidRadius() const { return vrsMidRadius; }
 	inline float VrsOuterRadius() const { return vrsOuterRadius; }
@@ -265,6 +275,7 @@ private:
 	    int lineno);
 
 	bool renderCustomHands = true;
+	bool useLegacyGreyHands = false;
 	vr::HmdColor_t handColour = vr::HmdColor_t{ 0.3f, 0.3f, 0.3f, 1 };
 	float supersampleRatio = 1.0f;
 	bool haptics = true;
@@ -360,7 +371,7 @@ private:
 	bool disableTrackPad = false;
 	bool enableControllerSmoothing = false;
 	bool enableVRIKKnucklesTrackPadSupport = false;
-	bool swapThumbsticks = false; // Swap left/right thumbstick axes (movement ↔ look)
+	bool swapThumbsticks = false; // Swap stick values and Axis0 touch; keep press/click physical
 	float posSmoothMinCutoff = 1.25;
 	float posSmoothBeta = 20;
 	float rotSmoothMinCutoff = 1.5;
@@ -444,7 +455,8 @@ private:
 	float fsr3MipBiasOffset = 1.0f;  // FSR3-specific auto offset, added after mipBiasOffset
 
 	// NVIDIA VRS foveated rendering
-	bool vrsEnabled = false;
+	bool vrsEnabled = false;   // explicit fixed-center mode (legacy key name)
+	bool vrsEyeTracked = true; // Auto gaze only; no implicit fixed fallback
 	float vrsInnerRadius = 0.60f;
 	float vrsMidRadius = 0.80f;
 	float vrsOuterRadius = 1.00f;
@@ -497,6 +509,11 @@ private:
 	int networkTrackerPort = 9000; // the de-facto default OSC tracker port
 	bool cameraLegCalibrationEnabled = false; // dev-only: arm live camera-foot trim controls
 	bool menuLaserEnabled = true; // laser menu pointing; false = classic gamepad-only menus
+	bool enableLaserSmoothing = true; // ray-only smoothing for OCU menu and keyboard lasers
+	float laserPosSmoothMinCutoff = 6.0f; // Hz at rest
+	float laserPosSmoothBeta = 12.0f; // extra Hz per metre/second
+	float laserRotSmoothMinCutoff = 4.0f; // Hz at rest
+	float laserRotSmoothBeta = 0.35f; // extra Hz per radian/second
 
 	// Walk-in-place locomotion driven from the body-tracker feed.
 	bool walkInPlaceEnabled = false;

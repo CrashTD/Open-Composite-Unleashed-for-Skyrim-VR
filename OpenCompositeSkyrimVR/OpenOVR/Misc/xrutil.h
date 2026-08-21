@@ -49,6 +49,7 @@ public:
 
 	XrSystemProperties systemProperties = { XR_TYPE_SYSTEM_PROPERTIES };
 	XrSystemHandTrackingPropertiesEXT handTrackingProperties = { XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT };
+	XrSystemEyeGazeInteractionPropertiesEXT eyeGazeProperties = { XR_TYPE_SYSTEM_EYE_GAZE_INTERACTION_PROPERTIES_EXT };
 
 	// --- Pose latching (prevents xrLocateViews refinement drift within a frame) ---
 	// Latched once per frame in WaitForTrackingData(), consumed by XrHMD methods,
@@ -98,6 +99,10 @@ public:
 // set during instance creation in DrvOpenXR, consumed by BaseInput/XrBackend
 // to expose body trackers (waist + feet) as OpenVR generic trackers.
 extern bool xr_htcxViveTrackers;
+// True only when XR_EXT_eye_gaze_interaction was advertised and enabled on
+// the OpenXR instance. The per-system supportsEyeGazeInteraction bit above is
+// still authoritative; extension presence alone never enables gaze use.
+extern bool xr_extEyeGazeInteraction;
 
 class SessionLock;
 // A wrapper around the XrSession to prevent session destruction while it's being accessed

@@ -29,6 +29,7 @@
 #include <utility>
 
 #include "Misc/Config.h"
+#include "Misc/Keyboard/LaserRaySmoothing.h"
 #include "Misc/smooth_input.h"
 #include "Misc/xrmoreutils.h"
 
@@ -482,6 +483,7 @@ BaseInput::BaseInput()
 }
 BaseInput::~BaseInput()
 {
+	DestroyEyeGazeSpace();
 	for (XrHandTrackerEXT& handTracker : handTrackers) {
 		if (handTracker != XR_NULL_HANDLE)
 			xr_ext->xrDestroyHandTrackerEXT(handTracker);
@@ -506,12 +508,15 @@ EVRInputError BaseInput::SetActionManifestPath(const char* pchActionManifestPath
 		// The legacy action set owns the HTCX actions. Tear down its session-owned
 		// spaces first, then forget the child action handles after destroying the
 		// set so CreateBodyTrackerActions can rebuild them in the replacement set.
+		DestroyLegacyControllerSpaces();
 		DestroyBodyTrackerSpaces();
+		DestroyEyeGazeSpace();
 		for (std::unique_ptr<ActionSet>& as : actionSets.GetItems()) {
 			OOVR_FAILED_XR_ABORT(xrDestroyActionSet(as->xr));
 		}
 		OOVR_FAILED_XR_ABORT(xrDestroyActionSet(legacyInputsSet));
 		legacyInputsSet = XR_NULL_HANDLE;
+		ResetEyeGazeActionHandle();
 		ResetBodyTrackerActionHandles();
 		actions.Reset();
 		actionSets.Reset();
@@ -838,10 +843,34 @@ void BaseInput::DestroyBodyTrackerSpaces()
 	}
 }
 
+void BaseInput::DestroyLegacyControllerSpaces()
+{
+	for (LegacyControllerActions& controller : legacyControllers) {
+		if (controller.gripPoseSpace != XR_NULL_HANDLE)
+			OOVR_FAILED_XR_SOFT_ABORT(xrDestroySpace(controller.gripPoseSpace));
+		if (controller.aimPoseSpace != XR_NULL_HANDLE)
+			OOVR_FAILED_XR_SOFT_ABORT(xrDestroySpace(controller.aimPoseSpace));
+		controller.gripPoseSpace = XR_NULL_HANDLE;
+		controller.aimPoseSpace = XR_NULL_HANDLE;
+	}
+}
+
 void BaseInput::ResetBodyTrackerActionHandles()
 {
 	std::fill(std::begin(bodyTrackerActions), std::end(bodyTrackerActions), XR_NULL_HANDLE);
 	std::fill(std::begin(bodyTrackerHaptics), std::end(bodyTrackerHaptics), XR_NULL_HANDLE);
+}
+
+void BaseInput::DestroyEyeGazeSpace()
+{
+	if (eyeGazeSpace != XR_NULL_HANDLE)
+		OOVR_FAILED_XR_SOFT_ABORT(xrDestroySpace(eyeGazeSpace));
+	eyeGazeSpace = XR_NULL_HANDLE;
+}
+
+void BaseInput::ResetEyeGazeActionHandle()
+{
+	eyeGazeAction = XR_NULL_HANDLE;
 }
 
 void BaseInput::PrepareForSessionShutdown()
@@ -849,7 +878,16 @@ void BaseInput::PrepareForSessionShutdown()
 	// XrAction and XrActionSet belong to the instance and remain valid across
 	// xrDestroySession. XrSpace belongs to the session, so destroy it while the
 	// old session is still alive and force BindInputsForSession to recreate it.
+	DestroyLegacyControllerSpaces();
 	DestroyBodyTrackerSpaces();
+	DestroyEyeGazeSpace();
+	for (XrHandTrackerEXT& handTracker : handTrackers) {
+		if (handTracker != XR_NULL_HANDLE)
+			OOVR_FAILED_XR_SOFT_ABORT(xr_ext->xrDestroyHandTrackerEXT(handTracker));
+		handTracker = XR_NULL_HANDLE;
+	}
+	xr_utils::ResetControllerPoseFilters();
+	oovr_laser_smoothing::ResetAll();
 }
 
 void BaseInput::BindInputsForSession()
@@ -865,22 +903,6 @@ void BaseInput::BindInputsForSession()
 		action->actionSpaces.clear();
 	}
 
-	// Same goes for the actionspaces of the legacy controller pose actions, this time create
-	// new ones for this session.
-	for (LegacyControllerActions& lca : legacyControllers) {
-		// No need to destroy it, the session it was attached to was destroyed
-		lca.gripPoseSpace = XR_NULL_HANDLE;
-		lca.aimPoseSpace = XR_NULL_HANDLE;
-
-		// Create the new spaces
-		XrActionSpaceCreateInfo info = { XR_TYPE_ACTION_SPACE_CREATE_INFO };
-		info.poseInActionSpace = S2O_om34_pose(G2S_m34(glm::identity<glm::mat4>()));
-		info.action = lca.gripPoseAction;
-		OOVR_FAILED_XR_ABORT(xrCreateActionSpace(xr_session.get(), &info, &lca.gripPoseSpace));
-		info.action = lca.aimPoseAction;
-		OOVR_FAILED_XR_ABORT(xrCreateActionSpace(xr_session.get(), &info, &lca.aimPoseSpace));
-	}
-
 	// Note: even if actionSets is empty, we always still want to load the legacy set.
 
 	// Now attach the action sets to the OpenXR session, making them immutable (including attaching suggested bindings)
@@ -891,6 +913,7 @@ void BaseInput::BindInputsForSession()
 
 	// Body trackers ride in the legacy set — create + suggest before attach
 	CreateBodyTrackerActions();
+	CreateEyeGazeAction();
 
 	sets.push_back(legacyInputsSet);
 
@@ -910,6 +933,30 @@ void BaseInput::BindInputsForSession()
 		return;
 	}
 	OOVR_FAILED_XR_ABORT(attachRes);
+
+	// OpenXR permits action-space creation before action-set attachment, but
+	// Pico's Steam path rejects the otherwise-valid pose action as an invalid
+	// handle until its owning set is attached. Keep every session-owned space on
+	// the post-attach side for one portable and unambiguous lifetime order.
+	DestroyLegacyControllerSpaces();
+	for (LegacyControllerActions& lca : legacyControllers) {
+		XrActionSpaceCreateInfo info = { XR_TYPE_ACTION_SPACE_CREATE_INFO };
+		info.poseInActionSpace = S2O_om34_pose(G2S_m34(glm::identity<glm::mat4>()));
+		info.subactionPath = XR_NULL_PATH;
+
+		info.action = lca.gripPoseAction;
+		OOVR_LOGF("Input spaces: creating %s grip space after action-set attach (action=%p)",
+		    lca.handPath.c_str(), (void*)lca.gripPoseAction);
+		OOVR_FAILED_XR_ABORT(xrCreateActionSpace(xr_session.get(), &info, &lca.gripPoseSpace));
+
+		info.action = lca.aimPoseAction;
+		OOVR_LOGF("Input spaces: creating %s aim space after action-set attach (action=%p)",
+		    lca.handPath.c_str(), (void*)lca.aimPoseAction);
+		OOVR_FAILED_XR_ABORT(xrCreateActionSpace(xr_session.get(), &info, &lca.aimPoseSpace));
+	}
+	CreateBodyTrackerSpaces();
+	CreateEyeGazeSpace();
+	OOVR_LOG("Input spaces: controller, tracker, and optional eye-gaze spaces ready after action-set attach");
 
 	// Setup hand tracking if supported. Some runtimes (e.g. Pimax on headsets
 	// without the hand-tracking module) advertise XR_EXT_hand_tracking AND
@@ -1272,10 +1319,128 @@ void BaseInput::CreateLegacyActions()
 		create(&ctrl.aimPoseAction, "aim-pose", "Aim Pose", XR_ACTION_TYPE_POSE_INPUT);
 	}
 
-	// Expose thumbstick actions to ASW for clean stick detection
-	xr_rightStickX_action = legacyControllers[1].stickX;
-	xr_leftStickX_action = legacyControllers[0].stickX;
-	xr_leftStickY_action = legacyControllers[0].stickY;
+	// Expose semantic locomotion/turn stick actions to ASW. These handles follow
+	// the configured roles, while the underlying legacy actions remain tied to
+	// their physical controllers.
+	if (oovr_global_configuration.SwapThumbsticks()) {
+		xr_rightStickX_action = legacyControllers[0].stickX;
+		xr_leftStickX_action = legacyControllers[1].stickX;
+		xr_leftStickY_action = legacyControllers[1].stickY;
+	} else {
+		xr_rightStickX_action = legacyControllers[1].stickX;
+		xr_leftStickX_action = legacyControllers[0].stickX;
+		xr_leftStickY_action = legacyControllers[0].stickY;
+	}
+
+	// Optional gaze shares the already-always-active legacy set. Creating it
+	// here keeps every action before xrAttachSessionActionSets and preserves the
+	// post-attach XrSpace order required by Pico's Steam OpenXR path.
+	CreateEyeGazeAction();
+}
+
+void BaseInput::CreateEyeGazeAction()
+{
+	if (eyeGazeAction != XR_NULL_HANDLE || legacyInputsSet == XR_NULL_HANDLE)
+		return;
+	if (!xr_extEyeGazeInteraction || !xr_gbl ||
+	    !xr_gbl->eyeGazeProperties.supportsEyeGazeInteraction)
+		return;
+
+	XrActionCreateInfo actionInfo{ XR_TYPE_ACTION_CREATE_INFO };
+	actionInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
+	strcpy_arr(actionInfo.actionName, "opencomposite-eye-gaze");
+	strcpy_arr(actionInfo.localizedActionName, "OpenComposite Eye Gaze");
+	XrResult result = xrCreateAction(legacyInputsSet, &actionInfo, &eyeGazeAction);
+	if (XR_FAILED(result)) {
+		OOVR_LOGF("Eye gaze: xrCreateAction failed (%d); fixed VRS fallback remains active", (int)result);
+		eyeGazeAction = XR_NULL_HANDLE;
+		return;
+	}
+
+	XrPath profilePath = XR_NULL_PATH;
+	XrPath gazePath = XR_NULL_PATH;
+	result = xrStringToPath(xr_instance, "/interaction_profiles/ext/eye_gaze_interaction", &profilePath);
+	if (XR_SUCCEEDED(result))
+		result = xrStringToPath(xr_instance, "/user/eyes_ext/input/gaze_ext/pose", &gazePath);
+	if (XR_SUCCEEDED(result)) {
+		XrActionSuggestedBinding binding{ eyeGazeAction, gazePath };
+		XrInteractionProfileSuggestedBinding suggestion{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
+		suggestion.interactionProfile = profilePath;
+		suggestion.suggestedBindings = &binding;
+		suggestion.countSuggestedBindings = 1;
+		result = xrSuggestInteractionProfileBindings(xr_instance, &suggestion);
+	}
+	if (XR_FAILED(result)) {
+		OOVR_LOGF("Eye gaze: binding suggestion failed (%d); fixed VRS fallback remains active", (int)result);
+		xrDestroyAction(eyeGazeAction);
+		eyeGazeAction = XR_NULL_HANDLE;
+		return;
+	}
+
+	OOVR_LOG("Eye gaze: standard combined-eye pose action created");
+}
+
+void BaseInput::CreateEyeGazeSpace()
+{
+	DestroyEyeGazeSpace();
+	if (eyeGazeAction == XR_NULL_HANDLE || xr_session.get() == XR_NULL_HANDLE)
+		return;
+
+	XrActionSpaceCreateInfo info{ XR_TYPE_ACTION_SPACE_CREATE_INFO };
+	info.action = eyeGazeAction;
+	info.subactionPath = XR_NULL_PATH;
+	info.poseInActionSpace.orientation.w = 1.0f;
+	XrResult result = xrCreateActionSpace(xr_session.get(), &info, &eyeGazeSpace);
+	if (XR_FAILED(result)) {
+		OOVR_LOGF("Eye gaze: xrCreateActionSpace failed (%d); fixed VRS fallback remains active", (int)result);
+		eyeGazeSpace = XR_NULL_HANDLE;
+		return;
+	}
+	OOVR_LOG("Eye gaze: action space created after action-set attach");
+}
+
+bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction, XrTime& sampleTime)
+{
+	direction = { 0.0f, 0.0f, -1.0f };
+	sampleTime = 0;
+	if (eyeGazeAction == XR_NULL_HANDLE || eyeGazeSpace == XR_NULL_HANDLE ||
+	    !xr_gbl || xr_gbl->viewSpace == XR_NULL_HANDLE || displayTime <= 0)
+		return false;
+	auto sessionLock = xr_session.lock_shared();
+	XrSession session = sessionLock;
+	if (session == XR_NULL_HANDLE)
+		return false;
+
+	XrActionStateGetInfo stateInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+	stateInfo.action = eyeGazeAction;
+	XrActionStatePose state{ XR_TYPE_ACTION_STATE_POSE };
+	XrResult result = xrGetActionStatePose(session, &stateInfo, &state);
+	if (XR_FAILED(result) || !state.isActive)
+		return false;
+
+	XrEyeGazeSampleTimeEXT gazeTime{ XR_TYPE_EYE_GAZE_SAMPLE_TIME_EXT };
+	XrSpaceLocation location{ XR_TYPE_SPACE_LOCATION };
+	location.next = &gazeTime;
+	result = xrLocateSpace(eyeGazeSpace, xr_gbl->viewSpace, displayTime, &location);
+	if (XR_FAILED(result) ||
+	    !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) ||
+	    gazeTime.time <= 0)
+		return false;
+	const XrDuration sampleAge = displayTime - gazeTime.time;
+	if (sampleAge > 150000000 || sampleAge < -50000000)
+		return false;
+
+	const XrVector3f forward{ 0.0f, 0.0f, -1.0f };
+	rotate_vector_by_quaternion(forward, location.pose.orientation, direction);
+	const float lengthSq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
+	if (!std::isfinite(lengthSq) || lengthSq < 0.5f || direction.z >= -0.01f)
+		return false;
+	const float invLength = 1.0f / std::sqrt(lengthSq);
+	direction.x *= invLength;
+	direction.y *= invLength;
+	direction.z *= invLength;
+	sampleTime = gazeTime.time;
+	return true;
 }
 
 EVRInputError BaseInput::GetActionSetHandle(const char* pchActionSetName, VRActionSetHandle_t* pHandle)
@@ -1502,23 +1667,44 @@ EVRInputError BaseInput::GetDigitalActionData(VRActionHandle_t action, InputDigi
     VRInputValueHandle_t ulRestrictToDevice)
 {
 	GET_ACTION_FROM_HANDLE(act, action);
+	const std::string actionName = lowerStr(act->fullName);
+	const bool isSkyrimLeftStickTouch =
+	    actionName == "/actions/legacy/in/left_axis0_touch";
+	const bool isSkyrimRightStickTouch =
+	    actionName == "/actions/legacy/in/right_axis0_touch";
+	Action* digitalSourceAction = act;
+	bool thumbstickTouchSwapApplied = false;
+	if ((isSkyrimLeftStickTouch || isSkyrimRightStickTouch)
+	    && oovr_global_configuration.SwapThumbsticks()) {
+		const char* sourceActionName = isSkyrimLeftStickTouch
+		    ? "/actions/legacy/in/right_axis0_touch"
+		    : "/actions/legacy/in/left_axis0_touch";
+		Action* candidate = actions.LookupItem(sourceActionName);
+		if (candidate != nullptr && candidate->xr != XR_NULL_HANDLE && candidate->type == act->type) {
+			digitalSourceAction = candidate;
+			thumbstickTouchSwapApplied = true;
+		}
+	}
 
 	ZeroMemory(pActionData, unActionDataSize);
 	OOVR_FALSE_ABORT(unActionDataSize == sizeof(*pActionData));
 
 	XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
-	getInfo.action = act->xr;
+	getInfo.action = digitalSourceAction->xr;
 
 	// Unfortunately to implement activeOrigin we have to loop through and query each action state
 	for (int i = 0; i < allSubactionPaths.size(); i++) {
 		XrPath subactionPath = allSubactionPaths[i];
+		XrPath logicalSubactionPath = thumbstickTouchSwapApplied
+		    ? allSubactionPaths[1 - i]
+		    : subactionPath;
 
-		if (!checkRestrictToDevice(ulRestrictToDevice, subactionPath))
+		if (!checkRestrictToDevice(ulRestrictToDevice, logicalSubactionPath))
 			continue;
 
 		getInfo.subactionPath = subactionPath;
 		XrActionStateBoolean state = { XR_TYPE_ACTION_STATE_BOOLEAN };
-		OOVR_FAILED_XR_ABORT(getBooleanOrDpadData(*act, &getInfo, &state));
+		OOVR_FAILED_XR_ABORT(getBooleanOrDpadData(*digitalSourceAction, &getInfo, &state));
 
 		// If the subaction isn't set, or it was set but not active, or it was set
 		// but the state was false and it's not now, then override it.
@@ -1529,14 +1715,14 @@ EVRInputError BaseInput::GetDigitalActionData(VRActionHandle_t action, InputDigi
 		pActionData->bActive = state.isActive;
 		pActionData->bChanged = state.changedSinceLastSync;
 		// TODO implement fUpdateTime
-		pActionData->activeOrigin = activeOriginFromSubaction(act, allSubactionPathNames[i].c_str());
+		pActionData->activeOrigin = activeOriginFromSubaction(digitalSourceAction, allSubactionPathNames[i].c_str());
 	}
 
 	// Skyrim consumes the action API, not only GetControllerState. Keep the
 	// movement/turn stick touch action asserted while synthetic gait locomotion is live.
 	if (oovr_global_configuration.WalkInPlaceEnabled() &&
-	    ((lowerStr(act->fullName) == "/actions/legacy/in/left_axis0_touch" && std::abs(GetWalkInPlaceStickY()) > 0.0f) ||
-	        (lowerStr(act->fullName) == "/actions/legacy/in/right_axis0_touch" && std::abs(GetWalkInPlaceTurnX()) > 0.0f))) {
+	    ((isSkyrimLeftStickTouch && std::abs(GetWalkInPlaceStickY()) > 0.0f) ||
+	        (isSkyrimRightStickTouch && std::abs(GetWalkInPlaceTurnX()) > 0.0f))) {
 		pActionData->bState = true;
 		pActionData->bActive = true;
 	}
@@ -1557,16 +1743,32 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
     VRInputValueHandle_t ulRestrictToDevice)
 {
 	GET_ACTION_FROM_HANDLE(act, action);
+	const std::string actionName = lowerStr(act->fullName);
 	const bool isSkyrimLeftMoveAction =
-	    lowerStr(act->fullName) == "/actions/legacy/in/left_axis0_value";
+	    actionName == "/actions/legacy/in/left_axis0_value";
 	const bool isSkyrimRightTurnAction =
-	    lowerStr(act->fullName) == "/actions/legacy/in/right_axis0_value";
+	    actionName == "/actions/legacy/in/right_axis0_value";
+	const int logicalStickHand = isSkyrimLeftMoveAction ? 0 : (isSkyrimRightTurnAction ? 1 : -1);
+	int physicalStickHand = logicalStickHand;
+	Action* analogSourceAction = act;
+	bool thumbstickSwapApplied = false;
+	if (logicalStickHand >= 0 && oovr_global_configuration.SwapThumbsticks()) {
+		const char* sourceActionName = logicalStickHand == 0
+		    ? "/actions/legacy/in/right_axis0_value"
+		    : "/actions/legacy/in/left_axis0_value";
+		Action* candidate = actions.LookupItem(sourceActionName);
+		if (candidate != nullptr && candidate->xr != XR_NULL_HANDLE && candidate->type == act->type) {
+			analogSourceAction = candidate;
+			physicalStickHand = 1 - logicalStickHand;
+			thumbstickSwapApplied = true;
+		}
+	}
 
 	ZeroMemory(pActionData, unActionDataSize);
 	OOVR_FALSE_ABORT(unActionDataSize == sizeof(*pActionData));
 
 	XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
-	getInfo.action = act->xr;
+	getInfo.action = analogSourceAction->xr;
 
 	// Only return the input with the greatest magnitude
 	// To do this, track the input with the greatest length.
@@ -1575,7 +1777,13 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 	// Unfortunately to implement activeOrigin we have to loop through and query each action state
 	for (int i = 0; i < allSubactionPaths.size(); i++) {
 		XrPath subactionPath = allSubactionPaths[i];
-		if (!checkRestrictToDevice(ulRestrictToDevice, subactionPath))
+		// Device restrictions describe the logical action requested by the game.
+		// When the stick roles are swapped, translate that restriction while still
+		// querying the opposite physical controller as the source.
+		XrPath logicalSubactionPath = subactionPath;
+		if (thumbstickSwapApplied)
+			logicalSubactionPath = allSubactionPaths[1 - i];
+		if (!checkRestrictToDevice(ulRestrictToDevice, logicalSubactionPath))
 			continue;
 
 		getInfo.subactionPath = subactionPath;
@@ -1618,7 +1826,7 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 		case ActionType::Vector2: {
 			XrActionStateVector2f state = { XR_TYPE_ACTION_STATE_VECTOR2F };
 			OOVR_FAILED_XR_ABORT(xrGetActionStateVector2f(xr_session.get(), &getInfo, &state));
-			if (i == 0 && isSkyrimLeftMoveAction)
+			if (i == physicalStickHand && isSkyrimLeftMoveAction)
 				RememberPhysicalMove(CameraLegCalibration::CapturesInput()
 				        ? 0.0f
 				        : (state.isActive ? state.currentState.y : 0.0f));
@@ -1630,7 +1838,7 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 			bool turnInjected = false;
 			float wip = 0.0f;
 			float wipTurn = 0.0f;
-			if (i == 0 && isSkyrimLeftMoveAction && oovr_global_configuration.WalkInPlaceEnabled()) {
+			if (i == physicalStickHand && isSkyrimLeftMoveAction && oovr_global_configuration.WalkInPlaceEnabled()) {
 				wip = GetWalkInPlaceStickY();
 				if (std::abs(wip) > std::abs(state.currentState.y)) {
 					state.currentState.y = wip;
@@ -1638,9 +1846,12 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 					wipInjected = true;
 				}
 			}
-			if (i == 1 && isSkyrimRightTurnAction && oovr_global_configuration.WalkInPlaceEnabled()) {
+			if (i == physicalStickHand && isSkyrimRightTurnAction && oovr_global_configuration.WalkInPlaceEnabled()) {
 				wipTurn = GetWalkInPlaceTurnX();
-				float physicalTurnDeadzone = std::max(0.05f, std::abs(oovr_global_configuration.RightDeadZoneSize()));
+				float sourceDeadzone = physicalStickHand == 0
+				    ? std::abs(oovr_global_configuration.LeftDeadZoneSize())
+				    : std::abs(oovr_global_configuration.RightDeadZoneSize());
+				float physicalTurnDeadzone = std::max(0.05f, sourceDeadzone);
 				if (std::abs(state.currentState.x) <= physicalTurnDeadzone && std::abs(wipTurn) > 0.0f) {
 					state.currentState.x = wipTurn;
 					state.isActive = XR_TRUE;
@@ -1674,7 +1885,7 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 			pActionData->deltaX = state.currentState.x - act->previousState.x;
 			pActionData->deltaY = state.currentState.y - act->previousState.y;
 			pActionData->bActive = state.isActive;
-			pActionData->activeOrigin = activeOriginFromSubaction(act, allSubactionPathNames[i].c_str());
+			pActionData->activeOrigin = activeOriginFromSubaction(analogSourceAction, allSubactionPathNames[i].c_str());
 
 			act->previousState.x = state.currentState.x;
 			act->previousState.y = state.currentState.y;
@@ -2705,13 +2916,17 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 	bool disableTriggerTouch = oovr_global_configuration.DisableTriggerTouch();
 	bool disableThumbrestTouch = oovr_global_configuration.DisableThumbrestTouch();
 	bool inputSmoothingEnabled = oovr_global_configuration.EnableInputSmoothing();
+	int stickSourceHand = oovr_global_configuration.SwapThumbsticks() ? 1 - hand : hand;
+	LegacyControllerActions& stickSource = legacyControllers[stickSourceHand];
 
 	// Read the buttons
 
 	// Let them set these to null?
 	bindButton(ctrl.system, XR_NULL_HANDLE, vr::k_EButton_System, hand, inputSmoothingEnabled);
 	bindButton(ctrl.menu, ctrl.menuTouch, vr::k_EButton_ApplicationMenu, hand, inputSmoothingEnabled);
-	bindButton(ctrl.stickBtn, ctrl.stickBtnTouch, vr::k_EButton_SteamVR_Touchpad, hand, inputSmoothingEnabled);
+	// Axis0 touch travels with the swapped values, while stick press/click and
+	// every other button remain sourced from the destination controller.
+	bindButton(ctrl.stickBtn, stickSource.stickBtnTouch, vr::k_EButton_SteamVR_Touchpad, hand, inputSmoothingEnabled);
 	bindButton(ctrl.gripClick, XR_NULL_HANDLE, vr::k_EButton_Grip, hand, inputSmoothingEnabled);
 	bindButton(ctrl.triggerClick, disableTriggerTouch ? XR_NULL_HANDLE : ctrl.triggerTouch, vr::k_EButton_SteamVR_Trigger, hand, inputSmoothingEnabled);
 	// bindButton(XR_NULL_HANDLE, XR_NULL_HANDLE, vr::k_EButton_Axis2); // FIXME clean up? Is this the grip?
@@ -2793,11 +3008,7 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 	}
 
 	VRControllerAxis_t& thumbstick = state->rAxis[0];
-	// When swapThumbsticks is enabled, read from the OTHER hand's stick axes
-	int stickSourceHand = hand;
-	if (oovr_global_configuration.SwapThumbsticks())
-		stickSourceHand = 1 - hand;
-	auto& stickSource = legacyControllers[stickSourceHand];
+	// Values use the same physical source selected above for Axis0 touch.
 	if (inputSmoothingEnabled) {
 		smoothInput.updateJoystickXValue(hand, readFloat(stickSource.stickX));
 		smoothInput.updateJoystickYValue(hand, readFloat(stickSource.stickY));
@@ -2811,11 +3022,14 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 	float deadZoneSize = 0.0f;
 	float deadZoneXSize = 0.0f;
 	float deadZoneYSize = 0.0f;
-	if (hand == 0) {
+	// Dead-zone settings follow the physical controller, even when the sticks
+	// are swapped.  This lets a user suppress drift on a damaged left stick
+	// after moving locomotion to the right controller.
+	if (stickSourceHand == 0) {
 		deadZoneSize = std::abs(oovr_global_configuration.LeftDeadZoneSize());
 		deadZoneXSize = std::abs(oovr_global_configuration.LeftDeadZoneXSize());
 		deadZoneYSize = std::abs(oovr_global_configuration.LeftDeadZoneYSize());
-	} else if (hand == 1) {
+	} else if (stickSourceHand == 1) {
 		deadZoneSize = std::abs(oovr_global_configuration.RightDeadZoneSize());
 		deadZoneXSize = std::abs(oovr_global_configuration.RightDeadZoneXSize());
 		deadZoneYSize = std::abs(oovr_global_configuration.RightDeadZoneYSize());
@@ -3034,7 +3248,6 @@ void BaseInput::CreateBodyTrackerActions()
 	if (bindings.empty())
 		return;
 
-	bool hapticsLive = !hapticBindings.empty();
 	if (needsBindingSuggestion) {
 	XrPath profilePath;
 	OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, "/interaction_profiles/htc/vive_tracker_htcx", &profilePath));
@@ -3060,7 +3273,6 @@ void BaseInput::CreateBodyTrackerActions()
 				bodyTrackerHaptics[i] = XR_NULL_HANDLE;
 			}
 		}
-		hapticsLive = false;
 		suggested.suggestedBindings = bindings.data();
 		suggested.countSuggestedBindings = (uint32_t)bindings.size();
 		res = xrSuggestInteractionProfileBindings(xr_instance, &suggested);
@@ -3074,8 +3286,28 @@ void BaseInput::CreateBodyTrackerActions()
 	}
 
 	// XrActions are instance/action-set owned and may already exist from the
-	// previous session. XrSpaces are session owned, so recreate every enabled
-	// role against the current session on every successful bind.
+	// previous session. Session-owned spaces are deliberately created only after
+	// action-set attachment by CreateBodyTrackerSpaces().
+}
+
+void BaseInput::CreateBodyTrackerSpaces()
+{
+	DestroyBodyTrackerSpaces();
+	if (!xr_htcxViveTrackers || !oovr_global_configuration.BodyTrackersEnabled())
+		return;
+
+	const std::string& roleList = oovr_global_configuration.BodyTrackerRoles();
+	const bool all = (roleList == "all");
+	auto roleEnabled = [&](int role) {
+		if (all)
+			return true;
+		const std::string needle = OCU_TRACKER_ROLES[role].iniName;
+		const std::string padded = "," + roleList + ",";
+		return padded.find("," + needle + ",") != std::string::npos;
+	};
+
+	int createdSpaces = 0;
+	bool hapticsLive = false;
 	for (int i = 0; i < OCU_TRACKER_ROLE_COUNT; i++) {
 		if (!roleEnabled(i) || bodyTrackerActions[i] == XR_NULL_HANDLE)
 			continue;
@@ -3083,10 +3315,12 @@ void BaseInput::CreateBodyTrackerActions()
 		spaceInfo.action = bodyTrackerActions[i];
 		spaceInfo.poseInActionSpace.orientation.w = 1.0f;
 		OOVR_FAILED_XR_ABORT(xrCreateActionSpace(xr_session.get(), &spaceInfo, &bodyTrackerSpaces[i]));
+		createdSpaces++;
+		hapticsLive = hapticsLive || bodyTrackerHaptics[i] != XR_NULL_HANDLE;
 	}
 
 	OOVR_LOGF("Body trackers: prepared %d tracker action spaces (roles: %s, haptics: %s)",
-	    (int)bindings.size(), roleList.c_str(), hapticsLive ? "yes" : "no");
+	    createdSpaces, roleList.c_str(), hapticsLive ? "yes" : "no");
 }
 
 void BaseInput::GetTrackerSpace(int role, XrSpace& space)

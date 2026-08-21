@@ -1969,26 +1969,11 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 		}
 	}
 
-	// D3D11 state hygiene: wipe all pipeline bindings so OC starts from a known-good state.
-	// The game, Prisma, and other hooks all share one ID3D11DeviceContext and none save/restore
-	// state. Without this, OC inherits stale shaders, blend states, and render targets — causing
-	// audio crackling, occasional frame stutters, and rendering glitches.
-	// ClearState() is CPU-only (microseconds). No GPU sync penalty.
-	{
-		static ID3D11DeviceContext* s_cachedCtx = nullptr;
-		static ID3D11Device* s_cachedDev = nullptr;
-		ID3D11Device* dev = BaseCompositor::dxcomp->GetDevice();
-		if (dev && reinterpret_cast<uintptr_t>(dev) > 0xFFFF) {
-			if (dev != s_cachedDev) {
-				if (s_cachedCtx) s_cachedCtx->Release();
-				s_cachedCtx = nullptr;
-				dev->GetImmediateContext(&s_cachedCtx);
-				s_cachedDev = dev;
-			}
-			if (s_cachedCtx)
-				s_cachedCtx->ClearState();
-		}
-	}
+	// Skyrim, ENB, Prisma, and OCU share the game's immediate D3D11 context.
+	// Do not call ClearState here: this runs every frame after scene submission and
+	// can erase the pipeline state Skyrim later uses for its desktop companion draw.
+	// OCU render paths must bind the state they need and restore any application
+	// state they temporarily replace.
 #endif
 
 	// A client can destroy the keyboard's temporary owner overlay from its polling

@@ -146,10 +146,11 @@
       <a href="#runtime-model">Runtime Model</a>
       <a href="#meta">Meta / Quest / Virtual Desktop Setup</a>
       <a href="#steamvr">SteamVR OpenXR Headsets</a>
+      <a href="#uninstall">Clean OCU Removal / Return To SteamVR</a>
       <a href="#configurator">Configurator Settings</a>
       <a href="#laser-alignment">Controller And Laser Alignment</a>
       <a href="#community-shaders">Community Shaders And Upscaling</a>
-      <a href="#asw">ASW Experimental Notes</a>
+      <a href="#dapa">DAPA Experimental Notes</a>
       <a href="#troubleshooting">Troubleshooting</a>
     </section>
 
@@ -327,7 +328,8 @@
       </p>
       <p><code>SkyrimVR -> OCU -> SteamVR OpenXR</code></p>
       <div class="ok">
-        Normal SteamVR use is simple: enable the OCU mod to use OCU. Disable the OCU mod to return to normal SteamVR.
+        OCU only replaces Skyrim VR's game-local OpenVR loader. It does not install a SteamVR driver.
+        With correct root deployment, clearing the deployed OCU files returns Skyrim VR to Valve's loader.
       </div>
       <h3>Wired SteamVR Headsets</h3>
       <ol>
@@ -367,21 +369,62 @@
       </p>
       <p>
         If disabling the OCU mod does not return Skyrim VR to the normal SteamVR path, check previous OpenComposite
-        Switcher changes and your active OpenXR runtime.
+        Switcher changes, your active OpenXR runtime, and stale files beside <code>SkyrimVR.exe</code>.
       </p>
+    </section>
+
+    <section id="uninstall">
+      <h2>Clean OCU Removal / Return To SteamVR</h2>
+      <div class="warn">
+        Never delete the Skyrim VR root folder or everything except <code>Data</code>. OCU owns a small, explicit
+        set of root files; the Configurator can move those files into a recoverable backup without touching the game or <code>Data</code>.
+      </div>
+      <h3>MO2 With Root Builder</h3>
+      <ol>
+        <li>Close Skyrim VR and SteamVR.</li>
+        <li>Disable the OCU mod in MO2 so Root Builder cannot deploy it again.</li>
+        <li>Run <strong>Tools &gt; Root Builder &gt; Clear</strong>. Do this before cleanup so Root Builder finishes its own deployment cycle.</li>
+        <li>Close the MO2-launched Configurator, then launch the Configurator EXE directly from the OCU mod folder.</li>
+        <li>Open <strong>SteamVR / Help</strong> and click <strong>Remove OCU Game-Root Files</strong>.</li>
+        <li>Click <strong>Restore SteamVR Defaults</strong> to remove the separate OCU helper overrides from <code>steamvr.vrsettings</code>.</li>
+        <li>If the Configurator reports that no trusted Valve loader backup exists, verify Skyrim VR files in Steam before launching normally.</li>
+      </ol>
+      <p>
+        Root Builder can accidentally record an older OCU <code>openvr_api.dll</code> as its original game file. In that state,
+        disabling the mod or running Clear can restore old OCU instead of Valve OpenVR. The removal button recognizes an
+        OpenComposite loader by its contents, moves it out of the game folder, and requests Steam Verify when no trusted
+        Valve backup is available.
+      </p>
+      <h3>Manual Or Vortex Installation</h3>
+      <ol>
+        <li>Close Skyrim VR and SteamVR, then disable or purge the OCU mod.</li>
+        <li>Launch the Configurator directly and use <strong>Remove OCU Game-Root Files</strong>.</li>
+        <li>Use <strong>Restore SteamVR Defaults</strong>.</li>
+        <li>Run Steam Verify only if the Configurator says the Valve loader could not be restored.</li>
+      </ol>
+      <p>
+        Removed files are moved to <code>%LOCALAPPDATA%\OpenCompositeConfigurator\RuntimeBackups</code>. Customized INI and gesture
+        files are preserved there. Unknown or mismatched binaries are left untouched instead of being guessed at.
+      </p>
+      <div class="warn">
+        If SteamVR crashes or shows a black headset before Skyrim VR is launched, the game-local OCU DLL is not loaded yet.
+        That failure is in SteamVR, the headset driver, or another SteamVR driver wrapper. For PSVR2Toolkit, restore or verify
+        the PlayStation VR2 App driver separately; the OCU removal button intentionally does not touch that installation.
+      </div>
     </section>
 
     <section id="configurator">
       <h2>Configurator Settings</h2>
       <h3>SteamVR OCU Profile</h3>
       <p>
-        The SteamVR OCU Profile patches <code>%LOCALAPPDATA%\openvr\steamvr.vrsettings</code> for OCU-friendly SteamVR defaults.
+        The SteamVR OCU Profile resolves SteamVR's active <code>steamvr.vrsettings</code> file and patches it with OCU-friendly defaults.
         It does not change your active OpenXR runtime.
       </p>
       <ul>
         <li><strong>Apply SteamVR OCU Profile:</strong> backs up and patches SteamVR settings.</li>
         <li><strong>Restore SteamVR Defaults:</strong> backs up and removes the OCU helper overrides.</li>
         <li><strong>Open SteamVR Settings Folder:</strong> opens the folder containing <code>steamvr.vrsettings</code>.</li>
+        <li><strong>Remove OCU Game-Root Files:</strong> safely moves recognized OCU runtime files into a recovery backup. It does not touch <code>Data</code> or SteamVR's headset drivers.</li>
       </ul>
     </section>
 
@@ -423,27 +466,28 @@
       </div>
     </section>
 
-    <section id="asw">
-      <h2>ASW Experimental Notes</h2>
+    <section id="dapa">
+      <h2>DAPA Experimental Notes</h2>
       <p>
-        OCU ASW is experimental and currently for future testing. It can create parallax artifacts, ghosting,
+        OCU DAPA (Depth-Assisted Positional Reprojection) is experimental and currently for future testing. It can create parallax artifacts, ghosting,
         flickering, or headset/runtime-specific issues.
       </p>
       <ul>
-        <li>Do not run ASW and SSW at the same time.</li>
+        <li>Do not run DAPA and SSW or runtime motion smoothing at the same time.</li>
         <li>If SSW is smoother for your setup, keep using SSW.</li>
-        <li>ASW support tickets are not accepted yet unless the user is intentionally testing experimental ASW.</li>
+        <li>DAPA support tickets are not accepted yet unless the user is intentionally testing experimental DAPA.</li>
       </ul>
 
-      <h3>How OCU ASW Works</h3>
+      <h3>How OCU DAPA Works</h3>
       <p>
-        With ASW on, the game renders at a throttled rate (for example 45 fps) and OCU generates a synthetic frame
+        With DAPA on, the game renders at a throttled rate (for example 45 fps) and OCU generates a synthetic frame
         between each real frame by re-projecting the last real frame with depth-based parallax. Rotation smoothing is
-        left to the runtime's own reprojection; OCU's warp corrects position, locomotion, and depth parallax.
+        left to the runtime's own reprojection; OCU's warp corrects position, locomotion, and depth parallax. Standard
+        DAPA does not use per-pixel motion vectors, so independently moving objects can still ghost or distort.
       </p>
 
-      <h3>ASW Advanced Settings Reference</h3>
-      <p>All of these live in <code>opencomposite.ini</code> and most are exposed in the Configurator's ASW panel.</p>
+      <h3>DAPA Advanced Settings Reference</h3>
+      <p>All of these live in <code>opencomposite.ini</code> and most are exposed in the Configurator's DAPA panel. The existing <code>asw*</code> key names are retained for compatibility with older configurations.</p>
       <ul>
         <li><code>aswWarpStrength</code>: master strength. 0 shows the cached frame with no correction, 1 is full correction. Default 1.0.</li>
         <li><code>aswTranslationScale</code>: how strongly head position changes (leaning, stepping) are corrected on synthetic frames. Default 1.0.</li>
@@ -452,7 +496,7 @@
         <li><code>aswDepthScale</code>: parallax intensity from the depth buffer. Lower it if near geometry wobbles. Default 1.0.</li>
         <li><code>aswEdgeFadeWidth</code>: fades warp at depth edges to hide stretching artifacts. Higher = wider fade. Default 3.0.</li>
         <li><code>aswNearFadeDepth</code>: parallax fades out closer than this distance in meters. Useful if your hands or weapon smear. 0 = off.</li>
-        <li><code>aswAutoNative</code> + <code>aswAutoEngageFps</code>: opt-in auto mode. ASW stays out of the way while your natural fps is above the threshold and engages only when fps falls below it.</li>
+        <li><code>aswAutoNative</code> + <code>aswAutoEngageFps</code>: opt-in auto mode. DAPA stays out of the way while your natural fps is above the threshold and engages only when fps falls below it.</li>
         <li><code>aswDebugMode</code>: 10 tints synthetic frames so you can see the real:synthetic cadence. 0 = off.</li>
         <li><code>aswUpscalerReset</code>: when DLSS/FSR upscaling runs on warp frames, resets temporal history each synthetic frame (spatial-only upscaling on warps). Reduces foliage trail artifacts at some sharpness cost.</li>
       </ul>
@@ -465,7 +509,7 @@
       <ul>
         <li>In the default inline mode, debug mode 10 tints every synthetic frame, so at a 45 fps throttle on a 90 Hz headset you should see a 1:1 flicker of tinted and clean frames.</li>
         <li>In buffered mode the tint overlay is currently not reliable. Losing the tint usually means synthetic frames are being dropped rather than hidden, so treat missing tint in buffered mode as a warning sign, not a display bug.</li>
-        <li>If you are unsure whether ASW is engaging through a wireless runtime (Steam Link, Virtual Desktop), set the fps throttle to half refresh, enable debug mode 10, and look for the alternating tint in the default inline mode first.</li>
+        <li>If you are unsure whether DAPA is engaging through a wireless runtime (Steam Link, Virtual Desktop), set the fps throttle to half refresh, enable debug mode 10, and look for the alternating tint in the default inline mode first.</li>
         <li>Buffered mode and <code>aswConcurrentFrameThread</code> are for testing only. If you just want smooth play, leave both off.</li>
       </ul>
     </section>

@@ -114,16 +114,17 @@ These settings apply to both Skyrim VR and Fallout 4 VR.
 
 **Note:** This stacks with any supersampling set in your VR runtime (SteamVR, Oculus, etc.). If you set 1.5 here AND 1.5 in SteamVR, you're effectively rendering at 2.25x — which will destroy your framerate. Set one or the other, not both.
 
-#### Render Custom Hands
+#### Controller Models
 
-**What it does:** Controls whether Open Composite draws its own 3D controller models in the game.
+**What it does:** Selects which controller models Open Composite draws in the game.
 
-- **Enabled:** Open Composite renders grey controller models so you can see where your hands are.
-- **Disabled:** No controller models are drawn by Open Composite.
+- **Automatic (SteamVR / Relos):** Uses the installed SteamVR controller model first, including a compatible Relos controller skin when present.
+- **Legacy grey hands:** Uses OCU's original grey hand models.
+- **Off:** Disables OCU controller-model rendering.
 
-**When to disable:** If you use **VRIK** (which gives you a full body and visible hands) or any other mod that provides its own hand/controller models, you should disable this. Having two sets of hand models overlapping looks bad.
+**When to use Off:** Choose Off if VRIK or another mod already supplies the hands or controller models you want to see.
 
-**Default:** Enabled
+**Default:** Automatic (SteamVR / Relos)
 
 #### Enable Haptics
 
@@ -255,6 +256,14 @@ A dead zone is a small area around the center of the thumbstick where movement i
 
 **Tip:** If your character slowly walks forward/sideways on their own when you're not touching the sticks, increase the dead zone for the affected stick. Start at 0.10 and increase until the drift stops.
 
+#### Swap Thumbsticks
+
+**What it does:** Routes the physical right thumbstick to Skyrim's movement role and the physical left thumbstick to its turning role. Stick press/click and all other controller buttons stay on their original hands.
+
+Use this when a damaged left stick makes normal locomotion unusable. The Left and Right Dead Zone controls continue to follow the physical controllers after the swap, so increase the left dead zone until its drift no longer turns the player.
+
+**Default:** Disabled
+
 #### Keyboard Default Text
 
 **What it does:** Pre-fills the VR keyboard with this text whenever it opens for text input (like the character naming screen).
@@ -272,6 +281,7 @@ The configurator reads and writes a standard `opencomposite.ini` file. Here's wh
 ```ini
 supersampleRatio=1.0
 renderCustomHands=true
+useLegacyGreyHands=false
 enableInputSmoothing=true
 inputWindowSize=3
 disableTriggerTouch=false
