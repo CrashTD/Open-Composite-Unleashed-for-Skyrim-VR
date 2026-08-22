@@ -276,6 +276,10 @@ KeyboardLayout::KeyboardLayout(std::vector<char> data)
 			visualStyle.inputBarPlateEnabled = parseBoolToken(pullstring(line));
 			continue;
 		}
+		if (op == L"parchment_ribbon") {
+			visualStyle.parchmentRibbonEnabled = parseBoolToken(pullstring(line));
+			continue;
+		}
 		if (op == L"font_color") {
 			parseColorToken(pullstring(line), visualStyle.fontColor);
 			continue;

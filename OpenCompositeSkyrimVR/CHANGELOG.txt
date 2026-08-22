@@ -17,6 +17,9 @@
 
 - Fixed the keyboard's Up, Down, Left, and Right key triangles so each one uses its own authored content offset and scale in both Studio and the VR keyboard.
 - Arrow-key content can now be dragged, mouse-wheel scaled, or resized with handles instead of filling the entire key plate.
+- Fixed translucent plate outlines and glows bleeding through the entire key fill. Fill now paints only the interior, outline is a true border ring, and glow is confined to rings outside the plate in both Studio and VR.
+- Made the classic Parchment spacebar ribbon optional and directly selectable as key content. It can be moved, scaled, resized, removed, cut, or copied as PNG artwork in Studio, while the untouched embedded Parchment keyboard keeps the ribbon by default.
+- Removed the unnecessary OCU-folder prompt when Studio is launched from an installed OCU package. Save, Save As, and Apply to Game now detect that package's sibling `root` folder, write the active keyboard there, and set `layout=auto`; the folder picker remains only as a standalone fallback.
 
 ### PSVR2 Sense Controller Translation
 

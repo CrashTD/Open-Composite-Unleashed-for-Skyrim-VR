@@ -109,6 +109,7 @@ internal sealed class KeyboardDocument
     public bool KeyPlatesEnabled { get; set; } = true;
     public bool TopButtonPlatesEnabled { get; set; } = true;
     public bool InputBarPlateEnabled { get; set; } = true;
+    public bool ParchmentRibbonEnabled { get; set; } = true;
     public Color FontColor { get; set; } = Color.FromArgb(255, 237, 240, 245);
     public Color FontOutlineColor { get; set; } = Color.FromArgb(220, 8, 11, 15);
     public Color FontGlowColor { get; set; } = Color.FromArgb(255, 132, 242, 158);
@@ -202,6 +203,7 @@ internal sealed class KeyboardDocument
             KeyPlatesEnabled = KeyPlatesEnabled,
             TopButtonPlatesEnabled = TopButtonPlatesEnabled,
             InputBarPlateEnabled = InputBarPlateEnabled,
+            ParchmentRibbonEnabled = ParchmentRibbonEnabled,
             FontColor = FontColor,
             FontOutlineColor = FontOutlineColor,
             FontGlowColor = FontGlowColor,
@@ -548,6 +550,7 @@ internal sealed class KeyboardDocument
         output.AppendLine($"key_plates {KeyPlatesEnabled.ToString().ToLowerInvariant()}");
         output.AppendLine($"top_button_plates {TopButtonPlatesEnabled.ToString().ToLowerInvariant()}");
         output.AppendLine($"input_bar_plate {InputBarPlateEnabled.ToString().ToLowerInvariant()}");
+        output.AppendLine($"parchment_ribbon {ParchmentRibbonEnabled.ToString().ToLowerInvariant()}");
         output.AppendLine();
 
         if (CustomStyleEnabled)
@@ -790,6 +793,10 @@ internal sealed class KeyboardDocument
             case "input_bar_plate":
                 Require(tokens, 2, line);
                 document.InputBarPlateEnabled = ParseBool(tokens[1]);
+                return true;
+            case "parchment_ribbon":
+                Require(tokens, 2, line);
+                document.ParchmentRibbonEnabled = ParseBool(tokens[1]);
                 return true;
             case "font_color":
                 Require(tokens, 2, line);

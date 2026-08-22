@@ -102,21 +102,52 @@ internal sealed class PixelSurface
         if (rectangle.Width <= 0 || rectangle.Height <= 0 || color.A == 0)
             return;
         radius = Math.Clamp(radius, 0, Math.Min(rectangle.Width, rectangle.Height) / 2);
-        int left = rectangle.Left + radius;
-        int right = rectangle.Right - radius - 1;
-        int top = rectangle.Top + radius;
-        int bottom = rectangle.Bottom - radius - 1;
 
         for (int y = rectangle.Top; y < rectangle.Bottom; y++)
         {
             for (int x = rectangle.Left; x < rectangle.Right; x++)
             {
-                int dx = x < left ? left - x : x > right ? x - right : 0;
-                int dy = y < top ? top - y : y > bottom ? y - bottom : 0;
-                if (dx * dx + dy * dy <= radius * radius)
+                if (IsInsideRounded(rectangle, radius, x, y))
                     BlendPixel(x, y, color);
             }
         }
+    }
+
+    public void StrokeRounded(Rectangle rectangle, int radius, int width, Color color)
+    {
+        if (rectangle.Width <= 0 || rectangle.Height <= 0 || width <= 0 || color.A == 0)
+            return;
+
+        radius = Math.Clamp(radius, 0, Math.Min(rectangle.Width, rectangle.Height) / 2);
+        width = Math.Clamp(width, 1, Math.Max(1, Math.Min(rectangle.Width, rectangle.Height) / 2));
+        Rectangle inner = Rectangle.Inflate(rectangle, -width, -width);
+        int innerRadius = Math.Max(0, radius - width);
+
+        for (int y = rectangle.Top; y < rectangle.Bottom; y++)
+        {
+            for (int x = rectangle.Left; x < rectangle.Right; x++)
+            {
+                if (!IsInsideRounded(rectangle, radius, x, y))
+                    continue;
+                if (inner.Width > 0 && inner.Height > 0 && IsInsideRounded(inner, innerRadius, x, y))
+                    continue;
+                BlendPixel(x, y, color);
+            }
+        }
+    }
+
+    private static bool IsInsideRounded(Rectangle rectangle, int radius, int x, int y)
+    {
+        if (x < rectangle.Left || y < rectangle.Top || x >= rectangle.Right || y >= rectangle.Bottom)
+            return false;
+        radius = Math.Clamp(radius, 0, Math.Min(rectangle.Width, rectangle.Height) / 2);
+        int left = rectangle.Left + radius;
+        int right = rectangle.Right - radius - 1;
+        int top = rectangle.Top + radius;
+        int bottom = rectangle.Bottom - radius - 1;
+        int dx = x < left ? left - x : x > right ? x - right : 0;
+        int dy = y < top ? top - y : y > bottom ? y - bottom : 0;
+        return dx * dx + dy * dy <= radius * radius;
     }
 
     public void BlendSurface(PixelSurface source, int destinationX, int destinationY, int opacityPercent = 100)

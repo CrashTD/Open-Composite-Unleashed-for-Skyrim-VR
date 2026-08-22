@@ -8,9 +8,10 @@ Quick use
 1. Choose a complete keyboard from Keyboard Design, open another .kb, or start
    from the bundled Parchment design. Opening, Save, and Save As register custom
    designs as self-contained managed projects in this dropdown for later
-   sessions, and the Configurator reads the same list. Choosing a design only
-   previews it; Install to OCU or Configurator Save is the explicit step that
-   activates it in game.
+   sessions, and the Configurator reads the same list. When Studio is launched
+   from an installed OCU folder, Save and Save As automatically apply the design
+   to that same OCU root and set keyboard layout=auto. No folder selection is
+   required.
 2. Pick the exact OCU base theme, font, and Lower/Shift/Caps preview state. Add TTF
    converts a local TTF/OTF into OCU's SFN plus texture atlas automatically. It
    audits only normal/shift labels on keys that exist in the open keyboard. If
@@ -52,9 +53,10 @@ Quick use
    The layout carries its exact theme, font, colors, and geometry without
    replacing opencomposite.ini. Send this ZIP to other users;
    they install it after OCU and can disable it to return to their own setup.
-9. Install to OCU accepts the Skyrim VR game root, the active OCU MO2 mod, or
-   that mod's root folder. Installing into the active MO2 mod keeps the custom
-   keyboard persistent across Root Builder deployments.
+9. Apply to Game automatically targets the OCU installation that contains this
+   Studio executable. A folder picker appears only for a standalone copy that
+   genuinely cannot identify an OCU root. Applying into the active MO2 mod keeps
+   the custom keyboard persistent across Root Builder deployments.
 
 The preview and in-game runtime share the same 1024x560 geometry, visible-glyph
 centering rule, theme/font selection, label offsets/scaling, custom colors,
@@ -76,6 +78,6 @@ only for backgrounds after a warning and is converted to a real PNG during Save,
 Install, and MO2 export. GIF/APNG frame animation is not supported; breathing is
 a lightweight procedural effect applied by OCU to static artwork.
 
-Shortcuts: Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as, Ctrl+Z undo,
-Ctrl+Y redo, Ctrl+X/C/V cut/copy/paste selected PNG artwork, and Delete removes
-the selected artwork/background or key.
+Shortcuts: Ctrl+O open, Ctrl+S save and apply, Ctrl+Shift+S save as and apply,
+Ctrl+Z undo, Ctrl+Y redo, Ctrl+X/C/V cut/copy/paste selected PNG artwork or the
+Parchment ribbon, and Delete removes the selected artwork/background or key.

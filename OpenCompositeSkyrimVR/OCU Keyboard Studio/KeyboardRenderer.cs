@@ -63,6 +63,8 @@ internal sealed class KeyboardRenderer
     public double AnimationTimeSeconds { get; set; }
     private PreparedArtwork? _backgroundCache;
     private readonly Dictionary<Guid, PreparedArtwork> _spriteCache = [];
+    private Bitmap? _spacebarImage;
+    private string? _spacebarImagePath;
 
     public KeyboardRenderer(string assetsDirectory, SudoFont font)
     {
@@ -113,6 +115,17 @@ internal sealed class KeyboardRenderer
     public RectangleF KeyContentRectangle(KeyboardDocument document, KeyboardKey key)
     {
         RectangleF plate = KeyRectangle(document, key);
+        if (ShowsParchmentRibbon(document, key))
+        {
+            float scale = Math.Clamp(key.LabelScale, 0.25f, 3f);
+            float width = plate.Width * scale;
+            float height = plate.Height * scale;
+            float ribbonHoverOffset = key.Id == SelectedKeyId ? (Pressed ? 2 : -2) : 0;
+            return new RectangleF(
+                plate.Left + (plate.Width - width) / 2f + key.LabelOffsetX,
+                plate.Top + (plate.Height - height) / 2f + key.LabelOffsetY + ribbonHoverOffset,
+                width, height);
+        }
         if (key.Character is '\x04' or '\x05' or '\x06' or '\x07')
         {
             float scale = Math.Clamp(key.LabelScale, 0.25f, 3f);
@@ -134,6 +147,19 @@ internal sealed class KeyboardRenderer
     public bool IsPointOnKeyContent(KeyboardDocument document, KeyboardKey key, PointF point)
     {
         RectangleF plate = KeyRectangle(document, key);
+        if (ShowsParchmentRibbon(document, key))
+        {
+            RectangleF ribbon = KeyContentRectangle(document, key);
+            if (!ribbon.Contains(point))
+                return false;
+            Bitmap? image = SpacebarImage();
+            if (image is null)
+                return true;
+            int sourceX = Math.Clamp((int)((point.X - ribbon.Left) / Math.Max(1f, ribbon.Width) * image.Width), 0, image.Width - 1);
+            int sourceY = Math.Clamp((int)((point.Y - ribbon.Top) / Math.Max(1f, ribbon.Height) * image.Height), 0, image.Height - 1);
+            Color sample = image.GetPixel(sourceX, sourceY);
+            return sample.A >= 250 && (sample.R + sample.G + sample.B) / 3 < 180;
+        }
         if (key.Character is '\x04' or '\x05' or '\x06' or '\x07')
             return KeyContentRectangle(document, key).Contains(point);
         string label = State == KeyboardPreviewState.Lower ? key.Label : key.ShiftLabel;
@@ -421,11 +447,11 @@ internal sealed class KeyboardRenderer
                 Color glow = Color.FromArgb(glowAlpha, glowBase.R, glowBase.G, glowBase.B);
                 int glowRadius = document.CustomStyleEnabled ? Math.Clamp(document.GlowRadius, 1, 8) : 4;
                 for (int spread = glowRadius; spread >= 1; spread--)
-                    surface.FillRounded(Rectangle.Inflate(rectangle, spread, spread), EffectiveRoundness(document, rectangle) + spread, glow);
+                    surface.StrokeRounded(Rectangle.Inflate(rectangle, spread, spread), EffectiveRoundness(document, rectangle) + spread, 1, glow);
             }
             int outlineWidth = document.CustomStyleEnabled ? document.PlateOutlineWidth : 2;
             if (outlineWidth > 0)
-                surface.FillRounded(rectangle, EffectiveRoundness(document, rectangle), KeyAccent(document));
+                surface.StrokeRounded(rectangle, EffectiveRoundness(document, rectangle), outlineWidth, KeyAccent(document));
             Rectangle inner = Rectangle.Inflate(rectangle, -outlineWidth, -outlineWidth);
             Color hot = document.CustomStyleEnabled && document.HoverEnabled
                 ? Color.FromArgb(Math.Clamp(document.HoverStrength * 2, 0, 200), Hover(document))
@@ -447,7 +473,7 @@ internal sealed class KeyboardRenderer
         int roundness = Theme.Modern || document.CustomStyleEnabled ? EffectiveRoundness(document, rectangle) : 2;
         int outlineWidth = document.CustomStyleEnabled ? document.PlateOutlineWidth : 1;
         if (outlineWidth > 0)
-            surface.FillRounded(rectangle, roundness, border);
+            surface.StrokeRounded(rectangle, roundness, outlineWidth, border);
         Rectangle inner = Rectangle.Inflate(rectangle, -outlineWidth, -outlineWidth);
         Color hotColor = document.CustomStyleEnabled && document.HoverEnabled
             ? Color.FromArgb(Math.Clamp(document.HoverStrength * 2, 0, 200), Hover(document))
@@ -467,10 +493,8 @@ internal sealed class KeyboardRenderer
         }
         if (key.Character == ' ' && string.IsNullOrEmpty(key.Label))
         {
-            // The ribbon belongs to the original parchment presentation. New
-            // and custom keyboards get a clean, fully functional space key.
-            if (Theme.Name.Equals("Parchment", StringComparison.OrdinalIgnoreCase))
-                DrawSpacebar(surface, rectangle, selected ? Hover(document) : Ink(document));
+            if (ShowsParchmentRibbon(document, key))
+                DrawSpacebar(surface, Rectangle.Round(KeyContentRectangle(document, key)), selected ? Hover(document) : Ink(document));
             return;
         }
 
@@ -485,9 +509,8 @@ internal sealed class KeyboardRenderer
 
     private void DrawSpacebar(PixelSurface surface, Rectangle rectangle, Color color)
     {
-        string file = Theme.Name == "Dwemer" ? "dwemer-spacebar.png" : "spacebar.png";
-        string path = Path.Combine(AssetsDirectory, file);
-        if (!File.Exists(path))
+        Bitmap? image = SpacebarImage();
+        if (image is null)
         {
             int y = rectangle.Top + rectangle.Height / 2;
             for (int x = rectangle.Left + rectangle.Width / 4; x < rectangle.Right - rectangle.Width / 4; x++)
@@ -495,7 +518,6 @@ internal sealed class KeyboardRenderer
             return;
         }
 
-        using var image = new Bitmap(path);
         for (int y = 0; y < rectangle.Height; y++)
         {
             int sourceY = Math.Clamp(y * image.Height / Math.Max(1, rectangle.Height), 0, image.Height - 1);
@@ -507,6 +529,22 @@ internal sealed class KeyboardRenderer
                     surface.BlendPixel(rectangle.Left + x, rectangle.Top + y, color);
             }
         }
+    }
+
+    private bool ShowsParchmentRibbon(KeyboardDocument document, KeyboardKey key)
+        => document.ParchmentRibbonEnabled
+            && Theme.Name.Equals("Parchment", StringComparison.OrdinalIgnoreCase)
+            && key.Character == ' ' && string.IsNullOrEmpty(key.Label);
+
+    private Bitmap? SpacebarImage()
+    {
+        string path = Path.Combine(AssetsDirectory, "spacebar.png");
+        if (_spacebarImage is not null && string.Equals(_spacebarImagePath, path, StringComparison.OrdinalIgnoreCase))
+            return _spacebarImage;
+        _spacebarImage?.Dispose();
+        _spacebarImage = File.Exists(path) ? new Bitmap(path) : null;
+        _spacebarImagePath = path;
+        return _spacebarImage;
     }
 
     private static void DrawArrow(PixelSurface surface, Rectangle rectangle, char direction, Color color)

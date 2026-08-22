@@ -11,6 +11,7 @@ public:
 		bool keyPlatesEnabled = true;
 		bool topButtonPlatesEnabled = true;
 		bool inputBarPlateEnabled = true;
+		bool parchmentRibbonEnabled = true;
 		uint8_t fontColor[4] = { 237, 240, 245, 255 };
 		uint8_t fontOutlineColor[4] = { 8, 11, 15, 220 };
 		uint8_t fontGlowColor[4] = { 132, 242, 158, 255 };

@@ -25,6 +25,7 @@ internal static class StudioSelfTest
             document.KeyPlatesEnabled = false;
             document.TopButtonPlatesEnabled = false;
             document.InputBarPlateEnabled = false;
+            document.ParchmentRibbonEnabled = false;
             document.FontColor = Color.FromArgb(255, 225, 245, 235);
             document.FontOutlineColor = Color.FromArgb(210, 31, 18, 52);
             document.FontGlowColor = Color.FromArgb(230, 70, 140, 255);
@@ -121,6 +122,15 @@ internal static class StudioSelfTest
             document.ControlArrowBreathePhaseDegrees = 45;
 
             Directory.CreateDirectory(outputDirectory);
+            string hostFixture = Path.Combine(outputDirectory, "ocu-host-fixture");
+            string hostedStudio = Path.Combine(hostFixture, "OCU Keyboard Studio");
+            string hostedRoot = Path.Combine(hostFixture, "root");
+            Directory.CreateDirectory(hostedStudio);
+            Directory.CreateDirectory(hostedRoot);
+            File.WriteAllBytes(Path.Combine(hostedRoot, "openvr_api.dll"), [0x4f, 0x43, 0x55]);
+            string? detectedRoot = MainForm.FindOcuRootFromStudioDirectory(hostedStudio);
+            if (!string.Equals(Path.GetFullPath(hostedRoot), detectedRoot, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Studio did not auto-detect its containing OCU mod root.");
             string roundTrip = Path.Combine(outputDirectory, "keyboard-studio-roundtrip.kb");
             document.Save(roundTrip);
             KeyboardDocument loaded = KeyboardDocument.Load(roundTrip);
@@ -145,6 +155,7 @@ internal static class StudioSelfTest
             if (loaded.BaseTheme != "modern_green" || loaded.FontName != "ocu_nordic"
                 || !loaded.CustomStyleEnabled || loaded.KeyPlatesEnabled
                 || loaded.TopButtonPlatesEnabled || loaded.InputBarPlateEnabled
+                || loaded.ParchmentRibbonEnabled
                 || loaded.KeyRoundness != 24
                 || loaded.PlateOutlineWidth != 3 || loaded.PlateFillColor.A != 90
                 || loaded.FontOutlineColor.R != 31 || loaded.FontOutlineColor.A != 210
@@ -194,6 +205,80 @@ internal static class StudioSelfTest
                 Theme = KeyboardTheme.BuiltIns.Single(theme => theme.Name == "Modern Green"),
                 SelectedKeyId = -1
             };
+
+            var plateTest = new KeyboardDocument
+            {
+                Width = 15,
+                BaseTheme = "modern_green",
+                FontName = "ocu_nordic",
+                CustomStyleEnabled = true,
+                KeyPlatesEnabled = true,
+                TopButtonPlatesEnabled = false,
+                InputBarPlateEnabled = false,
+                FontColor = Color.Transparent,
+                OutlineEnabled = false,
+                GlowEnabled = false,
+                PlateOutlineWidth = 3,
+                KeyColor = Color.FromArgb(170, 240, 20, 30),
+                PlateFillColor = Color.FromArgb(90, 15, 50, 180),
+                KeyRoundness = 12
+            };
+            var plateTestKey = new KeyboardKey { Id = 8001, Character = 'x', X = 4, Y = 2, Label = "", ShiftLabel = "" };
+            plateTest.Keys.Add(plateTestKey);
+            Rectangle plateTestRectangle = Rectangle.Round(renderer.KeyRectangle(plateTest, plateTestKey));
+            Point plateCenter = new(plateTestRectangle.Left + plateTestRectangle.Width / 2,
+                plateTestRectangle.Top + plateTestRectangle.Height / 2);
+            Point plateEdge = new(plateTestRectangle.Left + 1,
+                plateTestRectangle.Top + plateTestRectangle.Height / 2);
+            using Bitmap redOutline = renderer.Render(plateTest);
+            plateTest.KeyColor = Color.FromArgb(170, 20, 240, 30);
+            using Bitmap greenOutline = renderer.Render(plateTest);
+            if (redOutline.GetPixel(plateCenter.X, plateCenter.Y).ToArgb()
+                    != greenOutline.GetPixel(plateCenter.X, plateCenter.Y).ToArgb()
+                || redOutline.GetPixel(plateEdge.X, plateEdge.Y).ToArgb()
+                    == greenOutline.GetPixel(plateEdge.X, plateEdge.Y).ToArgb())
+                throw new InvalidDataException("Plate outline color still bleeds through the translucent fill instead of staying on the border ring.");
+
+            Color stableOutlinePixel = greenOutline.GetPixel(plateEdge.X, plateEdge.Y);
+            plateTest.PlateFillColor = Color.FromArgb(90, 220, 160, 20);
+            using Bitmap amberFill = renderer.Render(plateTest);
+            if (amberFill.GetPixel(plateCenter.X, plateCenter.Y).ToArgb()
+                    == greenOutline.GetPixel(plateCenter.X, plateCenter.Y).ToArgb()
+                || amberFill.GetPixel(plateEdge.X, plateEdge.Y).ToArgb() != stableOutlinePixel.ToArgb())
+                throw new InvalidDataException("Plate fill color is not isolated from the outline ring.");
+
+            plateTest.PlateOutlineWidth = 0;
+            plateTest.PlateFillColor = Color.Transparent;
+            plateTest.GlowColor = Color.FromArgb(255, 255, 20, 80);
+            plateTest.GlowStrength = 100;
+            plateTest.GlowRadius = 4;
+            using Bitmap noPlateGlow = renderer.Render(plateTest);
+            plateTest.GlowEnabled = true;
+            using Bitmap outsidePlateGlow = renderer.Render(plateTest);
+            Point glowPoint = new(plateTestRectangle.Left - 2,
+                plateTestRectangle.Top + plateTestRectangle.Height / 2);
+            if (noPlateGlow.GetPixel(plateCenter.X, plateCenter.Y).ToArgb()
+                    != outsidePlateGlow.GetPixel(plateCenter.X, plateCenter.Y).ToArgb()
+                || noPlateGlow.GetPixel(glowPoint.X, glowPoint.Y).ToArgb()
+                    == outsidePlateGlow.GetPixel(glowPoint.X, glowPoint.Y).ToArgb())
+                throw new InvalidDataException("Plate glow is not isolated to the outside edge.");
+
+            KeyboardDocument ribbonDocument = KeyboardDocument.Load(layoutPath);
+            KeyboardKey ribbonKey = ribbonDocument.Keys.Single(key => key.Character == ' ');
+            renderer.Theme = KeyboardTheme.BuiltIns.Single(theme => theme.Name == "Parchment");
+            RectangleF ribbonBounds = renderer.KeyContentRectangle(ribbonDocument, ribbonKey);
+            bool foundRibbonPixel = false;
+            for (float y = ribbonBounds.Top; y < ribbonBounds.Bottom && !foundRibbonPixel; y += 1f)
+                for (float x = ribbonBounds.Left; x < ribbonBounds.Right; x += 1f)
+                    if (renderer.IsPointOnKeyContent(ribbonDocument, ribbonKey, new PointF(x, y))) { foundRibbonPixel = true; break; }
+            if (!foundRibbonPixel)
+                throw new InvalidDataException("The Parchment ribbon cannot be selected as key content.");
+            ribbonDocument.ParchmentRibbonEnabled = false;
+            if (renderer.IsPointOnKeyContent(ribbonDocument, ribbonKey,
+                    new PointF(ribbonBounds.Left + ribbonBounds.Width / 2f, ribbonBounds.Top + ribbonBounds.Height / 2f)))
+                throw new InvalidDataException("The removed Parchment ribbon retained a content hit target.");
+            renderer.Theme = KeyboardTheme.BuiltIns.Single(theme => theme.Name == "Modern Green");
+
             KeyboardKey letterKey = loaded.Keys.First(key => key.Label.Length == 1 && char.IsAsciiLetter(key.Label[0]));
             RectangleF letterPlate = renderer.KeyRectangle(loaded, letterKey);
             RectangleF letterInk = renderer.KeyContentRectangle(loaded, letterKey);
@@ -416,7 +501,7 @@ internal static class StudioSelfTest
             }
 
             File.WriteAllText(Path.Combine(outputDirectory, "keyboard-studio-self-test.txt"),
-                $"PASS\nKeys={loaded.Keys.Count}\nTheme=modern_green\nFont=ocu_nordic\nPreview=1024x560\nCustomStyle=True\nKeyPlates=False\nTopPlates=ModeLock+InputBarIndependent\nArtwork=MovableBackground+2Sprites+ControlArrow\nControls=NestedSelectableBoxes\nControlFontHit=PaintedGlyphPixelsOnly\nArrowKeys=IndependentMove+Resize\nTopBar=TextBar+Mode+LockMovable\nHistory=NoOpFiltered+VisualChangesDetected\nBackgroundFeather=RoundedPillBoundary\nHighDpiArtwork=PixelSized\nTextEffects=OutlineColor+FontGlow+IndependentBreathing\nTTFImport=ExistingKeysOnly+NewKeyRebuild\nCustomFontExport=SFN+PNG\nBreathing=Keys+Font+Sprite+Arrow\nAnimationPreviewAverageMs={averageAnimationFrameMs:F2}\nSampling=PremultipliedBilinear\nJpegBackground=TranscodedToPng\nMO2Archive=root/OCUKeyboard.kb\n");
+                $"PASS\nKeys={loaded.Keys.Count}\nTheme=modern_green\nFont=ocu_nordic\nPreview=1024x560\nCustomStyle=True\nKeyPlates=False\nPlateLayers=Fill+OutlineRing+OutsideGlowIndependent\nParchmentRibbon=Selectable+Movable+Resizable+Removable\nOcuTarget=ContainingModRootAutoDetected\nTopPlates=ModeLock+InputBarIndependent\nArtwork=MovableBackground+2Sprites+ControlArrow\nControls=NestedSelectableBoxes\nControlFontHit=PaintedGlyphPixelsOnly\nArrowKeys=IndependentMove+Resize\nTopBar=TextBar+Mode+LockMovable\nHistory=NoOpFiltered+VisualChangesDetected\nBackgroundFeather=RoundedPillBoundary\nHighDpiArtwork=PixelSized\nTextEffects=OutlineColor+FontGlow+IndependentBreathing\nTTFImport=ExistingKeysOnly+NewKeyRebuild\nCustomFontExport=SFN+PNG\nBreathing=Keys+Font+Sprite+Arrow\nAnimationPreviewAverageMs={averageAnimationFrameMs:F2}\nSampling=PremultipliedBilinear\nJpegBackground=TranscodedToPng\nMO2Archive=root/OCUKeyboard.kb\n");
             return 0;
         }
         catch (Exception exception)

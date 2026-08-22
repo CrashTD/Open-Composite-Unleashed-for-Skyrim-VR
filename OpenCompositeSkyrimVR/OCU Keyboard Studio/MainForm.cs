@@ -49,6 +49,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _keyPlatesEnabled = new() { Text = "Show key plates", AutoSize = true };
     private readonly CheckBox _topButtonPlatesEnabled = new() { Text = "Show PC/VR Mode + Lock plates", AutoSize = true };
     private readonly CheckBox _inputBarPlateEnabled = new() { Text = "Show input bar plate", AutoSize = true };
+    private readonly CheckBox _parchmentRibbonEnabled = new() { Text = "Show Parchment spacebar ribbon", AutoSize = true };
     private readonly CheckBox _glowEnabled = new() { Text = "Plate outline glow", AutoSize = true };
     private readonly CheckBox _hoverEnabled = new() { Text = "Hover effect", AutoSize = true };
     private readonly CheckBox _outlineEnabled = new() { Text = "Font outline", AutoSize = true };
@@ -131,6 +132,7 @@ internal sealed class MainForm : Form
     private bool _updatingEditor;
     private bool _updatingDesignLibrary;
     private string _assetsDirectory = "";
+    private readonly string? _hostOcuRoot;
 
     private static string DesignLibraryDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -139,6 +141,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
+        _hostOcuRoot = FindOcuRootFromStudioDirectory(AppContext.BaseDirectory);
         Text = "OCU Keyboard Studio";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1180, 720);
@@ -189,7 +192,7 @@ internal sealed class MainForm : Form
             _redoButton,
             ActionButton("Export PNG", (_, _) => ExportPng()),
             ActionButton("Export Mod", (_, _) => ExportMo2Mod()),
-            ActionButton("Install to OCU", (_, _) => InstallToOcu())
+            ActionButton("Apply to Game", (_, _) => InstallToOcu())
         ]);
 
         var design = new FlowLayoutPanel
@@ -324,9 +327,11 @@ internal sealed class MainForm : Form
         StyleCheck(_keyPlatesEnabled);
         StyleCheck(_topButtonPlatesEnabled);
         StyleCheck(_inputBarPlateEnabled);
+        StyleCheck(_parchmentRibbonEnabled);
         AddWide(inspector, _keyPlatesEnabled);
         AddWide(inspector, _topButtonPlatesEnabled);
         AddWide(inspector, _inputBarPlateEnabled);
+        AddWide(inspector, _parchmentRibbonEnabled);
         AddHint(inspector, "These are independent. Turning ordinary key plates off does not remove the interactive Mode, Lock, or input-bar hit areas; their own switches hide only the visual plates.");
 
         AddSection(inspector, "CUSTOM COLORS");
@@ -541,7 +546,9 @@ internal sealed class MainForm : Form
             throw new FileNotFoundException("The bundled en_gb.kb layout is missing.", path);
         SetDocument(KeyboardDocument.Load(path), clearHistory: true);
         RefreshDesignChoices(path);
-        SetStatus("Loaded the real OCU en_gb.kb layout. Drag a key label to start editing.");
+        SetStatus(_hostOcuRoot is null
+            ? "Loaded the real OCU en_gb.kb layout. Drag a key label to start editing."
+            : $"Loaded Parchment. Save applies directly to this OCU: {_hostOcuRoot}");
     }
 
     private void WireEvents()
@@ -608,7 +615,9 @@ internal sealed class MainForm : Form
             {
                 SetDocument(KeyboardDocument.Load(choice.Path), clearHistory: true);
                 RefreshDesignChoices(choice.Path);
-                SetStatus($"Loaded keyboard design: {choice.Name}. Install to OCU when you want to activate it in game.");
+                SetStatus(_hostOcuRoot is null
+                    ? $"Loaded keyboard design: {choice.Name}. Apply to Game when you want to activate it."
+                    : $"Loaded keyboard design: {choice.Name}. Save applies it directly to {_hostOcuRoot}.");
             }
             catch (Exception exception)
             {
@@ -634,6 +643,7 @@ internal sealed class MainForm : Form
                 }
             }
             _canvas.RefreshPreview();
+            PopulateAppearanceInspector();
         };
         _fontCombo.SelectedIndexChanged += (_, _) =>
         {
@@ -684,6 +694,7 @@ internal sealed class MainForm : Form
         _keyPlatesEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.KeyPlatesEnabled = _keyPlatesEnabled.Checked);
         _topButtonPlatesEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.TopButtonPlatesEnabled = _topButtonPlatesEnabled.Checked);
         _inputBarPlateEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.InputBarPlateEnabled = _inputBarPlateEnabled.Checked);
+        _parchmentRibbonEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.ParchmentRibbonEnabled = _parchmentRibbonEnabled.Checked);
         _glowEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.GlowEnabled = _glowEnabled.Checked);
         _fontGlowEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.FontGlowEnabled = _fontGlowEnabled.Checked);
         _hoverEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.HoverEnabled = _hoverEnabled.Checked);
@@ -1174,6 +1185,8 @@ internal sealed class MainForm : Form
             _keyPlatesEnabled.Checked = _document.KeyPlatesEnabled;
             _topButtonPlatesEnabled.Checked = _document.TopButtonPlatesEnabled;
             _inputBarPlateEnabled.Checked = _document.InputBarPlateEnabled;
+            _parchmentRibbonEnabled.Checked = _document.ParchmentRibbonEnabled;
+            _parchmentRibbonEnabled.Enabled = _document.BaseTheme.Equals("parchment", StringComparison.OrdinalIgnoreCase);
             _glowEnabled.Checked = _document.GlowEnabled;
             _fontGlowEnabled.Checked = _document.FontGlowEnabled;
             _hoverEnabled.Checked = _document.HoverEnabled;
@@ -1387,6 +1400,11 @@ internal sealed class MainForm : Form
     {
         string? path = _document.SourcePath;
         bool bundled = path is not null && Path.GetFullPath(path).StartsWith(Path.GetFullPath(_assetsDirectory), StringComparison.OrdinalIgnoreCase);
+        if (!saveAs && (path is null || bundled) && _hostOcuRoot is not null)
+        {
+            path = Path.Combine(_hostOcuRoot, "OCUKeyboard.kb");
+            bundled = false;
+        }
         if (saveAs || path is null || bundled)
         {
             using var dialog = new SaveFileDialog
@@ -1407,8 +1425,11 @@ internal sealed class MainForm : Form
             CopyArtworkBesideLayout(Path.GetDirectoryName(path) ?? "");
             string registeredPath = RegisterDesign(path);
             RefreshDesignChoices(registeredPath);
+            string? installedTarget = _hostOcuRoot is null ? null : InstallDocumentToRoot(_hostOcuRoot);
             UpdateTitle();
-            SetStatus($"Saved {path}. It is now available in Keyboard Design.");
+            SetStatus(installedTarget is null
+                ? $"Saved {path}. It is now available in Keyboard Design."
+                : $"Saved and applied to this OCU: {installedTarget}. Restart Skyrim VR to load it.");
             return true;
         }
         catch (Exception exception)
@@ -1617,48 +1638,72 @@ internal sealed class MainForm : Form
 
     private void InstallToOcu()
     {
-        using var dialog = new FolderBrowserDialog
+        string? root = _hostOcuRoot;
+        if (root is null)
         {
-            Description = "Choose the Skyrim VR game root, an OCU mod folder containing root, or the OCU mod's root folder",
-            UseDescriptionForTitle = true,
-            ShowNewFolderButton = false
-        };
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-            return;
-        string selectedFolder = dialog.SelectedPath;
-        string root = File.Exists(Path.Combine(selectedFolder, "openvr_api.dll"))
-            ? selectedFolder
-            : File.Exists(Path.Combine(selectedFolder, "root", "openvr_api.dll"))
-                ? Path.Combine(selectedFolder, "root")
-                : "";
-        if (string.IsNullOrEmpty(root))
-        {
-            MessageBox.Show(this, "That folder does not contain openvr_api.dll, either directly or inside a root subfolder. Choose the Skyrim VR game root or the active OCU MO2 mod.",
-                "Wrong folder", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "Choose the Skyrim VR game root, an OCU mod folder containing root, or the OCU mod's root folder",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = false
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+            root = ResolveSelectedOcuRoot(dialog.SelectedPath);
+            if (root is null)
+            {
+                MessageBox.Show(this, "That folder does not contain openvr_api.dll, either directly or inside a root subfolder. Choose the Skyrim VR game root or the active OCU MO2 mod.",
+                    "Wrong folder", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
         }
 
         try
         {
-            string target = Path.Combine(root, "OCUKeyboard.kb");
-            string? authoringPath = _document.SourcePath;
-            bool authoringDirty = _document.IsDirty;
-            _document.Save(target);
-            CopyArtworkBesideLayout(root);
-            _document.SourcePath = authoringPath;
-            _document.IsDirty = authoringDirty;
-            string iniPath = Path.Combine(root, "opencomposite.ini");
-            SetIniValue(iniPath, "keyboard", "layout", "auto");
+            string target = InstallDocumentToRoot(root);
             UpdateTitle();
-            SetStatus($"Installed {target}. OCU will load it the next time Skyrim VR starts.");
+            SetStatus($"Applied {target}. OCU will load it the next time Skyrim VR starts.");
             MessageBox.Show(this,
-                $"Custom keyboard installed in:\n{root}\n\nThe design carries its own theme, font, colors, and artwork. Restart Skyrim VR to load it.",
-                "Installed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                $"Custom keyboard applied to the OCU this Studio came from:\n{root}\n\nRestart Skyrim VR to load it.",
+                "Applied to game", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {
             ShowError("OCU install failed", exception);
         }
+    }
+
+    private string InstallDocumentToRoot(string root)
+    {
+        string target = Path.Combine(root, "OCUKeyboard.kb");
+        File.WriteAllText(target, _document.Serialize(), new System.Text.UTF8Encoding(false));
+        CopyArtworkBesideLayout(root);
+        SetIniValue(Path.Combine(root, "opencomposite.ini"), "keyboard", "layout", "auto");
+        return target;
+    }
+
+    internal static string? FindOcuRootFromStudioDirectory(string studioDirectory)
+    {
+        DirectoryInfo? directory;
+        try { directory = new DirectoryInfo(Path.GetFullPath(studioDirectory)); }
+        catch { return null; }
+
+        for (int depth = 0; directory is not null && depth < 5; depth++, directory = directory.Parent)
+        {
+            string? direct = ResolveSelectedOcuRoot(directory.FullName);
+            if (direct is not null)
+                return direct;
+        }
+        return null;
+    }
+
+    private static string? ResolveSelectedOcuRoot(string selectedFolder)
+    {
+        string direct = Path.Combine(selectedFolder, "openvr_api.dll");
+        if (File.Exists(direct))
+            return Path.GetFullPath(selectedFolder);
+        string nested = Path.Combine(selectedFolder, "root", "openvr_api.dll");
+        return File.Exists(nested) ? Path.GetFullPath(Path.Combine(selectedFolder, "root")) : null;
     }
 
     private void RefreshDesignChoices(string? preferredPath = null)

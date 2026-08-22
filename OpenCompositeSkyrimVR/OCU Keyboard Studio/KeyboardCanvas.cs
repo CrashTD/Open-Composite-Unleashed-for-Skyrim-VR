@@ -353,14 +353,28 @@ internal sealed class KeyboardCanvas : Control
 
     public bool CopySelection()
     {
-        if (SelectedSprite is not KeyboardSprite sprite) return false;
-        _spriteClipboard = sprite.Clone();
-        TryCopyImage(sprite.SourcePath);
-        return true;
+        if (SelectedSprite is KeyboardSprite sprite)
+        {
+            _spriteClipboard = sprite.Clone();
+            TryCopyImage(sprite.SourcePath);
+            return true;
+        }
+        if (IsParchmentRibbonKey(SelectedKey) && _renderer is not null)
+        {
+            _spriteClipboard = null;
+            return TryCopyImage(Path.Combine(_renderer.AssetsDirectory, "spacebar.png"));
+        }
+        return false;
     }
 
     public bool CutSelection()
     {
+        if (IsParchmentRibbonKey(SelectedKey))
+        {
+            if (!CopySelection())
+                return false;
+            return DeleteSelection();
+        }
         if (SelectedSprite is not KeyboardSprite sprite || _document is null) return false;
         CopySelection();
         PerformEdit(() =>
@@ -398,6 +412,16 @@ internal sealed class KeyboardCanvas : Control
     public bool DeleteSelection()
     {
         if (_document is null) return false;
+        if (_selectionKind == CanvasSelectionKind.KeyContent && IsParchmentRibbonKey(SelectedKey))
+        {
+            PerformEdit(() =>
+            {
+                _document.ParchmentRibbonEnabled = false;
+                _selectionKind = CanvasSelectionKind.KeyPlate;
+            });
+            SelectionChanged?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
         if (_selectionKind == CanvasSelectionKind.Sprite && SelectedSprite is KeyboardSprite sprite)
         {
             PerformEdit(() =>
@@ -520,9 +544,9 @@ internal sealed class KeyboardCanvas : Control
             ResizeControlGroup(resized);
         else if (_selectionKind is CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlDownArrow)
             ResizeControlArrow(resized, _selectionKind == CanvasSelectionKind.ControlUpArrow);
-        else if (_selectionKind == CanvasSelectionKind.KeyContent && SelectedKey is KeyboardKey arrowKey
-            && IsArrowKey(arrowKey) && _dragStartKey is not null)
-            ResizeArrowKeyContent(arrowKey, resized);
+        else if (_selectionKind == CanvasSelectionKind.KeyContent && SelectedKey is KeyboardKey visualKey
+            && IsResizableKeyContent(visualKey) && _dragStartKey is not null)
+            ResizeVisualKeyContent(visualKey, resized);
     }
 
     private bool SelectAt(PointF point, bool preferSelectedArtwork)
@@ -639,7 +663,7 @@ internal sealed class KeyboardCanvas : Control
 
     private bool CanResizeSelection() => _selectionKind is CanvasSelectionKind.KeyPlate or CanvasSelectionKind.Sprite or CanvasSelectionKind.Background
         or CanvasSelectionKind.Control or CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlDownArrow
-        || (_selectionKind == CanvasSelectionKind.KeyContent && IsArrowKey(SelectedKey));
+        || (_selectionKind == CanvasSelectionKind.KeyContent && IsResizableKeyContent(SelectedKey));
     private bool CanRotateSelection() => _selectionKind is CanvasSelectionKind.Sprite or CanvasSelectionKind.Background;
     private static Cursor CursorFor(CanvasDragOperation operation) => operation switch
     {
@@ -705,17 +729,19 @@ internal sealed class KeyboardCanvas : Control
         }
     }
 
-    private void ResizeArrowKeyContent(KeyboardKey key, RectangleF rectangle)
+    private void ResizeVisualKeyContent(KeyboardKey key, RectangleF rectangle)
     {
         if (_document is null || _renderer is null || _dragStartKey is null)
             return;
-        float scaleX = rectangle.Width / 20f;
-        float scaleY = rectangle.Height / 16f;
+        RectangleF plate = _renderer.KeyRectangle(_document, key);
+        float baseWidth = IsArrowKey(key) ? 20f : plate.Width;
+        float baseHeight = IsArrowKey(key) ? 16f : plate.Height;
+        float scaleX = rectangle.Width / Math.Max(1f, baseWidth);
+        float scaleY = rectangle.Height / Math.Max(1f, baseHeight);
         float originalScale = _dragStartKey.LabelScale;
         float scale = Math.Abs(scaleX - originalScale) >= Math.Abs(scaleY - originalScale) ? scaleX : scaleY;
         key.LabelScale = MathF.Round(Math.Clamp(scale, 0.25f, 3f) * 20f) / 20f;
 
-        RectangleF plate = _renderer.KeyRectangle(_document, key);
         float hoverOffset = key.Id == _renderer.SelectedKeyId ? (_renderer.Pressed ? 2 : -2) : 0;
         key.LabelOffsetX = RoundPixel(rectangle.Left + rectangle.Width / 2f - (plate.Left + plate.Width / 2f));
         key.LabelOffsetY = RoundPixel(rectangle.Top + rectangle.Height / 2f - (plate.Top + plate.Height / 2f) - hoverOffset);
@@ -723,6 +749,14 @@ internal sealed class KeyboardCanvas : Control
 
     private static bool IsArrowKey(KeyboardKey? key)
         => key?.Character is '\x04' or '\x05' or '\x06' or '\x07';
+
+    private bool IsParchmentRibbonKey(KeyboardKey? key)
+        => _document?.ParchmentRibbonEnabled == true
+            && _document.BaseTheme.Equals("parchment", StringComparison.OrdinalIgnoreCase)
+            && key?.Character == ' ' && string.IsNullOrEmpty(key.Label);
+
+    private bool IsResizableKeyContent(KeyboardKey? key)
+        => IsArrowKey(key) || IsParchmentRibbonKey(key);
 
     private static RectangleF ResizeRectangle(RectangleF start, float dx, float dy, CanvasDragOperation operation, float minW, float minH)
     {
@@ -757,8 +791,10 @@ internal sealed class KeyboardCanvas : Control
     {
         var menu = new ContextMenuStrip();
         bool spriteSelected = _selectionKind == CanvasSelectionKind.Sprite && SelectedSprite is not null;
-        menu.Items.Add(new ToolStripMenuItem("Cut", null, (_, _) => CutSelection()) { Enabled = spriteSelected });
-        menu.Items.Add(new ToolStripMenuItem("Copy", null, (_, _) => CopySelection()) { Enabled = spriteSelected });
+        bool ribbonSelected = _selectionKind == CanvasSelectionKind.KeyContent && IsParchmentRibbonKey(SelectedKey);
+        bool copyableArtworkSelected = spriteSelected || ribbonSelected;
+        menu.Items.Add(new ToolStripMenuItem("Cut", null, (_, _) => CutSelection()) { Enabled = copyableArtworkSelected });
+        menu.Items.Add(new ToolStripMenuItem("Copy", null, (_, _) => CopySelection()) { Enabled = copyableArtworkSelected });
         menu.Items.Add(new ToolStripMenuItem("Paste PNG", null, (_, _) => PasteClipboard()) { Enabled = CanPaste() });
         menu.Items.Add(new ToolStripSeparator());
         if (_selectionKind == CanvasSelectionKind.Sprite)
@@ -770,6 +806,13 @@ internal sealed class KeyboardCanvas : Control
             menu.Items.Add("Send to back", null, (_, _) => MoveSelectedSpriteTo(false));
         }
         else if (_selectionKind == CanvasSelectionKind.Background) menu.Items.Add("Remove background", null, (_, _) => DeleteSelection());
+        else if (_selectionKind == CanvasSelectionKind.KeyContent && IsParchmentRibbonKey(SelectedKey))
+        {
+            menu.Items.Add("Remove Parchment ribbon", null, (_, _) => DeleteSelection());
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Duplicate key", null, (_, _) => DuplicateSelectedKey());
+            menu.Items.Add("Delete key", null, (_, _) => DeleteSelectedKey());
+        }
         else if (_selectionKind is CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate)
         {
             menu.Items.Add("Duplicate key", null, (_, _) => DuplicateSelectedKey());
@@ -848,10 +891,19 @@ internal sealed class KeyboardCanvas : Control
         }
         catch { return null; }
     }
-    private static void TryCopyImage(string? path)
+    private static bool TryCopyImage(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
-        try { using var source = new Bitmap(path); Clipboard.SetImage(new Bitmap(source)); } catch { }
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+        try
+        {
+            using var source = new Bitmap(path);
+            Clipboard.SetImage(new Bitmap(source));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void AddSpriteFromPath(string path, PointF center)

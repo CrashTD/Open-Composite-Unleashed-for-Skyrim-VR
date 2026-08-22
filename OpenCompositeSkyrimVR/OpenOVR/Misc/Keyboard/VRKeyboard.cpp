@@ -3960,6 +3960,50 @@ void VRKeyboard::Refresh()
 		}
 	};
 
+	// Draw only the rounded border ring. Painting the outline or glow as a full
+	// plate underneath a translucent fill makes its color bleed through the
+	// entire key, so fill and outline controls appear to do the same thing.
+	auto strokeRoundedArea = [pixels, &desc](int x, int y, int w, int h, int radius, int strokeWidth,
+	                             int r, int g, int b, int a) {
+		if (w <= 0 || h <= 0 || strokeWidth <= 0 || a <= 0)
+			return;
+		radius = std::max(0, std::min(radius, std::min(w, h) / 2));
+		strokeWidth = std::clamp(strokeWidth, 1, std::max(1, std::min(w, h) / 2));
+		const int innerX = x + strokeWidth;
+		const int innerY = y + strokeWidth;
+		const int innerW = w - strokeWidth * 2;
+		const int innerH = h - strokeWidth * 2;
+		const int innerRadius = std::max(0, radius - strokeWidth);
+		const float af = a / 255.0f;
+		auto inside = [](int px, int py, int rx, int ry, int rw, int rh, int rr) {
+			if (rw <= 0 || rh <= 0 || px < rx || py < ry || px >= rx + rw || py >= ry + rh)
+				return false;
+			rr = std::max(0, std::min(rr, std::min(rw, rh) / 2));
+			const int left = rx + rr;
+			const int right = rx + rw - rr - 1;
+			const int top = ry + rr;
+			const int bottom = ry + rh - rr - 1;
+			const int dx = px < left ? left - px : px > right ? px - right : 0;
+			const int dy = py < top ? top - py : py > bottom ? py - bottom : 0;
+			return dx * dx + dy * dy <= rr * rr;
+		};
+
+		for (int py = y; py < y + h; ++py) {
+			for (int px = x; px < x + w; ++px) {
+				if (px < 0 || py < 0 || px >= (int)desc.Width || py >= (int)desc.Height)
+					continue;
+				if (!inside(px, py, x, y, w, h, radius)
+				    || inside(px, py, innerX, innerY, innerW, innerH, innerRadius))
+					continue;
+				pix_t& p = pixels[px + py * desc.Width];
+				p.r = (uint8_t)(r * af + p.r * (1.0f - af));
+				p.g = (uint8_t)(g * af + p.g * (1.0f - af));
+				p.b = (uint8_t)(b * af + p.b * (1.0f - af));
+				p.a = (uint8_t)std::min(255.0f, a + p.a * (1.0f - af));
+			}
+		}
+	};
+
 	auto paintModernPlate = [&](int x, int y, int w, int h,
 	                            const uint8_t fill[4], bool hot) {
 		const int radius = std::min(customStyle ? std::clamp(VS.keyRoundness, 0, 30) : 14, h / 2);
@@ -3971,13 +4015,13 @@ void VRKeyboard::Refresh()
 			const int glowRadius = customStyle ? std::clamp(VS.glowRadius, 1, 8) : 4;
 			for (int spread = glowRadius; spread >= 1; --spread) {
 				const int glowAlpha = baseAlpha * effectiveGlow[3] / 255;
-				fillRoundedArea(x - spread, y - spread, w + spread * 2, h + spread * 2,
-				    radius + spread, effectiveGlow[0], effectiveGlow[1], effectiveGlow[2], glowAlpha);
+				strokeRoundedArea(x - spread, y - spread, w + spread * 2, h + spread * 2,
+				    radius + spread, 1, effectiveGlow[0], effectiveGlow[1], effectiveGlow[2], glowAlpha);
 			}
 		}
 		const int outlineWidth = customStyle ? std::clamp(VS.plateOutlineWidth, 0, 8) : 2;
 		if (outlineWidth > 0) {
-			fillRoundedArea(x, y, w, h, radius,
+			strokeRoundedArea(x, y, w, h, radius, outlineWidth,
 			    effectiveKeyBorder[0], effectiveKeyBorder[1], effectiveKeyBorder[2], effectiveKeyBorder[3]);
 		}
 		fillRoundedArea(x + outlineWidth, y + outlineWidth,
@@ -4231,17 +4275,16 @@ void VRKeyboard::Refresh()
 
 		// Check if this is the space bar - draw the space bar image
 		bool isSpaceBar = (key.ch == ' ');
-		// The ribbon is part of the original parchment design. Modern and custom
-		// keyboards retain the same working space key without baked decoration.
-		const bool showParchmentSpacebar = std::string(theme->name) == "parchment";
+		// The classic ribbon remains the default for Parchment, but Keyboard
+		// Studio can hide it or author its position/scale like any other key content.
+		const bool showParchmentSpacebar = std::string(theme->name) == "parchment"
+		    && VS.parchmentRibbonEnabled;
 		if (isSpaceBar && showParchmentSpacebar && !s_spaceBarImage.empty()) {
-			// Stretch spacebar image to fill entire key box (no padding)
-			int padX = 0;
-			int padY = 0;
-			int drawW = width;
-			int drawH = height;
-			int drawX = x;
-			int drawY = y;
+			const float ribbonScale = std::clamp(key.labelScale, 0.25f, 3.0f);
+			int drawW = std::max(1, int(std::round(width * ribbonScale)));
+			int drawH = std::max(1, int(std::round(height * ribbonScale)));
+			int drawX = x + (width - drawW) / 2 + int(std::round(key.labelOffsetX));
+			int drawY = y + (height - drawH) / 2 + int(std::round(key.labelOffsetY)) + contentYOffset;
 
 			// Blit the image stretched to fit, recolored to targetColour
 			for (int dy = 0; dy < drawH; dy++) {
