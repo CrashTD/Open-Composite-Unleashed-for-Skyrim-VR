@@ -14,6 +14,15 @@ RES_O_FNT_MEDIEVAL	RES_T_PNG	"../assets/MedievalSharp-30-texture.png"
 RES_O_FNT_PARCHMENT	RES_T_FNTMETA	"../assets/ParchmentMF-30.sfn"
 RES_O_FNT_PARCHMENT	RES_T_PNG	"../assets/ParchmentMF-30-texture.png"
 
+RES_O_FNT_OCU_NORDIC	RES_T_FNTMETA	"../assets/OCU-Nordic-30.sfn"
+RES_O_FNT_OCU_NORDIC	RES_T_PNG	"../assets/OCU-Nordic-30-texture.png"
+
+RES_O_FNT_OCU_UNEASE	RES_T_FNTMETA	"../assets/OCU-Unease-30.sfn"
+RES_O_FNT_OCU_UNEASE	RES_T_PNG	"../assets/OCU-Unease-30-texture.png"
+
+RES_O_FNT_CYRODIIL	RES_T_FNTMETA	"../assets/Cyrodiil-30.sfn"
+RES_O_FNT_CYRODIIL	RES_T_PNG	"../assets/Cyrodiil-30-texture.png"
+
 RES_O_BG_PARCHMENT	RES_T_PNG	"../assets/parchment-bg.png"
 RES_O_BG_SKYUI		RES_T_PNG	"../assets/skyui-bg.png"
 RES_O_BG_DWEMER		RES_T_PNG	"../assets/dwemer-bg.png"

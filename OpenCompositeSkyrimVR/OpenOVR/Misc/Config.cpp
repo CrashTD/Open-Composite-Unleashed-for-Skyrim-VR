@@ -441,6 +441,8 @@ int Config::ini_handler(void* user, const char* pSection,
 		if (name == "pressVolume") { cfg->kbPressVolume = parse_int(value, name, lineno); return true; }
 		if (name == "hapticStrength") { cfg->kbHapticStrength = parse_int(value, name, lineno); return true; }
 		if (name == "theme") { cfg->kbTheme = parse_string(value, name, lineno); return true; }
+		if (name == "font") { cfg->kbFont = parse_string(value, name, lineno); return true; }
+		if (name == "layout") { cfg->kbLayout = parse_string(value, name, lineno); return true; }
 	}
 
 	if (section == "configurator") {

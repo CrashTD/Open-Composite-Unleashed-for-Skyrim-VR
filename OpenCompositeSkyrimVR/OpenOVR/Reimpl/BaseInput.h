@@ -347,9 +347,9 @@ public: // INTERNAL FUNCTIONS
 	// must be destroyed and recreated for the replacement session.
 	void PrepareForSessionShutdown();
 
-	// Read the standard OpenXR combined-eye pose in VIEW space. Failure means
-	// callers must use their existing fixed fallback; this never mutates image,
-	// render-scale, controller, or ASW state.
+	// Read the standard OpenXR combined-eye pose in VIEW space. Failure leaves
+	// eye-tracked VRS unavailable; Fixed remains an independent user choice.
+	// This never mutates image, render-scale, controller, or DAPA state.
 	bool SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction, XrTime& sampleTime);
 
 	/**

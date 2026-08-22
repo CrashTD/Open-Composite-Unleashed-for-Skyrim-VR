@@ -130,6 +130,7 @@ XrSessionGlobals::XrSessionGlobals()
 }
 
 bool xr_htcxViveTrackers = false;
+bool xr_khrGenericController = false;
 bool xr_extEyeGazeInteraction = false;
 
 XrTime XrSessionGlobals::GetBestTime()

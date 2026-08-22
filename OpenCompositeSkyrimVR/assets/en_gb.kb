@@ -52,7 +52,7 @@ bank sdfghjkl;'# SDFGHJKL:@~
 
 # Enter
 key \n \n 13.5 2
-.label entr
+.label Enter
 .spans_to_right true
 key \v \v 13.83 3
 .label [T]
@@ -72,7 +72,7 @@ key \z \z 12.5 4 1.5 1
 key \E \E 14.0 4 1.0 1
 .label End
 
-# Bottom row (spacebar + arrows + done)
+# Bottom row (spacebar + arrows + PC controls)
 key \s \z 1.5 5 6.5 1
 .label
 
@@ -88,6 +88,9 @@ key \U \U 10 5 1 1
 key \R \R 11 5 1 1
 .label RT
 
-key \q \q 12 5 3 1
-.label done
+key \C \C 12 5 1.5 1
+.label Ctrl
+
+key \P \P 13.5 5 1.5 1
+.label PrtSc
 .spans_to_right true

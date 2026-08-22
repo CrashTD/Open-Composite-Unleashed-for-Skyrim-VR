@@ -12,6 +12,11 @@ using System.Windows.Forms;
 
 namespace OpenCompositeConfigurator
 {
+    internal sealed record KeyboardDesignOption(string Id, string Name, string? SourcePath, bool IsParchment)
+    {
+        public override string ToString() => Name;
+    }
+
     public partial class MainForm : Form
     {
         // INI data
@@ -175,10 +180,12 @@ namespace OpenCompositeConfigurator
         private NumericUpDown _nudCombatHapticStrength = null!;
 
         // Keyboard display settings
+        private ComboBox _cmbKeyboardDesign = null!;
+        private readonly List<KeyboardDesignOption> _keyboardDesigns = new();
+        private bool _refreshingKeyboardDesigns;
         private NumericUpDown _nudDisplayTilt = null!;
         private NumericUpDown _nudDisplayOpacity = null!;
         private NumericUpDown _nudDisplayScale = null!;
-        private ComboBox _cmbKbTheme = null!;
 
         // Keyboard sound settings
         private CheckBox _chkSoundsEnabled = null!;
@@ -468,6 +475,7 @@ namespace OpenCompositeConfigurator
             TrackIndependentDirtyControl(_cmbBindingPreset);
             CaptureSavedState();
             _activeGlowTimer.Start();
+            Activated += (_, _) => RefreshKeyboardDesignChoices();
         }
 
         private void LoadControllerImage()
@@ -477,6 +485,7 @@ namespace OpenCompositeConfigurator
             if (stream != null)
                 _controllerImage = Image.FromStream(stream);
             LoadKnucklesImage();
+            LoadPsvr2Image();
         }
 
         private void LoadKofiImage()
@@ -1138,32 +1147,48 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(MakeLabel("%", rx + 363, ry + 3, 20));
             ry += 30;
 
-            // Row 2: Keyboard theme (applies live — the DLL hot-swaps on save)
-            container.Controls.Add(MakeLabel("Theme:", rx, ry + 3, 50));
-            _cmbKbTheme = new ComboBox
+            // Complete designs are created/imported by Studio and selected here.
+            // Parchment is always first and needs no external .kb or artwork.
+            container.Controls.Add(MakeLabel("Keyboard:", rx, ry + 4, 72));
+            _cmbKeyboardDesign = new ComboBox
             {
-                Location = new Point(rx + 55, ry),
-                Width = 160,
+                Location = new Point(rx + 74, ry),
+                Size = new Size(244, 28),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(50, 50, 55),
                 ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 8.5f),
+                FlatStyle = FlatStyle.Flat
             };
-            // Only Parchment has passed in-headset review; the other skins
-            // return with devtools.on until they are release-ready.
-            _cmbKbTheme.Items.AddRange(ShowDevTools
-                ? new object[] { "Parchment", "SkyUI Dark", "Dwemer", "Sovngarde" }
-                : new object[] { "Parchment" });
-            _cmbKbTheme.SelectedIndex = 0;
-            container.Controls.Add(_cmbKbTheme);
-            ry += 28;
+            _cmbKeyboardDesign.SelectedIndexChanged += (_, _) =>
+            {
+                if (!_refreshingKeyboardDesigns && !_isLoading
+                    && _cmbKeyboardDesign.SelectedItem is KeyboardDesignOption option)
+                {
+                    _lblStatus.Text = option.IsParchment
+                        ? "Parchment selected. Save opencomposite.ini to activate the built-in keyboard."
+                        : $"{option.Name} selected. Save opencomposite.ini to install and activate it.";
+                    _lblStatus.ForeColor = Color.FromArgb(132, 242, 158);
+                }
+            };
+            container.Controls.Add(_cmbKeyboardDesign);
 
-            // Row 3: Feedback checkbox
-            _chkSoundsEnabled = MakeCheckBox("Keyboard feedback", rx, ry);
+            var btnKeyboardStudio = MakeButton("Open Keyboard Studio", rx + 328, ry, 172, 30);
+            btnKeyboardStudio.BackColor = Color.FromArgb(28, 86, 67);
+            btnKeyboardStudio.ForeColor = Color.White;
+            btnKeyboardStudio.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            btnKeyboardStudio.Click += (_, _) => LaunchKeyboardStudio();
+            container.Controls.Add(btnKeyboardStudio);
+            ry += 34;
+
+            _chkSoundsEnabled = MakeCheckBox("Keyboard feedback", rx, ry + 4);
             _chkSoundsEnabled.Checked = true;
             container.Controls.Add(_chkSoundsEnabled);
-            ry += 26;
+
+            var studioHint = MakeLabel("Studio imports and saved designs appear in the Keyboard list automatically.", rx + 170, ry + 4, 330);
+            studioHint.ForeColor = Color.FromArgb(145, 155, 167);
+            studioHint.Font = new Font("Segoe UI", 8.25f);
+            container.Controls.Add(studioHint);
+            ry += 30;
 
             // Row 4: The runtime has separate hover and key-press volumes.
             // Inset this row from the column edge so DPI scaling cannot clip the
@@ -6132,6 +6157,227 @@ namespace OpenCompositeConfigurator
             container.Size = new Size(container.Width, y + 10);
         }
 
+        private void LaunchKeyboardStudio()
+        {
+            string baseDirectory = AppContext.BaseDirectory;
+            string[] candidates =
+            {
+                Path.Combine(baseDirectory, "OCU Keyboard Studio", "OCU Keyboard Studio.exe"),
+                Path.Combine(baseDirectory, "OCU Keyboard Studio.exe")
+            };
+
+            string? studioPath = candidates.FirstOrDefault(File.Exists);
+            if (studioPath is null)
+            {
+                MessageBox.Show(this,
+                    "OCU Keyboard Studio was not found beside the Configurator. Reinstall the complete OCU package, including the 'OCU Keyboard Studio' folder.",
+                    "Keyboard Studio missing", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(studioPath) { UseShellExecute = true });
+                if (process is not null)
+                {
+                    process.EnableRaisingEvents = true;
+                    process.Exited += (_, _) =>
+                    {
+                        if (!IsDisposed && IsHandleCreated)
+                            BeginInvoke((Action)(() => RefreshKeyboardDesignChoices()));
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Could not open OCU Keyboard Studio:\n\n{ex.Message}",
+                    "Keyboard Studio", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private static string KeyboardDesignLibraryDirectory => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "OpenCompositeUnleashed", "KeyboardStudio", "Designs");
+
+        private static string KeyboardDesignRegistryPath => Path.Combine(
+            KeyboardDesignLibraryDirectory, "design-library.txt");
+
+        private void RefreshKeyboardDesignChoices(string? preferredId = null)
+        {
+            if (_cmbKeyboardDesign is null || _refreshingKeyboardDesigns)
+                return;
+
+            KeyboardDesignOption? previous = _cmbKeyboardDesign.SelectedItem as KeyboardDesignOption;
+            string? preferredPath = previous?.SourcePath;
+            preferredId = string.IsNullOrWhiteSpace(preferredId) ? previous?.Id : preferredId;
+
+            bool priorLoading = _isLoading;
+            _isLoading = true;
+            _refreshingKeyboardDesigns = true;
+            try
+            {
+                var designs = new List<KeyboardDesignOption>
+                {
+                    new("parchment", "Parchment", null, IsParchment: true)
+                };
+                var paths = new List<string>();
+                try
+                {
+                    if (File.Exists(KeyboardDesignRegistryPath))
+                        paths.AddRange(File.ReadAllLines(KeyboardDesignRegistryPath));
+                    if (Directory.Exists(KeyboardDesignLibraryDirectory))
+                        paths.AddRange(Directory.EnumerateFiles(
+                            KeyboardDesignLibraryDirectory, "*.kb", SearchOption.AllDirectories));
+                }
+                catch
+                {
+                    // The optional design library cannot block the Configurator.
+                }
+
+                foreach (string path in paths
+                    .Select(NormalizeKeyboardDesignPath)
+                    .Where(path => path is not null)
+                    .Cast<string>()
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(Path.GetFileNameWithoutExtension))
+                {
+                    string id = Path.GetFileNameWithoutExtension(path);
+                    string name = FriendlyKeyboardDesignName(id);
+                    if (designs.Any(item => item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                        name += $" — {Path.GetFileName(Path.GetDirectoryName(path))}";
+                    designs.Add(new KeyboardDesignOption(id, name, path, IsParchment: false));
+                }
+
+                string installed = Path.Combine(GetInstalledRootDir(), "OCUKeyboard.kb");
+                string? installedPath = NormalizeKeyboardDesignPath(installed);
+                bool requestedCustom = !string.IsNullOrWhiteSpace(preferredId)
+                    && !preferredId.Equals("parchment", StringComparison.OrdinalIgnoreCase);
+                if (requestedCustom && designs.All(item => !item.Id.Equals(preferredId, StringComparison.OrdinalIgnoreCase))
+                    && installedPath is not null)
+                {
+                    designs.Add(new KeyboardDesignOption(preferredId!,
+                        $"{FriendlyKeyboardDesignName(preferredId!)} (Installed)", installedPath, IsParchment: false));
+                }
+                else if (string.IsNullOrWhiteSpace(preferredId) && installedPath is not null)
+                {
+                    designs.Add(new KeyboardDesignOption("installed", "Installed Custom", installedPath, IsParchment: false));
+                    preferredId = "installed";
+                }
+
+                _keyboardDesigns.Clear();
+                _keyboardDesigns.AddRange(designs);
+                _cmbKeyboardDesign.Items.Clear();
+                _cmbKeyboardDesign.Items.AddRange(_keyboardDesigns.Cast<object>().ToArray());
+
+                int selected = preferredPath is null ? -1 : _keyboardDesigns.FindIndex(item =>
+                    item.SourcePath is not null && item.SourcePath.Equals(preferredPath, StringComparison.OrdinalIgnoreCase));
+                if (selected < 0 && !string.IsNullOrWhiteSpace(preferredId))
+                    selected = _keyboardDesigns.FindIndex(item => item.Id.Equals(preferredId, StringComparison.OrdinalIgnoreCase));
+                _cmbKeyboardDesign.SelectedIndex = selected >= 0 ? selected : 0;
+            }
+            finally
+            {
+                _refreshingKeyboardDesigns = false;
+                _isLoading = priorLoading;
+            }
+        }
+
+        private void ApplySelectedKeyboardDesign()
+        {
+            if (_cmbKeyboardDesign.SelectedItem is not KeyboardDesignOption design || design.IsParchment)
+                return;
+            if (string.IsNullOrWhiteSpace(design.SourcePath) || !File.Exists(design.SourcePath))
+                throw new FileNotFoundException($"Keyboard design '{design.Name}' is no longer available.", design.SourcePath);
+
+            string root = GetInstalledRootDir();
+            if (string.IsNullOrWhiteSpace(root))
+                throw new InvalidOperationException(GetInvalidInstallMessage());
+            Directory.CreateDirectory(root);
+
+            string sourceLayout = Path.GetFullPath(design.SourcePath);
+            string targetLayout = Path.Combine(root, "OCUKeyboard.kb");
+            CopyKeyboardDesignFile(sourceLayout, targetLayout);
+
+            string sourceDirectory = Path.GetDirectoryName(sourceLayout) ?? "";
+            foreach (string assetName in KeyboardDesignAssetNames(sourceLayout))
+            {
+                string sourceAsset = Path.Combine(sourceDirectory, assetName);
+                if (File.Exists(sourceAsset))
+                    CopyKeyboardDesignFile(sourceAsset, Path.Combine(root, assetName));
+            }
+        }
+
+        private static IEnumerable<string> KeyboardDesignAssetNames(string layoutPath)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string raw in File.ReadLines(layoutPath))
+            {
+                string line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith('#'))
+                    continue;
+                int separator = line.IndexOfAny(new[] { ' ', '\t' });
+                if (separator < 0)
+                    continue;
+                string command = line[..separator];
+                string remainder = line[(separator + 1)..].TrimStart();
+                if (command.Equals("background", StringComparison.OrdinalIgnoreCase)
+                    || command.Equals("sprite", StringComparison.OrdinalIgnoreCase)
+                    || command.Equals("control_arrow", StringComparison.OrdinalIgnoreCase))
+                {
+                    string token = FirstKeyboardLayoutToken(remainder);
+                    string fileName = Path.GetFileName(token);
+                    if (!string.IsNullOrWhiteSpace(fileName))
+                        names.Add(fileName);
+                }
+                else if (command.Equals("font", StringComparison.OrdinalIgnoreCase)
+                    && remainder.StartsWith("custom_", StringComparison.OrdinalIgnoreCase))
+                {
+                    names.Add("OCUKeyboardFont.sfn");
+                    names.Add("OCUKeyboardFont.png");
+                }
+            }
+            return names;
+        }
+
+        private static string FirstKeyboardLayoutToken(string text)
+        {
+            if (text.StartsWith('"'))
+            {
+                int closing = text.IndexOf('"', 1);
+                return closing > 1 ? text[1..closing] : text.Trim('"');
+            }
+            int separator = text.IndexOfAny(new[] { ' ', '\t' });
+            return separator < 0 ? text : text[..separator];
+        }
+
+        private static void CopyKeyboardDesignFile(string source, string destination)
+        {
+            if (Path.GetFullPath(source).Equals(Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase))
+                return;
+            File.Copy(source, destination, overwrite: true);
+        }
+
+        private static string? NormalizeKeyboardDesignPath(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+            try
+            {
+                string fullPath = Path.GetFullPath(path);
+                return File.Exists(fullPath) ? fullPath : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string FriendlyKeyboardDesignName(string value)
+        {
+            string name = value.Replace('_', ' ').Replace('-', ' ').Trim();
+            return string.IsNullOrWhiteSpace(name) ? "Unnamed Keyboard" : name;
+        }
+
         private void SwitchTab(int index)
         {
             _tabSettings.Visible = (index == 0);
@@ -6618,7 +6864,6 @@ namespace OpenCompositeConfigurator
                 _nudDisplayTilt.Value = 22.5m;
                 _nudDisplayOpacity.Value = 30m;
                 _nudDisplayScale.Value = 100m;
-                _cmbKbTheme.SelectedIndex = 0;
                 _chkSoundsEnabled.Checked = true;
                 _nudHoverVolume.Value = 50m;
                 _nudPressVolume.Value = 50m;
@@ -6698,6 +6943,7 @@ namespace OpenCompositeConfigurator
             try
             {
                 WriteToIni();
+                ApplySelectedKeyboardDesign();
                 var savePaths = GetOpenCompositeIniSavePaths(createDirectories: true).ToList();
                 foreach (string path in savePaths)
                     _ini.Save(path);
@@ -6805,6 +7051,11 @@ namespace OpenCompositeConfigurator
 
         private static string GetTrackedControlValue(Control control)
         {
+            if (control is ComboBox keyboardDesignCombo
+                && keyboardDesignCombo.SelectedItem is KeyboardDesignOption keyboardDesign)
+            {
+                return $"keyboard-design:{keyboardDesign.Id}\u001f{keyboardDesign.SourcePath}";
+            }
             return control switch
             {
                 CheckBox checkBox => checkBox.Checked ? "1" : "0",
@@ -7037,13 +7288,11 @@ namespace OpenCompositeConfigurator
             if (int.TryParse(_ini.Get("keyboard", "displayScale", "100"), out int dsc))
                 _nudDisplayScale.Value = Math.Clamp(dsc, 50, 150);
 
-            int kbThemeIndex = _ini.Get("keyboard", "theme", "parchment").ToLowerInvariant() switch
-            {
-                "skyui" => 1, "dwemer" => 2, "sovngarde" => 3, _ => 0
-            };
-            // The public build lists Parchment only; clamp so a saved dev
-            // theme cannot index past the shortened list.
-            _cmbKbTheme.SelectedIndex = kbThemeIndex < _cmbKbTheme.Items.Count ? kbThemeIndex : 0;
+            string keyboardLayout = _ini.Get("keyboard", "layout", "auto").Trim();
+            string keyboardDesign = _ini.Get("keyboard", "design", "").Trim();
+            if (keyboardLayout.Equals("embedded", StringComparison.OrdinalIgnoreCase))
+                keyboardDesign = "parchment";
+            RefreshKeyboardDesignChoices(keyboardDesign);
 
             _chkSoundsEnabled.Checked = ParseBool(_ini.Get("keyboard", "soundsEnabled", "true"));
             if (int.TryParse(_ini.Get("keyboard", "hoverVolume",
@@ -7421,10 +7670,14 @@ namespace OpenCompositeConfigurator
             _ini.Set("keyboard", "displayTilt", _nudDisplayTilt.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("keyboard", "displayOpacity", ((int)_nudDisplayOpacity.Value).ToString());
             _ini.Set("keyboard", "displayScale", ((int)_nudDisplayScale.Value).ToString());
-            _ini.Set("keyboard", "theme", _cmbKbTheme.SelectedIndex switch
-            {
-                1 => "skyui", 2 => "dwemer", 3 => "sovngarde", _ => "parchment"
-            });
+            KeyboardDesignOption? keyboardDesign = _cmbKeyboardDesign.SelectedItem as KeyboardDesignOption;
+            bool parchmentDesign = keyboardDesign is null || keyboardDesign.IsParchment;
+            // Parchment uses the embedded layout. Custom entries are copied to
+            // root/OCUKeyboard.kb during Save and selected through layout=auto.
+            _ini.Set("keyboard", "theme", "parchment");
+            _ini.Set("keyboard", "font", "theme");
+            _ini.Set("keyboard", "layout", parchmentDesign ? "embedded" : "auto");
+            _ini.Set("keyboard", "design", parchmentDesign ? "parchment" : keyboardDesign!.Id);
             _ini.Set("keyboard", "soundsEnabled", _chkSoundsEnabled.Checked ? "true" : "false");
             _ini.Set("keyboard", "hoverVolume", ((int)_nudHoverVolume.Value).ToString());
             _ini.Set("keyboard", "pressVolume", ((int)_nudPressVolume.Value).ToString());

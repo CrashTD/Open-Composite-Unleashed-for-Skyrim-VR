@@ -2,6 +2,7 @@
 #include "WalkInPlace.h"
 
 #define OOVR_LOGF(...) ((void)0)
+static bool oovr_debug_logging_enabled() { return false; }
 #else
 #include "stdafx.h"
 

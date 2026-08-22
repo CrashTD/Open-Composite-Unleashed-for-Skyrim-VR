@@ -111,6 +111,8 @@ public:
 	int KbPressVolume() const { return kbPressVolume; }
 	int KbHapticStrength() const { return kbHapticStrength; }
 	const std::string& KbTheme() const { return kbTheme; }
+	const std::string& KbFont() const { return kbFont; }
+	const std::string& KbLayout() const { return kbLayout; }
 	bool BodyTrackersEnabled() const { return bodyTrackersEnabled; }
 	const std::string& BodyTrackerRoles() const { return bodyTrackerRoles; }
 	bool NetworkTrackersEnabled() const { return networkTrackersEnabled; }
@@ -266,7 +268,9 @@ public:
 	bool aswExperimentalMode = false; // true = experimental ASW: single-pass parallax + game MV residual correction + depth-based FP mask + frame-N disocclusion fallback
 
 	// Keyboard theme — public for hot-reload from the keyboard's ini file watcher
-	std::string kbTheme = "parchment"; // parchment | skyui | dwemer | sovngarde
+	std::string kbTheme = "parchment"; // parchment | modern_* | skyui | dwemer | sovngarde
+	std::string kbFont = "theme";       // theme | ubuntu | parchment | medieval | ocu_nordic | ocu_unease | cyrodiil
+	std::string kbLayout = "auto";      // auto, embedded, or a .kb filename beside openvr_api.dll
 
 private:
 	static int ini_handler(

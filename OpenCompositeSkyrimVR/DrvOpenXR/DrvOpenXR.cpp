@@ -250,6 +250,16 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	if (availableExtensions.contains(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME))
 		extensions.push_back(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME);
 
+	// Ratified full-featured fallback for controllers without a hardware-specific
+	// OpenXR interaction profile. SteamVR's PSVR2 runtime advertises this and maps
+	// Sense primary/secondary buttons, thumbsticks, triggers, grips, poses, and
+	// haptics into it. This prevents fallback to the input-starved Simple profile.
+	if (availableExtensions.count("XR_KHR_generic_controller")) {
+		extensions.push_back("XR_KHR_generic_controller");
+		xr_khrGenericController = true;
+		OOVR_LOG("XR_KHR_generic_controller extension available and enabled");
+	}
+
 	// Body trackers: VDXR exposes Virtual Desktop's body tracking through this,
 	// SteamVR's OpenXR runtime exposes real Vive/Tundra/SlimeVR trackers the same way
 	if (availableExtensions.count("XR_HTCX_vive_tracker_interaction")) {

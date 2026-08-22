@@ -99,6 +99,10 @@ public:
 // set during instance creation in DrvOpenXR, consumed by BaseInput/XrBackend
 // to expose body trackers (waist + feet) as OpenVR generic trackers.
 extern bool xr_htcxViveTrackers;
+// True when XR_KHR_generic_controller was advertised and enabled. The profile
+// supplies full generic motion-controller input (buttons, thumbstick, squeeze,
+// trigger, poses, and haptics), unlike khr/simple_controller.
+extern bool xr_khrGenericController;
 // True only when XR_EXT_eye_gaze_interaction was advertised and enabled on
 // the OpenXR instance. The per-system supportsEyeGazeInteraction bit above is
 // still authoritative; extension presence alone never enables gaze use.

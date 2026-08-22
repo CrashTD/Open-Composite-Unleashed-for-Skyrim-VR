@@ -44,6 +44,17 @@ public:
 	 */
 	void BlitCentered(wchar_t ch, int boxX, int boxY, int boxW, int boxH, int img_width, pix_t targetColour, pix_t* rawPixels);
 
+	/**
+	 * Draw an entire label centered by its visible glyph bounds. This is shared
+	 * by one-character and word labels so F10, Shift, Ctrl, etc. no longer sit
+	 * on a different baseline. Supports Keyboard Studio placement and scaling.
+	 */
+	void BlitTextCentered(const std::wstring& text,
+	    int boxX, int boxY, int boxW, int boxH,
+	    int img_width, int img_height,
+	    float offsetX, float offsetY, float scale,
+	    pix_t targetColour, pix_t* rawPixels);
+
 	int Width(wchar_t ch);
 	int Width(std::wstring str);
 

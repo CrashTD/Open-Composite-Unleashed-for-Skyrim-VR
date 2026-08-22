@@ -29,6 +29,7 @@
 #include <utility>
 
 #include "Misc/Config.h"
+#include "Misc/EyeGaze.h"
 #include "Misc/Keyboard/LaserRaySmoothing.h"
 #include "Misc/smooth_input.h"
 #include "Misc/xrmoreutils.h"
@@ -1352,7 +1353,7 @@ void BaseInput::CreateEyeGazeAction()
 	strcpy_arr(actionInfo.localizedActionName, "OpenComposite Eye Gaze");
 	XrResult result = xrCreateAction(legacyInputsSet, &actionInfo, &eyeGazeAction);
 	if (XR_FAILED(result)) {
-		OOVR_LOGF("Eye gaze: xrCreateAction failed (%d); fixed VRS fallback remains active", (int)result);
+		OOVR_LOGF("Eye gaze: xrCreateAction failed (%d); eye-tracked VRS is unavailable", (int)result);
 		eyeGazeAction = XR_NULL_HANDLE;
 		return;
 	}
@@ -1371,7 +1372,7 @@ void BaseInput::CreateEyeGazeAction()
 		result = xrSuggestInteractionProfileBindings(xr_instance, &suggestion);
 	}
 	if (XR_FAILED(result)) {
-		OOVR_LOGF("Eye gaze: binding suggestion failed (%d); fixed VRS fallback remains active", (int)result);
+		OOVR_LOGF("Eye gaze: binding suggestion failed (%d); eye-tracked VRS is unavailable", (int)result);
 		xrDestroyAction(eyeGazeAction);
 		eyeGazeAction = XR_NULL_HANDLE;
 		return;
@@ -1392,7 +1393,7 @@ void BaseInput::CreateEyeGazeSpace()
 	info.poseInActionSpace.orientation.w = 1.0f;
 	XrResult result = xrCreateActionSpace(xr_session.get(), &info, &eyeGazeSpace);
 	if (XR_FAILED(result)) {
-		OOVR_LOGF("Eye gaze: xrCreateActionSpace failed (%d); fixed VRS fallback remains active", (int)result);
+		OOVR_LOGF("Eye gaze: xrCreateActionSpace failed (%d); eye-tracked VRS is unavailable", (int)result);
 		eyeGazeSpace = XR_NULL_HANDLE;
 		return;
 	}
@@ -1401,45 +1402,84 @@ void BaseInput::CreateEyeGazeSpace()
 
 bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction, XrTime& sampleTime)
 {
+	auto logState = [](int state, const char* description) {
+		// State changes caused by blinks/tracking loss can otherwise flood the log.
+		// If a new state remains stable, report it after a one-second quiet period.
+		static int lastLoggedState = -1;
+		static auto lastLog = std::chrono::steady_clock::time_point{};
+		const auto now = std::chrono::steady_clock::now();
+		if (state != lastLoggedState &&
+		    (lastLoggedState < 0 || now - lastLog >= std::chrono::seconds(1))) {
+			OOVR_LOGF("Eye gaze sample state: %s", description);
+			lastLoggedState = state;
+			lastLog = now;
+		}
+	};
+
 	direction = { 0.0f, 0.0f, -1.0f };
 	sampleTime = 0;
 	if (eyeGazeAction == XR_NULL_HANDLE || eyeGazeSpace == XR_NULL_HANDLE ||
-	    !xr_gbl || xr_gbl->viewSpace == XR_NULL_HANDLE || displayTime <= 0)
+	    !xr_gbl || xr_gbl->viewSpace == XR_NULL_HANDLE || displayTime <= 0) {
+		logState(0, "unavailable (action, action space, view space, or display time missing)");
 		return false;
+	}
 	auto sessionLock = xr_session.lock_shared();
 	XrSession session = sessionLock;
-	if (session == XR_NULL_HANDLE)
+	if (session == XR_NULL_HANDLE) {
+		logState(1, "unavailable (OpenXR session missing)");
 		return false;
+	}
 
 	XrActionStateGetInfo stateInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
 	stateInfo.action = eyeGazeAction;
 	XrActionStatePose state{ XR_TYPE_ACTION_STATE_POSE };
 	XrResult result = xrGetActionStatePose(session, &stateInfo, &state);
-	if (XR_FAILED(result) || !state.isActive)
+	if (XR_FAILED(result)) {
+		logState(2, "unavailable (xrGetActionStatePose failed)");
 		return false;
+	}
+	if (!state.isActive) {
+		logState(3, "inactive (runtime/headset supplied no active gaze binding)");
+		return false;
+	}
 
 	XrEyeGazeSampleTimeEXT gazeTime{ XR_TYPE_EYE_GAZE_SAMPLE_TIME_EXT };
 	XrSpaceLocation location{ XR_TYPE_SPACE_LOCATION };
 	location.next = &gazeTime;
 	result = xrLocateSpace(eyeGazeSpace, xr_gbl->viewSpace, displayTime, &location);
-	if (XR_FAILED(result) ||
-	    !(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) ||
-	    gazeTime.time <= 0)
+	if (XR_FAILED(result)) {
+		logState(4, "unavailable (xrLocateSpace failed)");
 		return false;
-	const XrDuration sampleAge = displayTime - gazeTime.time;
-	if (sampleAge > 150000000 || sampleAge < -50000000)
+	}
+	if (!(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+		logState(5, "invalid (runtime supplied no valid gaze orientation)");
 		return false;
+	}
+
+	// XR_EXT_eye_gaze_interaction requires the runtime to return time=0 when
+	// precise sample timing is unavailable. The orientation is still a valid
+	// gaze sample in that case; only enforce freshness when a timestamp exists.
+	if (!ocu_eye_gaze::IsSampleTimeUsable(displayTime, gazeTime.time)) {
+		logState(6, "stale (runtime gaze timestamp outside the accepted frame window)");
+		return false;
+	}
 
 	const XrVector3f forward{ 0.0f, 0.0f, -1.0f };
 	rotate_vector_by_quaternion(forward, location.pose.orientation, direction);
 	const float lengthSq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
-	if (!std::isfinite(lengthSq) || lengthSq < 0.5f || direction.z >= -0.01f)
+	if (!std::isfinite(lengthSq) || lengthSq < 0.5f || direction.z >= -0.01f) {
+		logState(7, "invalid (non-finite, degenerate, or backward gaze direction)");
 		return false;
+	}
 	const float invLength = 1.0f / std::sqrt(lengthSq);
 	direction.x *= invLength;
 	direction.y *= invLength;
 	direction.z *= invLength;
 	sampleTime = gazeTime.time;
+	logState(gazeTime.time == 0 ? 8 : 9,
+	    gazeTime.time == 0 ?
+	        "LIVE (valid orientation; runtime does not expose precise sample time)" :
+	        "LIVE (valid fresh orientation and runtime sample time)");
 	return true;
 }
 

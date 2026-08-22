@@ -1,5 +1,84 @@
 # Changelog
 
+## Unreleased
+
+### Movable Keyboard Top Bar
+
+- Made the text bar, PC/VR Mode button, and Lock button independently selectable and movable in Keyboard Studio, with exact numeric X/Y offsets.
+- Saved top-bar positions now drive both native rendering and native laser hit-testing, so interactive regions follow the moved controls in game.
+- Added independent plate-visibility switches for ordinary keys, the PC/VR Mode plus Lock buttons, and the input bar. Hidden top plates retain their exact native laser/caret hit areas.
+- Promoted Undo and Redo to the main Studio toolbar, kept the global Ctrl+Z/Ctrl+Y shortcuts, capped snapshots at 150, and added a persistent undo/redo history counter in the status bar.
+- Fixed click-only canvas selections creating identical history entries. Undo/Redo now skip legacy no-op snapshots, preserve the selected object, and repaint the restored keyboard immediately.
+- Added a separate Keyboard Design library in Studio. Built-in and previously opened/saved `.kb` designs appear in its dropdown; Save and Save As register self-contained managed copies automatically so designs saved from the same folder cannot overwrite one another's artwork, while Install to OCU remains an explicit action.
+- Kept Undo and Redo text bright white when their history stacks are empty instead of allowing the WinForms disabled renderer to turn them black.
+- Added the shared Keyboard Design dropdown to the main Configurator with Parchment as the permanent default. Designs opened or saved in Studio automatically populate this list; Save installs the selected `.kb` and referenced artwork into the OCU root, while selecting Parchment switches back to the embedded keyboard without deleting the custom project.
+
+### Keyboard Arrow-Key Editing
+
+- Fixed the keyboard's Up, Down, Left, and Right key triangles so each one uses its own authored content offset and scale in both Studio and the VR keyboard.
+- Arrow-key content can now be dragged, mouse-wheel scaled, or resized with handles instead of filling the entire key plate.
+
+### PSVR2 Sense Controller Translation
+
+- Enabled the ratified `XR_KHR_generic_controller` extension when the runtime advertises it.
+- Added a full generic-controller interaction profile for PSVR2 Sense and other unmapped motion controllers: primary/secondary buttons, thumbsticks, triggers, grips, poses, and haptics now translate into Skyrim VR's Oculus-compatible legacy input surface.
+- The new profile is preferred over the input-starved `khr/simple_controller` fallback without inventing Sony-private OpenXR paths.
+- Added PlayStation VR2 Sense artwork to the Configurator controller selector, with PSVR-specific clickable positions, enlarged stick-click targets, and Square/Triangle/Cross/Circle labels. The picture is presentation-only; it does not alter the runtime binding translation.
+
+### Eye-Tracked Foveated Rendering
+
+- Hardened the standard `XR_EXT_eye_gaze_interaction` path for PSVR2Toolkit, Quest Pro, and other OpenXR runtimes/headsets.
+- Valid gaze poses are now accepted when a conforming runtime reports sample time `0` (timestamp unavailable); freshness limits still reject stale or implausibly future timestamped samples.
+- Added rate-limited gaze-state diagnostics plus live direction/per-eye UV diagnostics so hardware tests can prove that the VRS fovea is following the user's eyes.
+- Auto eye tracking still never enables Fixed VRS on a headset without usable eye tracking. Fixed remains a separate explicit option.
+- Eye tracking still does not modify CSX render scale, submitted texture bounds, swapchains, DAPA timing, motion vectors, or post-processing resources.
+
+### PSVR / DAPA Performance
+
+- DAPA's shader-accumulator, stencil, depth-clear, and first-person geometry hooks are now installed only when `aswEnabled=true` in the game-root `opencomposite.ini` (OCU's global `[]` section; a hand-written `[asw]` section is also accepted).
+- Kept the shared render-target bridge active for menus and unrelated OCU features while eliminating the million-call first-person geometry hook overhead when DAPA is off.
+
+### RaceMenu VR Laser
+
+- Fixed the final character-name Accept/Cancel buttons by using visible button geometry when RaceMenu VR exposes no reliable AS2 hit area.
+- Character naming is now treated as a true modal regardless of stale RaceMenu mode state, and Accept/Cancel call the TextEntryField's semantic callbacks directly.
+
+### VR Keyboard
+
+- Added dedicated Ctrl and Print Screen keys to the default VR keyboard layout.
+- Ctrl is now a visible one-shot toggle: tap it, tap the shortcut key, and it releases after that key; tap Ctrl again to cancel it.
+- Combined Enter and Done into one context-aware key: it submits Skyrim-owned naming/input dialogs through `KeyboardDone`, while console and player-opened keyboard sessions keep normal Enter behavior.
+- Added five public Configurator-style keyboard themes: OCU Green, White, Blue, Amber, and Purple.
+- Separated keyboard Theme and Font selectors. Font choices now show the font name and author, save independently from color/theme, and hot-reload while the game is running.
+- Added Cyrodiil by Neale Davidson, OCU Nordic derived from Paul James Miller's Balgruf, and OCU Unease derived from AliceElizaDesign's Uncanny. All three are distributed under the SIL Open Font License 1.1.
+- Preserved the font atlas's fractional alpha coverage when tinting glyphs, removing the hard jagged edges caused by the old binary-mask renderer.
+- Added native dark rounded panels, pill-shaped keys, and soft accent glow rendering for the new themes. The styling is generated directly in the existing keyboard RGBA texture and does not touch the compositor, video, DAPA, render-scale, or CSX paths.
+- Added the separate OCU Keyboard Studio desktop authoring tool. It previews the real 1024x560 layout and SudoFont atlases, supports direct label/key dragging, key-box resizing, label scaling, output remapping, Lower/Shift/Caps and pressed-state previews, undo/redo, PNG export, and one-click installation into either the game root or a persistent MO2 Root Builder mod.
+- Added an Open Keyboard Studio button to the Configurator while keeping the authoring surface as its own focused desktop application.
+- Added direct TTF/OTF import to Keyboard Studio. Studio converts the selected font into OCU's native SFN metadata and antialiased PNG atlas, audits only labels belonging to keys in the open layout, and fills only missing used glyphs from OCU Nordic. Editing a key to introduce unsupported text now reports it and rebuilds imported fonts when their stored source is available.
+- Custom converted fonts now install and export with the keyboard as `OCUKeyboardFont.sfn` plus `OCUKeyboardFont.png`; native OCU loads that pair beside `openvr_api.dll` whenever the layout selects a `custom_` font.
+- Added real hue/saturation color wheels for font, key, glow, and hover colors; configurable glow/hover strength, label outline, square-to-pill roundness, and optional key plates for floating-label designs.
+- Added an independent font-outline color plus font glow color, strength, radius, and breathing cycle. Renamed the existing key glow controls to plate-outline glow, added a plate-glow radius, and kept font and plate breathing phases independent in both Studio and native VR rendering.
+- Expanded Keyboard Studio artwork into a true layered designer: movable/resizable/rotatable backgrounds with square-to-pill corner clipping, independent opacity and edge fading, multiple drag/drop or clipboard-pasted PNG sprites, layer ordering, and a reusable Parchment ribbon asset. Studio save/install and MO2 exports carry every layer, and the native renderer reproduces them in game.
+- Replaced edit-mode guessing with direct canvas manipulation: click a glyph to move its content, click empty key plate to move the key, drag corner/edge handles to resize, use the rotation circle on artwork, and right-click sprites for cut/copy/paste/delete/layer actions.
+- Tightened content selection to the SudoFont atlas's actually painted alpha pixels, kept the opposite edge anchored during unsnapped mouse resizing, made background pill transparency proportional to current dimensions, exposed Cut/Copy/Paste on every canvas context menu, and automatically opens Controls when a Size/Opacity/Tilt box is selected so its replacement triangles are immediately available.
+- Added independent key-plate fill color/transparency, outline color/transparency, and outline width.
+- Added the real Size, Opacity, and Tilt side controls to the Studio preview. Each outer group can be moved and resized, while its Up arrow, Down arrow, label, and value are independently selectable and movable. Arrow children resize independently; the matching in-game rendering and laser hit zones follow the authored geometry.
+- Added replaceable side-control arrows: designers may supply any transparent PNG shape, rotate it, and OCU reuses it at 180 degrees for the matching Down control while retaining the built-in triangle fallback.
+- Added procedural breathing for key glow, independently colored sprite/ribbon/overlay glow, and custom control arrows. Sprite artwork itself remains stable while its cached halo breathes. Each effect has minimum intensity, period, and phase controls with a live 20 Hz Studio preview.
+- Native breathing redraws are capped at 20 Hz and only exist while the keyboard overlay is open. Static artwork performs no animation redraws, and a closed keyboard has no animation or artwork-rendering cost.
+- Replaced nearest-neighbor artwork scaling with premultiplied-alpha bilinear filtering, removing dark fringes and reducing jagged rotated/scaled PNG edges. Background and sprite transformations are cached once at keyboard load so smoothing does not multiply hover/laser redraw cost.
+- Fixed high-DPI PNG artwork being physically scaled by its DPI metadata and rendered as a small image in the upper-left. Studio now imports backgrounds, sprites, control art, and font atlases strictly by pixel dimensions, so 300-DPI artwork fills its authored bounds correctly.
+- Kept transparent artwork PNG-only. JPEG can be imported only as a background after an explicit quality/transparency warning and is transcoded to a real PNG for Save, Install, and shareable MO2 exports.
+- Kept the original ribbon spacebar artwork exclusive to the classic Parchment theme; every modern/custom keyboard now uses a clean space key.
+- Removed keyboard theme/font choices from the main Configurator. Parchment is the no-design default, and the Configurator now launches Keyboard Studio for all appearance work.
+- Made Keyboard Studio exports portable between users: each `OCUKeyboard.kb` now carries its exact base theme and font along with colors, geometry, and artwork, while the shareable MO2 ZIP still avoids replacing `opencomposite.ini`.
+- Added custom keyboard loading through `[keyboard] layout=OCUKeyboard.kb`; custom layout files are restricted to the game root beside `openvr_api.dll`, with the embedded English layout retained as the safe fallback.
+- The default `layout=auto` convention now loads `OCUKeyboard.kb` when an independent MO2 Root Builder keyboard mod supplies it, otherwise falling back to the embedded layout without requiring an INI overwrite.
+- Added per-key `.label_offset`, `.label_scale`, and `.label_shift` layout properties plus quoted labels for lossless Keyboard Studio round trips.
+- Unified single-character and word-label centering using visible glyph bounds. OCU Nordic labels such as Shift, F10, Ctrl, and PrtSc now use the same vertical-centering rule as ordinary letter keys.
+- Kept the legacy Done escape code working for custom keyboard layouts.
+
 ## v2.0.0
 
 Major overhaul of the VR keyboard input system — thumbstick navigation replaced with laser pointer aiming, and the keyboard is now world-anchored and repositionable.

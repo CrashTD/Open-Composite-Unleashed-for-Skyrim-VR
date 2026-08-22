@@ -1,4 +1,5 @@
 #include "OpenOVR/Compositor/VRSGaze.h"
+#include "OpenOVR/Misc/EyeGaze.h"
 
 #include <cmath>
 #include <cstdio>
@@ -22,6 +23,17 @@ int main()
 {
 	using namespace ocu_vrs_gaze;
 	Center center{};
+
+	Check(ocu_eye_gaze::IsSampleTimeUsable(1000000000, 0),
+	    "a valid pose with runtime sample time unavailable is accepted");
+	Check(ocu_eye_gaze::IsSampleTimeUsable(1000000000, 850000000),
+	    "a gaze sample exactly 150 ms old is accepted");
+	Check(!ocu_eye_gaze::IsSampleTimeUsable(1000000000, 849999999),
+	    "a gaze sample older than 150 ms is rejected");
+	Check(ocu_eye_gaze::IsSampleTimeUsable(1000000000, 1050000000),
+	    "a predicted gaze sample exactly 50 ms ahead is accepted");
+	Check(!ocu_eye_gaze::IsSampleTimeUsable(1000000000, 1050000001),
+	    "a gaze sample more than 50 ms ahead is rejected");
 
 	Check(SelectMode(true, false, false, false) == Mode::Off,
 	    "Auto without valid gaze stays off instead of falling back to Fixed");

@@ -158,6 +158,18 @@ namespace OpenCompositeConfigurator
             { "right_stick_right", ("\u25B6",   new PointF(0.713f + 0.045f, 0.147f), true) },
         };
 
+        private static readonly Dictionary<string, string> Psvr2DisplayNames = new()
+        {
+            ["x"] = "Square",
+            ["y"] = "Triangle",
+            ["a"] = "Cross",
+            ["b"] = "Circle",
+            ["left_trigger"] = "L2",
+            ["left_grip"] = "L1",
+            ["right_trigger"] = "R2",
+            ["right_grip"] = "R1",
+        };
+
         // Set by MainForm before opening so this popup mirrors the controller
         // model chosen on the Bindings tab (photo + calibrated dot positions).
         public static string ControllerModelKey = "touch";
@@ -181,6 +193,14 @@ namespace OpenCompositeConfigurator
                         _buttons[kv.Key] = (entry.display, kv.Value, entry.isStickDir);
                 }
             }
+            if (ControllerModelKey == "psvr2")
+            {
+                foreach (var kv in Psvr2DisplayNames)
+                {
+                    if (_buttons.TryGetValue(kv.Key, out var entry))
+                        _buttons[kv.Key] = (kv.Value, entry.pos, entry.isStickDir);
+                }
+            }
 
             LoadControllerImage();
             InitializeUI();
@@ -193,9 +213,12 @@ namespace OpenCompositeConfigurator
         private void LoadControllerImage()
         {
             var assembly = Assembly.GetExecutingAssembly();
-            string resource = ControllerModelKey == "knuckles"
-                ? "OpenCompositeConfigurator.Resources.knuckles.png"
-                : "OpenCompositeConfigurator.Resources.controllers.png";
+            string resource = ControllerModelKey switch
+            {
+                "knuckles" => "OpenCompositeConfigurator.Resources.knuckles.png",
+                "psvr2" => "OpenCompositeConfigurator.Resources.psvr2_sense.png",
+                _ => "OpenCompositeConfigurator.Resources.controllers.png",
+            };
             using var stream = assembly.GetManifestResourceStream(resource);
             if (stream != null)
                 _controllerImage = Image.FromStream(stream);
@@ -492,9 +515,10 @@ namespace OpenCompositeConfigurator
                 }
                 else
                 {
-                    // Regular buttons: circles. Knuckles face buttons are half
-                    // size (tight cluster); grips and triggers stay full size.
-                    float r = ControllerModelKey == "knuckles" && !IsFullSizeKey(kvp.Key) ? 7f : 14f;
+                    // Regular buttons: circles. Knuckles/PSVR2 face buttons are
+                    // compact; grips and triggers stay full size.
+                    bool compact = ControllerModelKey is "knuckles" or "psvr2";
+                    float r = compact && !IsFullSizeKey(kvp.Key) ? 7f : 14f;
 
                     // Ghost circle (always visible)
                     using (var ghostPen = new Pen(Color.FromArgb(50, 255, 255, 255), 1.5f))
@@ -523,7 +547,8 @@ namespace OpenCompositeConfigurator
                 // Label on hover or selection (non-directional buttons only)
                 if ((isHovered || isSelected) && !isDir)
                 {
-                    float lr = ControllerModelKey == "knuckles" && !IsFullSizeKey(kvp.Key) ? 7f : 14f;
+                    bool compact = ControllerModelKey is "knuckles" or "psvr2";
+                    float lr = compact && !IsFullSizeKey(kvp.Key) ? 7f : 14f;
                     using var font = new Font("Segoe UI", 7f, FontStyle.Bold);
                     using var textBrush = new SolidBrush(Color.White);
                     var sf = new StringFormat { Alignment = StringAlignment.Center };
@@ -538,7 +563,8 @@ namespace OpenCompositeConfigurator
             float closestDist = float.MaxValue;
             foreach (var kvp in _buttons)
             {
-                float hitRadius = ControllerModelKey == "knuckles" && !IsFullSizeKey(kvp.Key)
+                bool compact = ControllerModelKey is "knuckles" or "psvr2";
+                float hitRadius = compact && !IsFullSizeKey(kvp.Key)
                     ? (kvp.Value.isStickDir ? 0.018f : 0.026f)
                     : (kvp.Value.isStickDir ? 0.025f : 0.04f);
                 float dx = fx - kvp.Value.pos.X;

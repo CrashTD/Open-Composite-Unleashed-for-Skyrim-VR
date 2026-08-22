@@ -72,6 +72,7 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <cwchar>
 #include <cstdio>
 #include <fstream>
 #include <initializer_list>
@@ -2055,7 +2056,8 @@ namespace
 		return false;
 	}
 
-	bool GetRaceMenuButtonPanelTarget(RE::GFxValue& buttonPanel, float rootX,
+	bool GetRaceMenuButtonPanelTarget(RE::GFxMovieView& movie,
+	    RE::GFxValue& buttonPanel, float rootX,
 	    float rootY, int indexBase, RaceMenuLaserTarget& target,
 	    std::uint32_t maxButtons = 16)
 	{
@@ -2073,7 +2075,11 @@ namespace
 			RE::GFxValue button;
 			if (!buttons.GetElement(i, &button) || !DisplayObjectIsUsable(button))
 				continue;
-			if (DisplayObjectHitAtRootPoint(button, rootX, rootY)) {
+			// RaceMenu VR's dynamically-created buttons often have visible bounds but
+			// no dependable AS2 hitTest area. Accept either source so the final
+			// character-name Accept/Cancel buttons can be targeted by the VR laser.
+			if (DisplayObjectGeometryHitAtRootPoint(
+			        movie, button, rootX, rootY)) {
 				target.kind = RaceMenuLaserTargetKind::kButton;
 				target.index = indexBase + static_cast<int>(i);
 				target.owner = buttonPanel;
@@ -2632,7 +2638,7 @@ namespace
 			RE::GFxValue buttonPanel;
 			if (dialog.GetMember("buttonPanel", &buttonPanel) &&
 			    GetRaceMenuButtonPanelTarget(
-			        buttonPanel, rootX, rootY, 300, target)) {
+			        movie, buttonPanel, rootX, rootY, 300, target)) {
 				return true;
 			}
 
@@ -2648,6 +2654,27 @@ namespace
 		RE::GFxValue panel;
 		if (!GetRaceMenuPanel(movie, panel))
 			return false;
+
+		// Character naming is a modal TextEntryField layered over every RaceMenu
+		// mode. Resolve it before mode-specific controls: the selected mode can be
+		// stale while this field is visible. Store the TextEntryField itself as the
+		// owner so activation can invoke its documented onAccept/onCancel methods.
+		RE::GFxValue textEntry;
+		if (panel.GetMember("textEntry", &textEntry) &&
+		    (textEntry.IsObject() || textEntry.IsDisplayObject()) &&
+		    DisplayObjectIsUsable(textEntry)) {
+			RE::GFxValue buttonPanel;
+			if (textEntry.GetMember("buttonPanel", &buttonPanel) &&
+			    GetRaceMenuButtonPanelTarget(
+			        movie, buttonPanel, rootX, rootY, 500, target)) {
+				target.owner = textEntry;
+				return true;
+			}
+			target.kind = RaceMenuLaserTargetKind::kNone;
+			target.owner = textEntry;
+			target.clip = textEntry;
+			return true;
+		}
 
 		// ModeSwitcher is authoritative. Read its already-published fields directly
 		// instead of invoking AS2 while RaceMenu may still be initializing categories.
@@ -2750,7 +2777,7 @@ namespace
 					    (!buttonPanel.IsObject() && !buttonPanel.IsDisplayObject())) {
 						continue;
 					}
-					if (GetRaceMenuButtonPanelTarget(buttonPanel, rootX, rootY,
+					if (GetRaceMenuButtonPanelTarget(movie, buttonPanel, rootX, rootY,
 					        static_cast<int>(panelIndex * 100), target)) {
 						return true;
 					}
@@ -2780,28 +2807,12 @@ namespace
 			RE::GFxValue buttonPanel;
 			if (makeupPanel.GetMember("buttonPanel", &buttonPanel) &&
 			    GetRaceMenuButtonPanelTarget(
-			        buttonPanel, rootX, rootY, 400, target)) {
+			        movie, buttonPanel, rootX, rootY, 400, target)) {
 				return true;
 			}
 			target.kind = RaceMenuLaserTargetKind::kNone;
 			target.owner = makeupPanel;
 			target.clip = makeupPanel;
-			return true;
-		}
-
-		RE::GFxValue textEntry;
-		if (!sculptModeSelected && panel.GetMember("textEntry", &textEntry) &&
-		    (textEntry.IsObject() || textEntry.IsDisplayObject()) &&
-		    DisplayObjectIsUsable(textEntry)) {
-			RE::GFxValue buttonPanel;
-			if (textEntry.GetMember("buttonPanel", &buttonPanel) &&
-			    GetRaceMenuButtonPanelTarget(
-			        buttonPanel, rootX, rootY, 500, target)) {
-				return true;
-			}
-			target.kind = RaceMenuLaserTargetKind::kNone;
-			target.owner = textEntry;
-			target.clip = textEntry;
 			return true;
 		}
 
@@ -2817,13 +2828,13 @@ namespace
 			    (bottomBar.IsObject() || bottomBar.IsDisplayObject()) &&
 			    bottomBar.GetMember("staticPanel", &staticPanel) &&
 			    GetRaceMenuButtonPanelTarget(
-			        staticPanel, rootX, rootY, 600, target)) {
+			        movie, staticPanel, rootX, rootY, 600, target)) {
 				return true;
 			}
 			RE::GFxValue navPanel;
 			if (vertexEditor.GetMember("navPanel", &navPanel) &&
 			    GetRaceMenuButtonPanelTarget(
-			        navPanel, rootX, rootY, 620, target, 1)) {
+			        movie, navPanel, rootX, rootY, 620, target, 1)) {
 				return true;
 			}
 
@@ -2929,7 +2940,7 @@ namespace
 			RE::GFxValue navPanel;
 			if (cameraEditor.GetMember("navPanel", &navPanel) &&
 			    GetRaceMenuButtonPanelTarget(
-			        navPanel, rootX, rootY, 700, target, 1)) {
+			        movie, navPanel, rootX, rootY, 700, target, 1)) {
 				return true;
 			}
 		}
@@ -2940,7 +2951,7 @@ namespace
 			RE::GFxValue navPanel;
 			if (presetEditor.GetMember("navPanel", &navPanel) &&
 			    GetRaceMenuButtonPanelTarget(
-			        navPanel, rootX, rootY, 720, target)) {
+			        movie, navPanel, rootX, rootY, 720, target)) {
 				return true;
 			}
 			RE::GFxValue itemList;
@@ -2993,7 +3004,7 @@ namespace
 		RE::GFxValue navPanel;
 		if (panel.GetMember("navPanel", &navPanel) &&
 		    GetRaceMenuButtonPanelTarget(
-		        navPanel, rootX, rootY, 800, target)) {
+		        movie, navPanel, rootX, rootY, 800, target)) {
 			return true;
 		}
 
@@ -3361,6 +3372,14 @@ namespace
 	{
 		HoverRaceMenuLaserTarget(target);
 		if (target.kind == RaceMenuLaserTargetKind::kButton) {
+			// RaceMenu VR's final name dialog owns the semantic callbacks; invoke
+			// those directly instead of relying on mouse handlers that the VR SWF
+			// does not consistently publish for these two buttons.
+			if (target.index == 500 || target.index == 501) {
+				const char* method = target.index == 500 ? "onAccept" : "onCancel";
+				if (target.owner.Invoke(method, nullptr, nullptr, 0))
+					return true;
+			}
 			std::array<RE::GFxValue, 3> args;
 			args[0].SetNumber(0.0); // controller index
 			args[1].SetNumber(0.0); // mouse source
@@ -8548,6 +8567,50 @@ uint main() : SV_Target { return 255; }
 		}
 	}
 
+	bool IsDapaEnabledInGameIni()
+	{
+		wchar_t executablePath[MAX_PATH]{};
+		const DWORD pathLength = GetModuleFileNameW(
+		    nullptr, executablePath, static_cast<DWORD>(std::size(executablePath)));
+		if (pathLength == 0 || pathLength >= std::size(executablePath)) {
+			SKSE::log::warn(
+			    "DAPA: could not resolve SkyrimVR.exe path; first-person render hooks will stay disabled");
+			return false;
+		}
+
+		wchar_t* fileName = wcsrchr(executablePath, L'\\');
+		if (!fileName) {
+			SKSE::log::warn(
+			    "DAPA: malformed SkyrimVR.exe path; first-person render hooks will stay disabled");
+			return false;
+		}
+		*(fileName + 1) = L'\0';
+		if (wcslen(executablePath) + wcslen(L"opencomposite.ini") >=
+		    std::size(executablePath)) {
+			SKSE::log::warn(
+			    "DAPA: opencomposite.ini path is too long; first-person render hooks will stay disabled");
+			return false;
+		}
+		wcscat_s(executablePath, L"opencomposite.ini");
+
+		wchar_t configuredValue[32]{};
+		// OCU's global video settings live under the literal empty [] section.
+		// Also accept a future/hand-written [asw] section without changing the
+		// current Configurator's file format.
+		GetPrivateProfileStringW(L"", L"aswEnabled", L"__missing__",
+		    configuredValue, static_cast<DWORD>(std::size(configuredValue)),
+		    executablePath);
+		if (_wcsicmp(configuredValue, L"__missing__") == 0) {
+			GetPrivateProfileStringW(L"asw", L"aswEnabled", L"false",
+			    configuredValue, static_cast<DWORD>(std::size(configuredValue)),
+			    executablePath);
+		}
+		return _wcsicmp(configuredValue, L"true") == 0 ||
+		       _wcsicmp(configuredValue, L"yes") == 0 ||
+		       _wcsicmp(configuredValue, L"on") == 0 ||
+		       wcscmp(configuredValue, L"1") == 0;
+	}
+
 	void OnMessage(SKSE::MessagingInterface::Message* a_msg)
 	{
 		switch (a_msg->type) {
@@ -8558,10 +8621,17 @@ uint main() : SV_Target { return 255; }
 			CreateSharedMemory();
 			CreateConsoleLaserBridge();
 			CreateRenderTargetBridge();
-			InstallShaderAccumulatorHook();
-			CreateStencilStagingTexture();
-			InstallClearDSVHook();
-			InstallSetupGeometryHook();
+			if (IsDapaEnabledInGameIni()) {
+				SKSE::log::info(
+				    "DAPA enabled: installing first-person depth/stencil render hooks");
+				InstallShaderAccumulatorHook();
+				CreateStencilStagingTexture();
+				InstallClearDSVHook();
+				InstallSetupGeometryHook();
+			} else {
+				SKSE::log::info(
+				    "DAPA disabled: first-person depth/stencil render hooks were not installed");
+			}
 			FindAndStoreNiCamera();  // Try immediately (may need retry after save/new game)
 
 			// Register menu state watcher for MCM laser pointer system

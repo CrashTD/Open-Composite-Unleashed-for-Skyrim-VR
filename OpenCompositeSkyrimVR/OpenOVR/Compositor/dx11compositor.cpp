@@ -4539,6 +4539,7 @@ static bool s_vrsHasSmoothedGaze = false;
 static int s_vrsEyeW = 0, s_vrsEyeH = 0;
 static bool s_vrsInitialFrameDone = false;
 static bool s_vrsPatternReady = false;
+static std::uint32_t s_vrsGazeDiagnosticCounter = 0;
 static int s_currentEyeIdx = 0;
 
 void DX11Compositor::ReleaseFsr3PostAASRVs()
@@ -7564,6 +7565,16 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 								s_vrsProjY[gazeEye] = s_vrsSmoothedGaze[gazeEye].y;
 							}
 							s_vrsHasSmoothedGaze = true;
+							// First sample, then roughly every 5-10 seconds depending on
+							// refresh rate. These coordinates prove the fovea is actually
+							// following live gaze instead of merely detecting an extension.
+							if ((s_vrsGazeDiagnosticCounter++ % 600u) == 0u) {
+								OOVR_LOGF(
+								    "VRS live gaze: dir=(%.3f,%.3f,%.3f), leftUV=(%.3f,%.3f), rightUV=(%.3f,%.3f), sampleTime=%s",
+								    gazeDirection.x, gazeDirection.y, gazeDirection.z,
+								    s_vrsProjX[0], s_vrsProjY[0], s_vrsProjX[1], s_vrsProjY[1],
+								    gazeSampleTime == 0 ? "unavailable" : "runtime-provided");
+							}
 						}
 					}
 				}

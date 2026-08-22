@@ -357,6 +357,10 @@
 ; ============================================================================
 
 [keyboard]
+# Auto loads OCUKeyboard.kb beside openvr_api.dll when a separate keyboard mod
+# supplies it; otherwise OCU uses the embedded keyboard. Use embedded to ignore
+# installed keyboard add-ons, or name a different .kb file explicitly.
+layout=auto
 
 ; Enable the controller shortcut to open a SendInput keyboard anywhere.
 ; Default: true

@@ -86,10 +86,28 @@ private:
 	// Active theme (font + background + palette); reloaded when the ini theme changes
 	const KbThemeDef* theme = nullptr;
 	std::string loadedThemeName;
+	std::string loadedFontName;
+	std::string loadedLayoutName;
 
 	// Theme background texture (pre-scaled to texWidth x texHeight, RGBA)
 	std::vector<uint8_t> parchmentBg;
 	unsigned int parchmentW = 0, parchmentH = 0;
+	struct DecodedKeyboardArtwork {
+		std::vector<uint8_t> pixels;
+		unsigned int width = 0;
+		unsigned int height = 0;
+		std::vector<uint8_t> glowPixels;
+		unsigned int glowWidth = 0;
+		unsigned int glowHeight = 0;
+		int glowX = 0;
+		int glowY = 0;
+		KeyboardLayout::ImageLayer placement;
+		bool prepared = false;
+	};
+	DecodedKeyboardArtwork customKeyboardBg;
+	std::vector<DecodedKeyboardArtwork> customKeyboardSprites;
+	DecodedKeyboardArtwork customControlArrow;
+	uint64_t lastAnimationRefreshMs = 0;
 
 	// These use the OpenVR eye constants
 	float lastInputTime[2] = { 0, 0 };
@@ -102,8 +120,8 @@ private:
 	bool sendInputOnly = false; // true when opened via controller shortcut (no text buffer)
 
 	// PC MODE keys stay down until the same controller's trigger is released.
-	// Retaining the layout id also keeps the pressed visual latched if the
-	// laser drifts onto another key while the trigger is held.
+	// Ctrl is a sticky, one-shot modifier: tap Ctrl, tap the shortcut key, then
+	// both keys release in the correct order. Tapping Ctrl again cancels it.
 	struct HeldPCKey {
 		uint16_t vk = 0;
 		int keyId = -1;
@@ -111,8 +129,13 @@ private:
 		bool scanOnly = false;
 	};
 	HeldPCKey heldPCKeys[2];
+	bool ctrlLatched = false;
+	int ctrlLatchSide = -1;
+	bool releaseCtrlAfterHeldPCKey[2] = { false, false };
 	void PressHeldPCKey(int side, int keyId, uint16_t vk, bool shift, bool scanOnly);
 	void ReleaseHeldPCKey(int side);
+	void ToggleCtrlLatch(int side);
+	void ReleaseCtrlLatch();
 	void ReleaseAllHeldPCKeys();
 
 	// Grab bar — trigger on the top strip to grab and reposition the keyboard
@@ -174,6 +197,8 @@ private:
 	XrCompositionLayerQuad consoleLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
 
 	void LoadThemeAssets();
+	void LoadKeyboardLayout();
+	void LoadKeyboardArtwork();
 	void Refresh();
 	void RefreshConsole();
 

@@ -27,6 +27,7 @@ namespace OpenCompositeConfigurator
     public partial class MainForm
     {
         private Image? _knucklesImage;
+        private Image? _psvr2Image;
         private ComboBox _cmbControllerModel = null!;
         private CheckBox _chkMoveDots = null!;
         private string _controllerModelKey = "touch";
@@ -75,6 +76,36 @@ namespace OpenCompositeConfigurator
             { "right_stick_right", ("R Stick Right", new PointF(0.781f, 0.111f), true) },
         };
 
+        // PlayStation VR2 Sense defaults for the front-facing controller
+        // artwork. The logical ids intentionally remain Oculus-compatible:
+        // Square/Triangle are left primary/secondary and Cross/Circle are
+        // right primary/secondary. XR_KHR_generic_controller translates the
+        // physical PSVR2 inputs to those same ids at runtime.
+        private static readonly Dictionary<string, (string display, PointF pos, bool isStickDir)> ControllerButtonsPsvr2 = new()
+        {
+            // Left Sense controller
+            { "left_stick",  ("L Stick Click",  new PointF(0.309f, 0.129f), false) },
+            { "x_button",    ("Square Button",   new PointF(0.363f, 0.186f), false) },
+            { "y_button",    ("Triangle Button", new PointF(0.379f, 0.099f), false) },
+            { "l_trigger",   ("L2 Trigger",      new PointF(0.405f, 0.245f), false) },
+            { "l_grip",      ("L1 Grip",         new PointF(0.322f, 0.618f), false) },
+            // Right Sense controller
+            { "right_stick", ("R Stick Click", new PointF(0.689f, 0.127f), false) },
+            { "a_button",    ("Cross Button",  new PointF(0.603f, 0.188f), false) },
+            { "b_button",    ("Circle Button", new PointF(0.621f, 0.101f), false) },
+            { "r_trigger",   ("R2 Trigger",    new PointF(0.595f, 0.245f), false) },
+            { "r_grip",      ("R1 Grip",       new PointF(0.678f, 0.618f), false) },
+            // Stick directions are deliberately compact around the visible caps.
+            { "left_stick_up",    ("L Stick Up",    new PointF(0.309f, 0.086f), true) },
+            { "left_stick_down",  ("L Stick Down",  new PointF(0.309f, 0.172f), true) },
+            { "left_stick_left",  ("L Stick Left",  new PointF(0.279f, 0.129f), true) },
+            { "left_stick_right", ("L Stick Right", new PointF(0.339f, 0.129f), true) },
+            { "right_stick_up",    ("R Stick Up",    new PointF(0.689f, 0.084f), true) },
+            { "right_stick_down",  ("R Stick Down",  new PointF(0.689f, 0.170f), true) },
+            { "right_stick_left",  ("R Stick Left",  new PointF(0.659f, 0.127f), true) },
+            { "right_stick_right", ("R Stick Right", new PointF(0.719f, 0.127f), true) },
+        };
+
         private static string DotLayoutPath => Path.Combine(AppContext.BaseDirectory, "ControllerDotLayouts.json");
         private static string UiStatePath => Path.Combine(AppContext.BaseDirectory, "ConfiguratorUI.json");
 
@@ -86,8 +117,10 @@ namespace OpenCompositeConfigurator
             {
                 if (!File.Exists(UiStatePath)) return "touch";
                 var state = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(UiStatePath));
-                return state != null && state.TryGetValue("controllerModel", out var m) && m == "knuckles"
-                    ? "knuckles" : "touch";
+                if (state != null && state.TryGetValue("controllerModel", out var model) &&
+                    model is "knuckles" or "psvr2")
+                    return model;
+                return "touch";
             }
             catch { return "touch"; }
         }
@@ -112,23 +145,53 @@ namespace OpenCompositeConfigurator
                 _knucklesImage = Image.FromStream(stream);
         }
 
-        private Image? ActiveControllerImage =>
-            _controllerModelKey == "knuckles" && _knucklesImage != null ? _knucklesImage : _controllerImage;
+        private void LoadPsvr2Image()
+        {
+            var assembly = Assembly.GetExecutingAssembly();
+            using var stream = assembly.GetManifestResourceStream("OpenCompositeConfigurator.Resources.psvr2_sense.png");
+            if (stream != null)
+                _psvr2Image = Image.FromStream(stream);
+        }
+
+        private Image? ActiveControllerImage => _controllerModelKey switch
+        {
+            "knuckles" when _knucklesImage != null => _knucklesImage,
+            "psvr2" when _psvr2Image != null => _psvr2Image,
+            _ => _controllerImage,
+        };
 
         internal static bool IsTrackpadButton(string? id) => id == "l_trackpad" || id == "r_trackpad";
 
         // Grips and triggers are big physical targets, they keep the full
         // Oculus circle size even on knuckles.
         private static bool IsFullSizeDot(string key) => key.Contains("grip") || key.Contains("trigger");
+        private static bool IsStickClickDot(string key) => key is "left_stick" or "right_stick";
 
-        // Knuckles face dots are half size: more inputs in a tighter cluster.
-        // The Touch layout is locked in so only knuckles needed the change.
-        private float DotRadiusFor(string key) =>
-            _controllerModelKey == "knuckles" && !IsFullSizeDot(key) ? 7f : 14f;
-        private float HitRadiusFor(string key, bool isStickDir) =>
-            _controllerModelKey == "knuckles" && !IsFullSizeDot(key)
-                ? (isStickDir ? 0.018f : 0.026f)
-                : (isStickDir ? 0.025f : 0.04f);
+        // Knuckles and PSVR2 face dots are smaller because their inputs are
+        // packed more tightly in the source artwork.
+        private bool UsesCompactDots => _controllerModelKey is "knuckles" or "psvr2";
+        private float DotRadiusFor(string key)
+        {
+            if (IsFullSizeDot(key)) return 14f;
+            return _controllerModelKey switch
+            {
+                "psvr2" when IsStickClickDot(key) => 11f,
+                "psvr2" => 9f,
+                "knuckles" => 7f,
+                _ => 14f,
+            };
+        }
+        private float HitRadiusFor(string key, bool isStickDir)
+        {
+            if (IsFullSizeDot(key)) return isStickDir ? 0.025f : 0.04f;
+            return _controllerModelKey switch
+            {
+                "psvr2" when IsStickClickDot(key) => 0.036f,
+                "psvr2" => isStickDir ? 0.022f : 0.032f,
+                "knuckles" => isStickDir ? 0.018f : 0.026f,
+                _ => isStickDir ? 0.025f : 0.04f,
+            };
+        }
 
         // Row under the controller photo: model dropdown + dot calibration toggle
         private void BuildControllerSwitcherRow(Control container, int x, int y, int width)
@@ -146,7 +209,7 @@ namespace OpenCompositeConfigurator
             _cmbControllerModel = new ComboBox
             {
                 Location = new Point(x + 66, y),
-                Width = 150,
+                Width = 180,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(50, 50, 55),
                 ForeColor = Color.White,
@@ -155,6 +218,7 @@ namespace OpenCompositeConfigurator
             };
             _cmbControllerModel.Items.Add("Oculus / Quest Touch");
             _cmbControllerModel.Items.Add("Valve Index Knuckles");
+            _cmbControllerModel.Items.Add("PlayStation VR2 Sense");
             _cmbControllerModel.SelectedIndex = 0; // default Meta / Quest Touch
 
             // Explicit Save button so the choice only sticks when the user commits it.
@@ -163,7 +227,7 @@ namespace OpenCompositeConfigurator
             var btnSaveController = new ModernPillButton
             {
                 Text = "Save",
-                Location = new Point(x + 222, y),
+                Location = new Point(x + 252, y),
                 Size = new Size(66, 24),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(40, 120, 40),
@@ -175,7 +239,13 @@ namespace OpenCompositeConfigurator
             _cmbControllerModel.SelectedIndexChanged += (s, e) =>
             {
                 // Live-update the picture on change, but do NOT persist until Save is clicked.
-                ApplyControllerModel(_cmbControllerModel.SelectedIndex == 1 ? "knuckles" : "touch");
+                string model = _cmbControllerModel.SelectedIndex switch
+                {
+                    1 => "knuckles",
+                    2 => "psvr2",
+                    _ => "touch",
+                };
+                ApplyControllerModel(model);
                 btnSaveController.Text = "Save";
             };
             container.Controls.Add(_cmbControllerModel);
@@ -196,15 +266,19 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(btnSaveController);
 
-            // Restore the persisted choice (fires the change handler when knuckles).
+            // Restore the persisted choice (fires the change handler when non-Touch).
             // No saved file => stays on the Meta/Touch default above.
-            if (LoadUiModelChoice() == "knuckles")
-                _cmbControllerModel.SelectedIndex = 1;
+            _cmbControllerModel.SelectedIndex = LoadUiModelChoice() switch
+            {
+                "knuckles" => 1,
+                "psvr2" => 2,
+                _ => 0,
+            };
 
             _chkMoveDots = new ModernCheckBox
             {
                 Text = "Move dots (drag to calibrate, saves on release)",
-                Location = new Point(x + 296, y + 2),
+                Location = new Point(x + 326, y + 2),
                 AutoSize = true,
                 Font = new Font("Segoe UI", 8.5f),
                 ForeColor = Color.FromArgb(190, 192, 200),
@@ -215,7 +289,12 @@ namespace OpenCompositeConfigurator
         private void ApplyControllerModel(string key)
         {
             _controllerModelKey = key;
-            var defaults = key == "knuckles" ? ControllerButtonsKnuckles : ControllerButtons;
+            var defaults = key switch
+            {
+                "knuckles" => ControllerButtonsKnuckles,
+                "psvr2" => ControllerButtonsPsvr2,
+                _ => ControllerButtons,
+            };
             _activeControllerButtons = defaults.ToDictionary(kv => kv.Key, kv => kv.Value);
             ApplyDotOverrides(key);
 
@@ -253,7 +332,7 @@ namespace OpenCompositeConfigurator
         // layout the Bindings tab uses.
         private Dictionary<string, PointF[]> ShortcutButtonPositions()
         {
-            if (_controllerModelKey != "knuckles")
+            if (_controllerModelKey == "touch")
                 return ButtonPositions;
 
             var map = new Dictionary<string, PointF[]>();
@@ -271,15 +350,15 @@ namespace OpenCompositeConfigurator
             return map;
         }
 
-        private float ShortcutDotRadius => _controllerModelKey == "knuckles" ? 7f : 10f;
-        private float ShortcutHitRadius => _controllerModelKey == "knuckles" ? 0.03f : 0.06f;
+        private float ShortcutDotRadius => UsesCompactDots ? 7f : 10f;
+        private float ShortcutHitRadius => UsesCompactDots ? 0.03f : 0.06f;
 
         // Push the current model (photo + calibrated positions) into the combo
         // editor popup so the VR keyboard shortcut picker mirrors this tab.
         private void SyncComboEditorModel()
         {
             ComboEditForm.ControllerModelKey = _controllerModelKey;
-            if (_controllerModelKey != "knuckles")
+            if (_controllerModelKey == "touch")
             {
                 ComboEditForm.ModelPositionOverrides = null;
                 return;

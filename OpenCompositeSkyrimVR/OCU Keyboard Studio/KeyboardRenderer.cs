@@ -1,0 +1,653 @@
+namespace OCUKeyboardStudio;
+
+internal enum KeyboardPreviewState
+{
+    Lower,
+    Shift,
+    Caps
+}
+
+internal sealed record KeyboardTheme(
+    string Name,
+    string? BackgroundFile,
+    bool Modern,
+    Color Ink,
+    Color Accent,
+    Color Bright,
+    Color KeyIdle,
+    Color KeyHot,
+    bool Outline)
+{
+    public float ModeButtonOffsetX { get; init; }
+    public float ModeButtonOffsetY { get; init; }
+    public float LockButtonOffsetX { get; init; }
+    public float LockButtonOffsetY { get; init; }
+
+    public static IReadOnlyList<KeyboardTheme> BuiltIns { get; } =
+    [
+        new("Modern Green", null, true, Color.FromArgb(255, 237, 240, 245), Color.FromArgb(205, 62, 190, 143), Color.FromArgb(255, 132, 242, 158), Color.FromArgb(175, 22, 26, 33), Color.FromArgb(105, 62, 190, 143), true),
+        new("Modern White", null, true, Color.FromArgb(255, 237, 240, 245), Color.FromArgb(205, 190, 205, 220), Color.White, Color.FromArgb(175, 22, 26, 33), Color.FromArgb(105, 190, 205, 220), true),
+        new("Modern Blue", null, true, Color.FromArgb(255, 237, 240, 245), Color.FromArgb(205, 60, 150, 245), Color.FromArgb(255, 115, 205, 255), Color.FromArgb(175, 22, 26, 33), Color.FromArgb(105, 60, 150, 245), true),
+        new("Modern Amber", null, true, Color.FromArgb(255, 237, 240, 245), Color.FromArgb(205, 218, 145, 55), Color.FromArgb(255, 255, 205, 115), Color.FromArgb(175, 22, 26, 33), Color.FromArgb(105, 218, 145, 55), true),
+        new("Modern Purple", null, true, Color.FromArgb(255, 237, 240, 245), Color.FromArgb(205, 155, 95, 230), Color.FromArgb(255, 215, 165, 255), Color.FromArgb(175, 22, 26, 33), Color.FromArgb(105, 155, 95, 230), true),
+        new("Parchment", "parchment-bg.png", false, Color.Black, Color.FromArgb(90, 80, 55, 25), Color.FromArgb(255, 220, 200, 160), Color.Transparent, Color.FromArgb(100, 60, 35, 10), false),
+        new("SkyUI Dark", "skyui-bg.png", false, Color.FromArgb(255, 235, 235, 235), Color.FromArgb(55, 255, 255, 255), Color.White, Color.Transparent, Color.FromArgb(48, 255, 255, 255), false),
+        new("Dwemer", "dwemer-bg.png", false, Color.FromArgb(255, 210, 255, 240), Color.FromArgb(90, 190, 140, 70), Color.White, Color.Transparent, Color.FromArgb(90, 190, 140, 70), true)
+        {
+            ModeButtonOffsetX = 8,
+            ModeButtonOffsetY = 6,
+            LockButtonOffsetX = -18,
+            LockButtonOffsetY = 2
+        },
+        new("Sovngarde", "sovngarde-bg.png", false, Color.White, Color.FromArgb(70, 255, 255, 255), Color.White, Color.Transparent, Color.FromArgb(65, 255, 255, 255), true)
+    ];
+}
+
+internal sealed class KeyboardRenderer
+{
+    private sealed record PreparedArtwork(string Signature, PixelSurface Surface, PixelSurface? GlowSurface = null, int GlowOffset = 0);
+    public const int TextureWidth = 1024;
+    public const int TextureHeight = 560;
+    public const int Padding = 6;
+    public const int MarginHorizontal = 120;
+    public const int MarginTop = 60;
+    public const int GrabBarHeight = 52;
+
+    public string AssetsDirectory { get; set; }
+    public KeyboardTheme Theme { get; set; } = KeyboardTheme.BuiltIns[0];
+    public SudoFont Font { get; set; }
+    public KeyboardPreviewState State { get; set; }
+    public int SelectedKeyId { get; set; } = -1;
+    public bool Pressed { get; set; }
+    public bool ShowGrid { get; set; } = true;
+    public double AnimationTimeSeconds { get; set; }
+    private PreparedArtwork? _backgroundCache;
+    private readonly Dictionary<Guid, PreparedArtwork> _spriteCache = [];
+
+    public KeyboardRenderer(string assetsDirectory, SudoFont font)
+    {
+        AssetsDirectory = assetsDirectory;
+        Font = font;
+    }
+
+    public int KeySize(KeyboardDocument document)
+    {
+        int availableWidth = TextureWidth - 2 * MarginHorizontal;
+        return ((availableWidth - Padding) / document.Width) - Padding;
+    }
+
+    public RectangleF KeyRectangle(KeyboardDocument document, KeyboardKey key)
+    {
+        int keySize = KeySize(document);
+        int pitch = keySize + Padding;
+        int baseY = MarginTop + keySize + Padding + GrabBarHeight;
+        float x = MarginHorizontal + pitch * key.X;
+        float y = baseY + pitch * key.Y;
+        float width = key.SpansToRight ? TextureWidth - MarginHorizontal - x : keySize * key.Width;
+        return new RectangleF(x, y, width, keySize * key.Height);
+    }
+
+    public RectangleF TopElementRectangle(KeyboardDocument document, KeyboardTopElement element)
+    {
+        int keySize = KeySize(document);
+        int textBarY = GrabBarHeight + MarginTop;
+        int buttonY = textBarY - 36;
+        return element switch
+        {
+            KeyboardTopElement.TextBar => new RectangleF(
+                MarginHorizontal + document.TextBarOffsetX,
+                textBarY + document.TextBarOffsetY,
+                TextureWidth - MarginHorizontal * 2,
+                keySize),
+            KeyboardTopElement.Mode => new RectangleF(
+                MarginHorizontal + Theme.ModeButtonOffsetX + document.ModeButtonOffsetX,
+                buttonY + Theme.ModeButtonOffsetY + document.ModeButtonOffsetY,
+                220, 32),
+            _ => new RectangleF(
+                TextureWidth - MarginHorizontal - 120 + Theme.LockButtonOffsetX + document.LockButtonOffsetX,
+                buttonY + Theme.LockButtonOffsetY + document.LockButtonOffsetY,
+                120, 32)
+        };
+    }
+
+    public RectangleF KeyContentRectangle(KeyboardDocument document, KeyboardKey key)
+    {
+        RectangleF plate = KeyRectangle(document, key);
+        if (key.Character is '\x04' or '\x05' or '\x06' or '\x07')
+        {
+            float scale = Math.Clamp(key.LabelScale, 0.25f, 3f);
+            float width = Math.Max(4f, 20f * scale);
+            float height = Math.Max(4f, 16f * scale);
+            float arrowHoverOffset = key.Id == SelectedKeyId ? (Pressed ? 2 : -2) : 0;
+            return new RectangleF(
+                plate.Left + (plate.Width - width) / 2f + key.LabelOffsetX,
+                plate.Top + (plate.Height - height) / 2f + key.LabelOffsetY + arrowHoverOffset,
+                width, height);
+        }
+        string label = State == KeyboardPreviewState.Lower ? key.Label : key.ShiftLabel;
+        float hoverOffset = key.Id == SelectedKeyId ? (Pressed ? 2 : -2) : 0;
+        RectangleF visible = Font.VisibleTextRectangle(label, plate, key.LabelOffsetX, key.LabelOffsetY + hoverOffset, key.LabelScale);
+        return visible.IsEmpty ? new RectangleF(plate.Left + plate.Width / 2f - 2, plate.Top + plate.Height / 2f - 2, 4, 4)
+            : RectangleF.Inflate(visible, 2, 2);
+    }
+
+    public bool IsPointOnKeyContent(KeyboardDocument document, KeyboardKey key, PointF point)
+    {
+        RectangleF plate = KeyRectangle(document, key);
+        if (key.Character is '\x04' or '\x05' or '\x06' or '\x07')
+            return KeyContentRectangle(document, key).Contains(point);
+        string label = State == KeyboardPreviewState.Lower ? key.Label : key.ShiftLabel;
+        float hoverOffset = key.Id == SelectedKeyId ? (Pressed ? 2 : -2) : 0;
+        return Font.HitTestText(label, plate, key.LabelOffsetX, key.LabelOffsetY + hoverOffset, key.LabelScale, point);
+    }
+
+    public Bitmap Render(KeyboardDocument document)
+    {
+        PixelSurface surface = CreateBackground(document);
+        DrawSprites(surface, document);
+        DrawTopControls(surface, document);
+
+        foreach (KeyboardKey key in document.Keys)
+        {
+            RectangleF raw = KeyRectangle(document, key);
+            var rectangle = Rectangle.Round(raw);
+            bool selected = key.Id == SelectedKeyId;
+            bool active = (key.Character == '\x01' && State == KeyboardPreviewState.Shift)
+                || (key.Character == '\x02' && State == KeyboardPreviewState.Caps)
+                || key.Character == '\x1E' && State == KeyboardPreviewState.Caps;
+
+            DrawKeyPlate(surface, document, rectangle, active, selected);
+            DrawKeyContent(surface, document, key, rectangle, selected);
+        }
+
+        DrawRuntimeControls(surface, document);
+
+        return surface.ToBitmap();
+    }
+
+    private PixelSurface CreateBackground(KeyboardDocument document)
+    {
+        if (!string.IsNullOrWhiteSpace(document.BackgroundImagePath) && File.Exists(document.BackgroundImagePath))
+        {
+            var surface = new PixelSurface(TextureWidth, TextureHeight);
+            int width = Math.Max(1, (int)Math.Round(document.BackgroundWidth));
+            int height = Math.Max(1, (int)Math.Round(document.BackgroundHeight));
+            string signature = ArtworkSignature(document.BackgroundImagePath, width, height,
+                document.BackgroundEdgeFade, document.BackgroundRotation) + $"|round={document.BackgroundRoundness}";
+            if (_backgroundCache is null || _backgroundCache.Signature != signature)
+                _backgroundCache = new PreparedArtwork(signature, PrepareArtwork(document.BackgroundImagePath,
+                    width, height, document.BackgroundEdgeFade, document.BackgroundRotation,
+                    Math.Clamp(document.BackgroundRoundness, 0, 100) * Math.Min(width, height) / 200));
+            int opacity = AnimatedOpacity(document.BackgroundOpacity,
+                document.BackgroundBreatheEnabled, document.BackgroundBreatheMinPercent,
+                document.BackgroundBreathePeriodSeconds, document.BackgroundBreathePhaseDegrees);
+            surface.BlendSurface(_backgroundCache.Surface,
+                (int)Math.Round(document.BackgroundX), (int)Math.Round(document.BackgroundY), opacity);
+            return surface;
+        }
+
+        if (Theme.Modern)
+        {
+            var surface = new PixelSurface(TextureWidth, TextureHeight);
+            surface.FillRounded(new Rectangle(0, 0, TextureWidth, TextureHeight), 22, Color.FromArgb(235, 48, 56, 68));
+            surface.FillRounded(new Rectangle(2, 2, TextureWidth - 4, TextureHeight - 4), 20, Color.FromArgb(235, 14, 17, 22));
+            return surface;
+        }
+
+        var background = new Bitmap(TextureWidth, TextureHeight);
+        using (Graphics graphics = Graphics.FromImage(background))
+        {
+            graphics.Clear(Color.Transparent);
+            string path = Path.Combine(AssetsDirectory, Theme.BackgroundFile ?? "");
+            if (File.Exists(path))
+            {
+                using var image = new Bitmap(path);
+                int x = (TextureWidth - image.Width) / 2;
+                graphics.DrawImage(image,
+                    new Rectangle(x, 0, image.Width, image.Height),
+                    new Rectangle(0, 0, image.Width, image.Height),
+                    GraphicsUnit.Pixel);
+            }
+            else
+            {
+                graphics.Clear(Color.FromArgb(235, 14, 17, 22));
+            }
+        }
+        PixelSurface result = PixelSurface.FromBitmap(background);
+        background.Dispose();
+        return result;
+    }
+
+    private void DrawSprites(PixelSurface surface, KeyboardDocument document)
+    {
+        foreach (KeyboardSprite sprite in document.Sprites)
+        {
+            if (string.IsNullOrWhiteSpace(sprite.SourcePath) || !File.Exists(sprite.SourcePath))
+                continue;
+            int width = Math.Max(1, (int)Math.Round(sprite.Width));
+            int height = Math.Max(1, (int)Math.Round(sprite.Height));
+            string signature = ArtworkSignature(sprite.SourcePath, width, height, sprite.EdgeFade, sprite.Rotation)
+                + $"|glow={sprite.GlowEnabled}|{sprite.GlowColor.ToArgb()}|{sprite.GlowRadius}";
+            if (!_spriteCache.TryGetValue(sprite.Id, out PreparedArtwork? prepared) || prepared.Signature != signature)
+            {
+                PixelSurface art = PrepareArtwork(sprite.SourcePath, width, height, sprite.EdgeFade, sprite.Rotation);
+                prepared = new PreparedArtwork(signature, art,
+                    sprite.GlowEnabled ? CreateGlowSurface(art, sprite.GlowColor, sprite.GlowRadius) : null,
+                    sprite.GlowEnabled ? sprite.GlowRadius : 0);
+                _spriteCache[sprite.Id] = prepared;
+            }
+            if (sprite.GlowEnabled && prepared.GlowSurface is not null)
+            {
+                int glowOpacity = AnimatedOpacity(sprite.GlowStrength, sprite.BreatheEnabled, sprite.BreatheMinPercent,
+                    sprite.BreathePeriodSeconds, sprite.BreathePhaseDegrees);
+                surface.BlendSurface(prepared.GlowSurface,
+                    (int)Math.Round(sprite.X) - prepared.GlowOffset,
+                    (int)Math.Round(sprite.Y) - prepared.GlowOffset, glowOpacity);
+            }
+            surface.BlendSurface(prepared.Surface, (int)Math.Round(sprite.X), (int)Math.Round(sprite.Y), sprite.Opacity);
+        }
+    }
+
+    private static string ArtworkSignature(string path, int width, int height, int edgeFade, float rotation)
+        => $"{Path.GetFullPath(path)}|{File.GetLastWriteTimeUtc(path).Ticks}|{width}|{height}|{edgeFade}|{rotation:R}";
+
+    private static PixelSurface PrepareArtwork(string path, int width, int height, int edgeFade, float rotation, int roundness = 0)
+    {
+        var prepared = new PixelSurface(width, height);
+        using var image = new Bitmap(path);
+        // A rounded background must feather inward from the rounded boundary.
+        // Fading the source rectangle first leaves opaque corners until a later
+        // hard cut, which is visibly wrong for pill-shaped artwork.
+        prepared.BlendBitmap(image, new Rectangle(0, 0, width, height), 100,
+            roundness > 0 ? 0 : edgeFade, rotation);
+        ApplyRoundedMask(prepared, roundness, edgeFade);
+        return prepared;
+    }
+
+    private static void ApplyRoundedMask(PixelSurface surface, int roundness, int edgeFade)
+    {
+        int radius = Math.Clamp(roundness, 0, Math.Min(surface.Width, surface.Height) / 2);
+        if (radius == 0)
+            return;
+        float halfWidth = surface.Width / 2f;
+        float halfHeight = surface.Height / 2f;
+        float innerHalfWidth = halfWidth - radius;
+        float innerHalfHeight = halfHeight - radius;
+        float fade = Math.Max(0, edgeFade);
+        for (int y = 0; y < surface.Height; y++)
+        {
+            for (int x = 0; x < surface.Width; x++)
+            {
+                float qx = Math.Abs(x + 0.5f - halfWidth) - innerHalfWidth;
+                float qy = Math.Abs(y + 0.5f - halfHeight) - innerHalfHeight;
+                float outside = MathF.Sqrt(MathF.Max(qx, 0) * MathF.Max(qx, 0)
+                    + MathF.Max(qy, 0) * MathF.Max(qy, 0));
+                float inside = MathF.Min(MathF.Max(qx, qy), 0);
+                float signedDistance = outside + inside - radius;
+                int alphaIndex = (y * surface.Width + x) * 4 + 3;
+                if (signedDistance >= 0)
+                {
+                    surface.Bgra[alphaIndex] = 0;
+                    continue;
+                }
+                if (fade > 0)
+                {
+                    float factor = Math.Clamp(-signedDistance / fade, 0, 1);
+                    surface.Bgra[alphaIndex] = (byte)Math.Round(surface.Bgra[alphaIndex] * factor);
+                }
+            }
+        }
+    }
+
+    private static PixelSurface CreateGlowSurface(PixelSurface source, Color color, int requestedRadius)
+    {
+        int radius = Math.Clamp(requestedRadius, 1, 48);
+        int width = source.Width + radius * 2;
+        int height = source.Height + radius * 2;
+        float[] horizontal = new float[width * height];
+        float[] blurred = new float[width * height];
+        for (int y = 0; y < source.Height; y++)
+        {
+            int sourceRow = y * source.Width;
+            int targetRow = (y + radius) * width + radius;
+            for (int x = 0; x < source.Width; x++)
+                horizontal[targetRow + x] = source.Bgra[(sourceRow + x) * 4 + 3] / 255f;
+        }
+
+        float[] pass = new float[width * height];
+        int diameter = radius * 2 + 1;
+        for (int y = 0; y < height; y++)
+        {
+            float sum = 0;
+            int row = y * width;
+            for (int x = -radius; x < width; x++)
+            {
+                if (x + radius < width) sum += horizontal[row + x + radius];
+                if (x - radius - 1 >= 0) sum -= horizontal[row + x - radius - 1];
+                if (x >= 0) pass[row + x] = sum / diameter;
+            }
+        }
+        for (int x = 0; x < width; x++)
+        {
+            float sum = 0;
+            for (int y = -radius; y < height; y++)
+            {
+                if (y + radius < height) sum += pass[(y + radius) * width + x];
+                if (y - radius - 1 >= 0) sum -= pass[(y - radius - 1) * width + x];
+                if (y >= 0) blurred[y * width + x] = sum / diameter;
+            }
+        }
+
+        var glow = new PixelSurface(width, height);
+        for (int index = 0; index < blurred.Length; index++)
+        {
+            byte alpha = (byte)Math.Clamp((int)Math.Round(Math.Sqrt(blurred[index]) * color.A), 0, 255);
+            int output = index * 4;
+            glow.Bgra[output] = color.B;
+            glow.Bgra[output + 1] = color.G;
+            glow.Bgra[output + 2] = color.R;
+            glow.Bgra[output + 3] = alpha;
+        }
+        return glow;
+    }
+
+    private Color Ink(KeyboardDocument document) => document.CustomStyleEnabled ? document.FontColor : Theme.Ink;
+    private Color KeyAccent(KeyboardDocument document) => document.CustomStyleEnabled ? document.KeyColor : Theme.Accent;
+    private Color PlateFill(KeyboardDocument document) => document.CustomStyleEnabled ? document.PlateFillColor : Theme.KeyIdle;
+    private Color Glow(KeyboardDocument document) => document.CustomStyleEnabled ? document.GlowColor : Theme.Bright;
+    private Color Hover(KeyboardDocument document) => document.CustomStyleEnabled ? document.HoverColor : Theme.Bright;
+    private bool Outline(KeyboardDocument document) => document.CustomStyleEnabled ? document.OutlineEnabled : Theme.Outline;
+
+    private void DrawStyledText(PixelSurface surface, KeyboardDocument document, string text, Rectangle box,
+        float offsetX, float offsetY, float scale, Color color)
+    {
+        Color? outline = Outline(document)
+            ? document.CustomStyleEnabled ? document.FontOutlineColor : Color.FromArgb(220, 8, 11, 15)
+            : null;
+        Color? glow = null;
+        int glowRadius = 0;
+        if (document.CustomStyleEnabled && document.FontGlowEnabled && document.FontGlowStrength > 0)
+        {
+            double breathe = document.FontBreatheEnabled
+                ? BreatheMultiplier(document.FontBreatheMinPercent, document.FontBreathePeriodSeconds,
+                    document.FontBreathePhaseDegrees)
+                : 1.0;
+            int alpha = Math.Clamp((int)Math.Round(document.FontGlowColor.A
+                * document.FontGlowStrength / 100.0 * breathe), 0, 255);
+            glow = Color.FromArgb(alpha, document.FontGlowColor);
+            glowRadius = Math.Clamp(document.FontGlowRadius, 1, 8);
+        }
+        Font.DrawTextCentered(surface, text, box, offsetX, offsetY, scale, color,
+            outline, glow, glowRadius);
+    }
+
+    private void DrawTopControls(PixelSurface surface, KeyboardDocument document)
+    {
+        Rectangle mode = Rectangle.Round(TopElementRectangle(document, KeyboardTopElement.Mode));
+        Rectangle lockButton = Rectangle.Round(TopElementRectangle(document, KeyboardTopElement.Lock));
+        Rectangle textBar = Rectangle.Round(TopElementRectangle(document, KeyboardTopElement.TextBar));
+        if (document.TopButtonPlatesEnabled)
+        {
+            DrawPlate(surface, document, mode, false);
+            DrawPlate(surface, document, lockButton, false);
+        }
+        DrawStyledText(surface, document, "PC MODE", mode, 0, 0, 0.75f, Ink(document));
+        DrawStyledText(surface, document, "LOCK", lockButton, 0, 0, 0.75f, Ink(document));
+        if (document.InputBarPlateEnabled)
+            DrawPlate(surface, document, textBar, false);
+        Color ink = Ink(document);
+        DrawStyledText(surface, document, "OCU Keyboard Studio Preview", textBar, 0, 0, 0.72f, Color.FromArgb(170, ink));
+    }
+
+    private void DrawKeyPlate(PixelSurface surface, KeyboardDocument document, Rectangle rectangle, bool active, bool selected)
+    {
+        if (!document.KeyPlatesEnabled)
+            return;
+
+        bool modern = Theme.Modern || document.CustomStyleEnabled;
+        if (modern)
+        {
+            Color glowBase = Glow(document);
+            int glowStrength = document.CustomStyleEnabled
+                ? (document.GlowEnabled ? document.GlowStrength : 0)
+                : 35;
+            if (document.CustomStyleEnabled && document.KeyBreatheEnabled)
+                glowStrength = (int)Math.Round(glowStrength * BreatheMultiplier(
+                    document.KeyBreatheMinPercent, document.KeyBreathePeriodSeconds,
+                    document.KeyBreathePhaseDegrees));
+            if (glowStrength > 0)
+            {
+                int glowAlpha = Math.Clamp((selected || active ? 12 : 5) + glowStrength / 4, 0, 80);
+                Color glow = Color.FromArgb(glowAlpha, glowBase.R, glowBase.G, glowBase.B);
+                int glowRadius = document.CustomStyleEnabled ? Math.Clamp(document.GlowRadius, 1, 8) : 4;
+                for (int spread = glowRadius; spread >= 1; spread--)
+                    surface.FillRounded(Rectangle.Inflate(rectangle, spread, spread), EffectiveRoundness(document, rectangle) + spread, glow);
+            }
+            int outlineWidth = document.CustomStyleEnabled ? document.PlateOutlineWidth : 2;
+            if (outlineWidth > 0)
+                surface.FillRounded(rectangle, EffectiveRoundness(document, rectangle), KeyAccent(document));
+            Rectangle inner = Rectangle.Inflate(rectangle, -outlineWidth, -outlineWidth);
+            Color hot = document.CustomStyleEnabled && document.HoverEnabled
+                ? Color.FromArgb(Math.Clamp(document.HoverStrength * 2, 0, 200), Hover(document))
+                : Theme.KeyHot;
+            surface.FillRounded(inner, Math.Max(0, EffectiveRoundness(document, rectangle) - outlineWidth), selected || active ? hot : PlateFill(document));
+        }
+        else
+        {
+            DrawPlate(surface, document, rectangle, selected || active);
+        }
+    }
+
+    private int EffectiveRoundness(KeyboardDocument document, Rectangle rectangle)
+        => Math.Min(document.CustomStyleEnabled ? document.KeyRoundness : 14, rectangle.Height / 2);
+
+    private void DrawPlate(PixelSurface surface, KeyboardDocument document, Rectangle rectangle, bool hot)
+    {
+        Color border = KeyAccent(document);
+        int roundness = Theme.Modern || document.CustomStyleEnabled ? EffectiveRoundness(document, rectangle) : 2;
+        int outlineWidth = document.CustomStyleEnabled ? document.PlateOutlineWidth : 1;
+        if (outlineWidth > 0)
+            surface.FillRounded(rectangle, roundness, border);
+        Rectangle inner = Rectangle.Inflate(rectangle, -outlineWidth, -outlineWidth);
+        Color hotColor = document.CustomStyleEnabled && document.HoverEnabled
+            ? Color.FromArgb(Math.Clamp(document.HoverStrength * 2, 0, 200), Hover(document))
+            : Theme.KeyHot;
+        surface.FillRounded(inner, Theme.Modern || document.CustomStyleEnabled ? Math.Max(0, roundness - 1) : 1,
+            hot ? hotColor : PlateFill(document));
+    }
+
+    private void DrawKeyContent(PixelSurface surface, KeyboardDocument document, KeyboardKey key, Rectangle rectangle, bool selected)
+    {
+        bool isArrow = key.Character is '\x04' or '\x05' or '\x06' or '\x07';
+        if (isArrow)
+        {
+            Rectangle arrowRectangle = Rectangle.Round(KeyContentRectangle(document, key));
+            DrawArrow(surface, arrowRectangle, key.Character, selected ? Hover(document) : Ink(document));
+            return;
+        }
+        if (key.Character == ' ' && string.IsNullOrEmpty(key.Label))
+        {
+            // The ribbon belongs to the original parchment presentation. New
+            // and custom keyboards get a clean, fully functional space key.
+            if (Theme.Name.Equals("Parchment", StringComparison.OrdinalIgnoreCase))
+                DrawSpacebar(surface, rectangle, selected ? Hover(document) : Ink(document));
+            return;
+        }
+
+        string label = State == KeyboardPreviewState.Lower ? key.Label : key.ShiftLabel;
+        float hoverOffset = selected ? (Pressed ? 2 : -2) : 0;
+        DrawStyledText(surface, document, label, rectangle,
+            key.LabelOffsetX,
+            key.LabelOffsetY + hoverOffset,
+            key.LabelScale,
+            selected && (!document.CustomStyleEnabled || document.HoverEnabled) ? Hover(document) : Ink(document));
+    }
+
+    private void DrawSpacebar(PixelSurface surface, Rectangle rectangle, Color color)
+    {
+        string file = Theme.Name == "Dwemer" ? "dwemer-spacebar.png" : "spacebar.png";
+        string path = Path.Combine(AssetsDirectory, file);
+        if (!File.Exists(path))
+        {
+            int y = rectangle.Top + rectangle.Height / 2;
+            for (int x = rectangle.Left + rectangle.Width / 4; x < rectangle.Right - rectangle.Width / 4; x++)
+                surface.BlendPixel(x, y, color);
+            return;
+        }
+
+        using var image = new Bitmap(path);
+        for (int y = 0; y < rectangle.Height; y++)
+        {
+            int sourceY = Math.Clamp(y * image.Height / Math.Max(1, rectangle.Height), 0, image.Height - 1);
+            for (int x = 0; x < rectangle.Width; x++)
+            {
+                int sourceX = Math.Clamp(x * image.Width / Math.Max(1, rectangle.Width), 0, image.Width - 1);
+                Color sample = image.GetPixel(sourceX, sourceY);
+                if (sample.A >= 250 && (sample.R + sample.G + sample.B) / 3 < 180)
+                    surface.BlendPixel(rectangle.Left + x, rectangle.Top + y, color);
+            }
+        }
+    }
+
+    private static void DrawArrow(PixelSurface surface, Rectangle rectangle, char direction, Color color)
+    {
+        int centerX = rectangle.Left + rectangle.Width / 2;
+        int centerY = rectangle.Top + rectangle.Height / 2;
+        int triangleWidth = Math.Max(4, rectangle.Width);
+        int triangleHeight = Math.Max(4, rectangle.Height);
+        if (direction is '\x04' or '\x05')
+        {
+            for (int row = 0; row < triangleHeight; row++)
+            {
+                int halfWidth = (int)((1f - row / (float)(triangleHeight - 1)) * triangleWidth / 2);
+                int y = direction == '\x04' ? centerY + triangleHeight / 2 - row : centerY - triangleHeight / 2 + row;
+                for (int x = -halfWidth; x <= halfWidth; x++)
+                    surface.BlendPixel(centerX + x, y, color);
+            }
+        }
+        else
+        {
+            for (int column = 0; column < triangleWidth; column++)
+            {
+                int halfHeight = (int)((1f - column / (float)(triangleWidth - 1)) * triangleHeight / 2);
+                int x = direction == '\x06' ? centerX + triangleWidth / 2 - column : centerX - triangleWidth / 2 + column;
+                for (int y = -halfHeight; y <= halfHeight; y++)
+                    surface.BlendPixel(x, centerY + y, color);
+            }
+        }
+    }
+
+    public RectangleF RuntimeControlRectangle(KeyboardDocument document, KeyboardRuntimeControl control)
+    {
+        KeyboardControlDesign design = document.GetControlDesign(control);
+        return control switch
+        {
+            KeyboardRuntimeControl.Size => new RectangleF(39 + document.SizeControlOffsetX, 224 + document.SizeControlOffsetY, design.Width, design.Height),
+            KeyboardRuntimeControl.Opacity => new RectangleF(918 + document.OpacityControlOffsetX, 60 + document.OpacityControlOffsetY, design.Width, design.Height),
+            _ => new RectangleF(918 + document.TiltControlOffsetX, 270 + document.TiltControlOffsetY, design.Width, design.Height)
+        };
+    }
+
+    public RectangleF RuntimeControlPartRectangle(KeyboardDocument document, KeyboardRuntimeControl control, KeyboardControlPart part)
+    {
+        RectangleF group = RuntimeControlRectangle(document, control);
+        KeyboardControlDesign design = document.GetControlDesign(control);
+        return part switch
+        {
+            KeyboardControlPart.UpArrow => new RectangleF(
+                group.Left + (group.Width - design.UpWidth) / 2f + design.UpOffsetX,
+                group.Top + design.UpOffsetY, design.UpWidth, design.UpHeight),
+            KeyboardControlPart.DownArrow => new RectangleF(
+                group.Left + (group.Width - design.DownWidth) / 2f + design.DownOffsetX,
+                group.Bottom - design.DownHeight + design.DownOffsetY, design.DownWidth, design.DownHeight),
+            KeyboardControlPart.Label => ControlTextRectangle(document, control, label: true),
+            KeyboardControlPart.Value => ControlTextRectangle(document, control, label: false),
+            _ => group
+        };
+    }
+
+    public bool IsPointOnRuntimeControlText(KeyboardDocument document, KeyboardRuntimeControl control, bool label, PointF point)
+    {
+        RectangleF group = RuntimeControlRectangle(document, control);
+        KeyboardControlDesign design = document.GetControlDesign(control);
+        RectangleF row = new(group.Left, group.Top + (label ? 21 : 45), group.Width, 25);
+        string text = ControlText(control, label);
+        return Font.HitTestText(text, row,
+            label ? design.LabelOffsetX : design.ValueOffsetX,
+            label ? design.LabelOffsetY : design.ValueOffsetY,
+            label ? design.LabelScale : design.ValueScale, point);
+    }
+
+    private RectangleF ControlTextRectangle(KeyboardDocument document, KeyboardRuntimeControl control, bool label)
+    {
+        RectangleF group = RuntimeControlRectangle(document, control);
+        KeyboardControlDesign design = document.GetControlDesign(control);
+        RectangleF row = new(group.Left, group.Top + (label ? 21 : 45), group.Width, 25);
+        RectangleF visible = Font.VisibleTextRectangle(ControlText(control, label), row,
+            label ? design.LabelOffsetX : design.ValueOffsetX,
+            label ? design.LabelOffsetY : design.ValueOffsetY,
+            label ? design.LabelScale : design.ValueScale);
+        return visible.IsEmpty ? new RectangleF(row.Left + row.Width / 2 - 2, row.Top + row.Height / 2 - 2, 4, 4)
+            : RectangleF.Inflate(visible, 1, 1);
+    }
+
+    private static string ControlText(KeyboardRuntimeControl control, bool label) => (control, label) switch
+    {
+        (KeyboardRuntimeControl.Size, true) => "size",
+        (KeyboardRuntimeControl.Size, false) => "100%",
+        (KeyboardRuntimeControl.Opacity, true) => "opac",
+        (KeyboardRuntimeControl.Opacity, false) => "30%",
+        (KeyboardRuntimeControl.Tilt, true) => "tilt",
+        _ => "23"
+    };
+
+    private void DrawRuntimeControls(PixelSurface surface, KeyboardDocument document)
+    {
+        DrawRuntimeControl(surface, document, KeyboardRuntimeControl.Size, "size", "100%");
+        DrawRuntimeControl(surface, document, KeyboardRuntimeControl.Opacity, "opac", "30%");
+        DrawRuntimeControl(surface, document, KeyboardRuntimeControl.Tilt, "tilt", "23");
+    }
+
+    private void DrawRuntimeControl(PixelSurface surface, KeyboardDocument document,
+        KeyboardRuntimeControl control, string label, string value)
+    {
+        KeyboardControlDesign design = document.GetControlDesign(control);
+        Rectangle box = Rectangle.Round(RuntimeControlRectangle(document, control));
+        Color ink = Ink(document);
+        DrawControlArrow(surface, document, Rectangle.Round(RuntimeControlPartRectangle(document, control, KeyboardControlPart.UpArrow)), false, ink);
+        DrawStyledText(surface, document, label, new Rectangle(box.Left, box.Top + 21, box.Width, 25),
+            design.LabelOffsetX, design.LabelOffsetY, design.LabelScale, ink);
+        DrawStyledText(surface, document, value, new Rectangle(box.Left, box.Top + 45, box.Width, 25),
+            design.ValueOffsetX, design.ValueOffsetY, design.ValueScale, ink);
+        DrawControlArrow(surface, document, Rectangle.Round(RuntimeControlPartRectangle(document, control, KeyboardControlPart.DownArrow)), true, ink);
+    }
+
+    private void DrawControlArrow(PixelSurface surface, KeyboardDocument document, Rectangle rectangle, bool down, Color fallback)
+    {
+        if (!string.IsNullOrWhiteSpace(document.ControlArrowImagePath) && File.Exists(document.ControlArrowImagePath))
+        {
+            using var image = new Bitmap(document.ControlArrowImagePath);
+            int opacity = AnimatedOpacity(100, document.ControlArrowBreatheEnabled,
+                document.ControlArrowBreatheMinPercent, document.ControlArrowBreathePeriodSeconds,
+                document.ControlArrowBreathePhaseDegrees);
+            surface.BlendBitmap(image, rectangle, opacity, 0, document.ControlArrowRotation + (down ? 180 : 0));
+            return;
+        }
+        DrawArrow(surface, Rectangle.Inflate(rectangle, -2, -2), down ? '\x05' : '\x04', fallback);
+    }
+
+    private int AnimatedOpacity(int baseOpacity, bool enabled, int minimumPercent, float periodSeconds, float phaseDegrees)
+        => Math.Clamp((int)Math.Round(baseOpacity * (enabled
+            ? BreatheMultiplier(minimumPercent, periodSeconds, phaseDegrees)
+            : 1.0)), 0, 100);
+
+    private double BreatheMultiplier(int minimumPercent, float periodSeconds, float phaseDegrees)
+    {
+        double minimum = Math.Clamp(minimumPercent, 0, 100) / 100.0;
+        double period = Math.Clamp(periodSeconds, 0.5f, 10f);
+        double angle = AnimationTimeSeconds * Math.PI * 2.0 / period
+            + phaseDegrees * Math.PI / 180.0;
+        double wave = 0.5 - 0.5 * Math.Cos(angle);
+        return minimum + (1.0 - minimum) * wave;
+    }
+}
