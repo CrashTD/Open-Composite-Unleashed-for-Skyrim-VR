@@ -54,7 +54,7 @@ private:
 	// Cached config values used to detect changes
 	float cachedInnerRadius = 0.0f;
 	float cachedMidRadius = 0.0f;
-	float cachedOuterRadius = 0.0f;
+	bool cachedCompatibilityMode = true;
 	bool cachedFavorHorizontal = true;
 	bool shadingRatesSet = false; // True after EnableShadingRates() — avoid redundant NVAPI calls
 

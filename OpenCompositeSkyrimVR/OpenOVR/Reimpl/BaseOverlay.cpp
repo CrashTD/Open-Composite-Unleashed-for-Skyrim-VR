@@ -75,7 +75,7 @@ bool g_menuLaserActive = false; // True while either menu laser hits the quad
 #pragma pack(push, 1)
 struct OCMenuTransform {
 	static constexpr uint32_t MAGIC = 0x54434D4F; // 'OCMT'
-	static constexpr uint32_t VERSION = 5;
+	static constexpr uint32_t VERSION = 6;
 
 	uint32_t magic;
 	uint32_t version;
@@ -122,8 +122,11 @@ struct OCMenuTransform {
 	float    roomHmdPos[3];
 	float    roomHmdQuat[4];
 
+	// v6: native Skyrim MapMenu beam length. OCU applies this scalar to the
+	// current OpenXR controller ray; no cross-engine endpoint conversion.
 	uint8_t  mapPointerValid;
-	float    mapPointerHitPos[3];
+	float    mapPointerDistanceMeters;
+	float    mapPointerReserved[2];
 
 	// v5: physical OpenXR hand that owns the published trigger edge.
 	// 0 = left, 1 = right, 0xFF = unavailable/legacy runtime.
@@ -3050,17 +3053,14 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					}
 				}
 
-				// MapMenu keeps Skyrim's native pointer INPUT but replaces only its
-				// faint red geometry with our beam. Other special 3D menus remain
-				// completely suppressed (Sovngarde protection).
-				bool mapVisualOnly = strcmp(s_lastMenuName, "MapMenu") == 0;
-				menuLaser->SetMapVisualMode(mapVisualOnly);
-				// MapMenu draws no OpenXR beam or dot. Its native UIPointerGeo is the
-				// only visual with authoritative terrain/icon depth and is recolored by
-				// the SKSE bridge. This also prevents a bad RoomNode endpoint from ever
-				// producing the vertical white shaft seen in live testing.
-				menuLaser->SetMapVisualHit(false, {});
-				bool hardSuppressLaser = (strcmp(s_lastMenuName, "StatsMenu") == 0)
+				// MapMenu is a complete native bypass. Do not submit an OCU laser, read
+				// the native pointer/depth bridge, publish laser input, or mask any
+				// controller edge. Skyrim VR's original map laser remains authoritative.
+				const bool mapNativeOnly = strcmp(s_lastMenuName, "MapMenu") == 0;
+				menuLaser->SetMapVisualMode(false);
+				menuLaser->SetMapVisualDistance(false, 0.0f);
+				bool hardSuppressLaser = mapNativeOnly
+				    || (strcmp(s_lastMenuName, "StatsMenu") == 0)
 				    || (strcmp(s_lastMenuName, "Loading Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Main Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Mist Menu") == 0)
@@ -3068,15 +3068,33 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				const bool physicalBookPending = physicalBookMode && !liveSharedPlaneAdopted;
 				const bool suppressLaser = hardSuppressLaser || physicalBookPending;
 
-				// Pointer ownership: the hand that last pulled trigger on the
-				// quad owns the beam (native VR feel — one laser, no 2D cursor).
-				// The other hand still tracks invisibly so it can claim the
-				// pointer with a click. Default owner: right hand.
+				// Both hands render a menu beam, but Skyrim/Scaleform still has one
+				// cursor. Meaningful on-quad movement or a click transfers that cursor,
+				// while both beams remain visually identical. Default owner: right hand.
 				static int s_activeLaserHand = 1;
-				if (mapVisualOnly)
+				static bool s_authorityAnchorValid[2] = {};
+				static float s_authorityAnchorU[2] = {};
+				static float s_authorityAnchorV[2] = {};
+				static char s_authorityMenu[64] = {};
+				if (strcmp(s_authorityMenu, s_lastMenuName) != 0) {
+					s_authorityAnchorValid[0] = false;
+					s_authorityAnchorValid[1] = false;
+					snprintf(s_authorityMenu, sizeof(s_authorityMenu), "%s", s_lastMenuName);
+				}
+				if (mapNativeOnly) {
 					s_activeLaserHand = 1; // Skyrim's native map pointer is right-hand owned.
-				menuLaser->SetRenderHand(0, s_activeLaserHand == 0);
-				menuLaser->SetRenderHand(1, s_activeLaserHand == 1);
+					s_authorityAnchorValid[0] = false;
+					s_authorityAnchorValid[1] = false;
+					g_menuLaserActive = false;
+					for (int side = 0; side < 2; ++side) {
+						g_menuLaserConsumesTrigger[side] = false;
+						g_menuLaserSuppressUntilRelease[side].store(
+						    false, std::memory_order_release);
+					}
+				}
+				menuLaser->SetActiveHand(s_activeLaserHand);
+				menuLaser->SetRenderHand(0, true);
+				menuLaser->SetRenderHand(1, true);
 
 				bool kbHit[2] = { g_kbLaserConsumesTrigger[0], g_kbLaserConsumesTrigger[1] };
 				if (!hardSuppressLaser) {
@@ -3089,27 +3107,92 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					}
 				}
 
-				// Hand switch: a trigger press while pointing at the quad claims
-				// the pointer (takes effect this frame for input, next frame for
-				// the beam visual — imperceptible).
-				for (int side = 0; !suppressLaser && !mapVisualOnly && side < 2; side++) {
+				// Pointer authority follows the hand the user is actually aiming with.
+				// Measure motion from a per-hand anchor instead of comparing consecutive
+				// samples so slow deliberate movement eventually crosses the dead zone.
+				// This prevents normal tracking noise from making two stationary hands
+				// fight over Skyrim's single menu arrow.
+				const bool ownerLocked = menuLaser->IsTriggerDown(s_activeLaserHand) ||
+				    menuLaser->IsTriggerReleased(s_activeLaserHand);
+				constexpr float kAuthorityMotionThreshold = 0.008f; // normalized quad units (~16 px at 2K)
+				constexpr float kAuthorityMotionThresholdSq =
+				    kAuthorityMotionThreshold * kAuthorityMotionThreshold;
+				bool meaningfulMotion[2] = {};
+				float motionDistanceSq[2] = {};
+				for (int side = 0; side < 2; ++side) {
+					if (suppressLaser || mapNativeOnly || !menuLaser->IsHit(side)) {
+						s_authorityAnchorValid[side] = false;
+						continue;
+					}
+
+					const float u = menuLaser->GetHitU(side);
+					const float v = menuLaser->GetHitV(side);
+					if (!s_authorityAnchorValid[side]) {
+						s_authorityAnchorU[side] = u;
+						s_authorityAnchorV[side] = v;
+						s_authorityAnchorValid[side] = true;
+						continue;
+					}
+
+					const float du = u - s_authorityAnchorU[side];
+					const float dv = v - s_authorityAnchorV[side];
+					motionDistanceSq[side] = du * du + dv * dv;
+					meaningfulMotion[side] = motionDistanceSq[side] >= kAuthorityMotionThresholdSq;
+				}
+
+				// A click is always an explicit ownership request. Preserve the trigger
+				// mask even if another hand currently owns a drag, but do not transfer
+				// the cursor until that drag's release edge has reached the SKSE bridge.
+				int clickedHand = -1;
+				for (int side = 0; !suppressLaser && !mapNativeOnly && side < 2; side++) {
 					if (menuLaser->IsHit(side) && menuLaser->IsTriggerPressed(side)) {
 						g_menuLaserSuppressUntilRelease[side].store(
 						    true, std::memory_order_release);
-						if (side != s_activeLaserHand)
-							s_activeLaserHand = side;
+						clickedHand = side;
 					}
 				}
 
-				// MapMenu is visual-only: never claim or mask its native input.
-				// For flat menus, own the physical trigger only while the beam is
+				int authorityCandidate = -1;
+				if (!ownerLocked && !suppressLaser && !mapNativeOnly) {
+					if (clickedHand >= 0) {
+						authorityCandidate = clickedHand;
+					} else if (!menuLaser->IsHit(s_activeLaserHand) &&
+					    menuLaser->IsHit(1 - s_activeLaserHand)) {
+						// Do not strand the arrow on a hand that has left the quad.
+						authorityCandidate = 1 - s_activeLaserHand;
+					} else if (meaningfulMotion[0] || meaningfulMotion[1]) {
+						if (meaningfulMotion[0] && meaningfulMotion[1])
+							authorityCandidate = motionDistanceSq[1] > motionDistanceSq[0] ? 1 : 0;
+						else
+							authorityCandidate = meaningfulMotion[0] ? 0 : 1;
+					}
+				}
+
+				const bool authorityEvent = authorityCandidate >= 0;
+				if (authorityEvent)
+					s_activeLaserHand = authorityCandidate;
+
+				// Consume every threshold crossing, including motion rejected during a
+				// drag. Reset both anchors after a real authority event so stale movement
+				// from the other hand cannot steal the cursor on the following frame.
+				for (int side = 0; side < 2; ++side) {
+					if ((authorityEvent || meaningfulMotion[side]) && menuLaser->IsHit(side)) {
+						s_authorityAnchorU[side] = menuLaser->GetHitU(side);
+						s_authorityAnchorV[side] = menuLaser->GetHitV(side);
+						s_authorityAnchorValid[side] = true;
+					}
+				}
+				menuLaser->SetActiveHand(s_activeLaserHand);
+
+				// MapMenu is entirely native: never render, claim, or mask its input.
+				// For other flat menus, own the physical trigger only while the beam is
 				// ON the quad, plus a short grace window after it leaves. The
 				// grace covers the one-frame off-quad transition where Skyrim
 				// could otherwise see the same trigger our Scaleform bridge
 				// handled and activate the newly opened row underneath it. Off
 				// the quad past the grace, the full legacy menu bindings
 				// (trigger included) belong to the game again.
-				g_menuLaserActive = !suppressLaser && !mapVisualOnly &&
+				g_menuLaserActive = !suppressLaser && !mapNativeOnly &&
 				    (menuLaser->IsHit(0) || menuLaser->IsHit(1));
 				static ULONGLONG s_lastQuadHitMs[2] = {};
 				constexpr ULONGLONG kTriggerGraceMs = 250;
@@ -3118,7 +3201,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						s_lastQuadHitMs[side] = GetTickCount64();
 					const bool recentHit = s_lastQuadHitMs[side] != 0
 					    && GetTickCount64() - s_lastQuadHitMs[side] <= kTriggerGraceMs;
-					g_menuLaserConsumesTrigger[side] = !suppressLaser && !mapVisualOnly &&
+					g_menuLaserConsumesTrigger[side] = !suppressLaser && !mapNativeOnly &&
 					    !kbHit[side] && menuLaser->IsRayValid(side) && recentHit;
 				}
 
@@ -3133,13 +3216,13 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				static ULONGLONG s_adjustLastSave = 0;
 
 				// Left thumbstick click toggles local adjustment mode
-				if (!mapVisualOnly && menuLaser->IsThumbstickPressed(0)) {
+				if (!mapNativeOnly && menuLaser->IsThumbstickPressed(0)) {
 					s_adjustModeLocal = !s_adjustModeLocal;
 					OOVR_LOGF("Menu quad adjustment mode: %s", s_adjustModeLocal ? "ON" : "OFF");
 				}
 
 				// Active if either local toggle OR ini toggle is on
-				bool s_adjustMode = !mapVisualOnly && (s_adjustModeLocal || s_mqThumbstickAdjust);
+				bool s_adjustMode = !mapNativeOnly && (s_adjustModeLocal || s_mqThumbstickAdjust);
 
 				// X button cycles right-stick parameter
 				if (s_adjustMode && menuLaser->IsXButtonPressed(0)) {
@@ -3160,7 +3243,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				static char s_mouseCalMenu[64] = {};
 				static float s_mouseCalTargetU[2] = {};
 				static float s_mouseCalTargetV[2] = {};
-				if (!mapVisualOnly && !s_adjustMode && menuLaser->IsXButtonPressed(0)) {
+				if (!mapNativeOnly && !s_adjustMode && menuLaser->IsXButtonPressed(0)) {
 					if (strcmp(s_mouseCalMenu, s_lastMenuName) != 0) {
 						s_mouseCalStep = 0;
 						snprintf(s_mouseCalMenu, sizeof(s_mouseCalMenu), "%s", s_lastMenuName);
@@ -3309,13 +3392,13 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				// The plugin drives the game's own MenuCursor and mouse button
 				// events through BSInputEventQueue on the game thread. No window
 				// messages, no Scaleform, on either side. Only the owning hand
-				// (last to click) feeds the pointer.
+				// (last meaningfully moved or clicked on the quad) feeds the pointer.
 				if (s_pTransform) {
 					bool wroteHit = false;
 					int side = s_activeLaserHand;
 					s_pTransform->laserHand = static_cast<uint8_t>(side);
 					s_pTransform->laserTriggerHeld = menuLaser->IsTriggerDown(side) ? 1 : 0;
-					if (!suppressLaser && !mapVisualOnly && menuLaser->IsHit(side)) {
+					if (!suppressLaser && !mapNativeOnly && menuLaser->IsHit(side)) {
 						// Calibration trims retained (default identity)
 						float adjU = physicalBookMode ? menuLaser->GetHitU(side) :
 						    menuLaser->GetHitU(side) * s_mqMouseScaleX + s_mqMouseOffsetX;
@@ -3333,7 +3416,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					// A held drag can leave the quad before the trigger comes up. Publish
 					// that owning-hand release even without a current hit so SKSE can
 					// always close the exact interaction that received DOWN.
-					if (!suppressLaser && !mapVisualOnly && menuLaser->IsTriggerReleased(side))
+					if (!suppressLaser && !mapNativeOnly && menuLaser->IsTriggerReleased(side))
 						s_pTransform->laserReleaseSeq++;
 					if (!wroteHit)
 						s_pTransform->laserActive = 0;

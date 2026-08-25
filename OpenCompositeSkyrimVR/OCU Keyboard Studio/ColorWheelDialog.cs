@@ -45,11 +45,12 @@ internal sealed class ColorWheelDialog : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ClientSize = new Size(480, 365);
-        BackColor = Color.FromArgb(14, 17, 22);
-        ForeColor = Color.FromArgb(237, 240, 245);
+        BackColor = StudioTheme.Window;
+        ForeColor = StudioTheme.TextPrimary;
         Font = new Font("Segoe UI", 9.5f);
+        StudioTheme.EnableDarkWindowChrome(this);
 
-        var wheelPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14) };
+        var wheelPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14), BackColor = StudioTheme.Window };
         wheelPanel.Controls.Add(_wheel);
 
         var side = new FlowLayoutPanel
@@ -58,11 +59,12 @@ internal sealed class ColorWheelDialog : Form
             Width = 145,
             Padding = new Padding(10, 15, 10, 10),
             FlowDirection = FlowDirection.TopDown,
-            WrapContents = false
+            WrapContents = false,
+            BackColor = StudioTheme.Surface
         };
-        side.Controls.Add(new Label { Text = "BRIGHTNESS", AutoSize = true, ForeColor = Color.FromArgb(155, 165, 177) });
+        side.Controls.Add(new Label { Text = "BRIGHTNESS", AutoSize = true, ForeColor = StudioTheme.TextMuted });
         side.Controls.Add(_value);
-        side.Controls.Add(new Label { Text = "OPACITY", AutoSize = true, ForeColor = Color.FromArgb(155, 165, 177) });
+        side.Controls.Add(new Label { Text = "OPACITY", AutoSize = true, ForeColor = StudioTheme.TextMuted });
         side.Controls.Add(_alpha);
         side.Controls.Add(_swatch);
         side.Controls.Add(_hex);
@@ -72,10 +74,11 @@ internal sealed class ColorWheelDialog : Form
             Dock = DockStyle.Bottom,
             Height = 55,
             Padding = new Padding(0, 8, 12, 8),
-            FlowDirection = FlowDirection.RightToLeft
+            FlowDirection = FlowDirection.RightToLeft,
+            BackColor = StudioTheme.Surface
         };
-        var ok = DialogButton("Use Color", DialogResult.OK, Color.FromArgb(28, 86, 67));
-        var cancel = DialogButton("Cancel", DialogResult.Cancel, Color.FromArgb(38, 43, 51));
+        var ok = DialogButton("Use Color", DialogResult.OK);
+        var cancel = DialogButton("Cancel", DialogResult.Cancel);
         buttons.Controls.Add(ok);
         buttons.Controls.Add(cancel);
         AcceptButton = ok;
@@ -105,20 +108,17 @@ internal sealed class ColorWheelDialog : Form
         _hex.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}{color.A:X2}";
     }
 
-    private static Button DialogButton(string text, DialogResult result, Color backColor)
+    private static Button DialogButton(string text, DialogResult result)
     {
-        var button = new Button
+        var button = new ModernPillButton
         {
             Text = text,
             DialogResult = result,
             Width = 100,
             Height = 32,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = backColor,
-            ForeColor = Color.White,
+            ForeColor = StudioTheme.TextPrimary,
             Margin = new Padding(7, 0, 0, 0)
         };
-        button.FlatAppearance.BorderColor = Color.FromArgb(62, 190, 143);
         return button;
     }
 }

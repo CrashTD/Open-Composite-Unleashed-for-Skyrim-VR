@@ -156,6 +156,57 @@ namespace OpenCompositeConfigurator
             }
         }
 
+        // Studio always writes into the OCU mod's root payload. MO2 deploys
+        // that payload through Root Builder; Vortex/manual installs need the
+        // normal runtime synchronizer and then a narrow merge of only the two
+        // keyboard-selection keys into the live game-root INI.
+        public static string RunKeyboardDeploymentCheck(IWin32Window owner, string exeDir)
+        {
+            string runtimeStatus = RunStartupCheck(owner, exeDir);
+            try
+            {
+                if (IsRunningUnderMo2() || LooksLikeMo2ModFolder(exeDir))
+                    return runtimeStatus;
+
+                string payloadDir = Path.Combine(exeDir, "root");
+                string payloadLayout = Path.Combine(payloadDir, "OCUKeyboard.kb");
+                if (!File.Exists(payloadLayout))
+                    return runtimeStatus;
+
+                string gameDir = FindGameDir(owner, exeDir);
+                if (string.IsNullOrEmpty(gameDir))
+                    return runtimeStatus;
+                if (Process.GetProcessesByName("SkyrimVR").Length > 0)
+                    return runtimeStatus;
+
+                string[] keyboardFiles = Directory.EnumerateFiles(payloadDir, "OCUKeyboard*", SearchOption.TopDirectoryOnly)
+                    .ToArray();
+                bool completelyDeployed = keyboardFiles.Length > 0 && keyboardFiles.All(source =>
+                {
+                    string target = Path.Combine(gameDir, Path.GetFileName(source));
+                    return File.Exists(target) && FilesIdentical(source, target);
+                });
+                if (!completelyDeployed)
+                    return runtimeStatus;
+
+                string payloadIniPath = Path.Combine(payloadDir, "opencomposite.ini");
+                string gameIniPath = Path.Combine(gameDir, "opencomposite.ini");
+                var payloadIni = new IniFile();
+                payloadIni.Load(payloadIniPath);
+                var gameIni = new IniFile();
+                gameIni.Load(gameIniPath);
+                gameIni.Set("keyboard", "layout", payloadIni.Get("keyboard", "layout", "auto"));
+                gameIni.Set("keyboard", "design", payloadIni.Get("keyboard", "design", "keyboard-studio"));
+                gameIni.Save(gameIniPath);
+
+                return runtimeStatus + " | Keyboard and artwork ready in Skyrim VR root";
+            }
+            catch (Exception ex)
+            {
+                return runtimeStatus + " | Keyboard deployment check failed: " + ex.Message;
+            }
+        }
+
         // Explicit, recoverable OCU removal. Unlike the automatic startup sync,
         // this is allowed for an EXE stored in an MO2 mod folder because the user
         // deliberately requested recovery. It still refuses an MO2/USVFS-injected

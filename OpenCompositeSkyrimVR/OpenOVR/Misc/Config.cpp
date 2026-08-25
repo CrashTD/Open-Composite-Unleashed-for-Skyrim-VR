@@ -396,6 +396,9 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(bool, vrsEyeTracked);
 		CFGOPT(float, vrsInnerRadius);
 		CFGOPT(float, vrsMidRadius);
+		CFGOPT(bool, vrsCompatibilityMode);
+		// Legacy no-op accepted so older INIs do not emit an unknown-key warning.
+		// The configurator removes it the next time settings are saved.
 		CFGOPT(float, vrsOuterRadius);
 		CFGOPT(bool, vrsFavorHorizontal);
 		CFGOPT(bool, dlssEnabled);

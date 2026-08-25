@@ -18,16 +18,19 @@ public:
 	void SetMenuQuad(XrPosef pose, XrExtent2Df size);
 
 	// Per-hand beam/dot visibility. Hits and trigger edges are still tracked
-	// for hidden hands (so the other hand can claim the pointer by clicking);
-	// only the rendering is suppressed. Both default to visible.
+	// for hidden hands; only rendering is suppressed. Flat menus normally show
+	// both hands while one active hand owns Skyrim's single Scaleform cursor.
 	void SetRenderHand(int side, bool show) { renderHand[side] = show; }
+	void SetActiveHand(int side) { activeHand = side == 0 ? 0 : 1; }
 
-	// MapMenu keeps Skyrim's native, depth-aware shaft. OCU supplies only the
-	// endpoint dot; the SKSE bridge recolors Skyrim's own shaft white/blue.
+	// MapMenu retains Skyrim's native input and depth test. When the SKSE bridge
+	// supplies its read-only native hit distance, OCU draws an owned thick beam
+	// and dot along the current OpenXR controller ray. Skyrim geometry is never
+	// retained or modified by this renderer.
 	void SetMapVisualMode(bool enabled) { mapVisualMode = enabled; }
-	void SetMapVisualHit(bool valid, const XrVector3f& point) {
-		mapVisualHitValid = valid;
-		mapVisualHitPoint = point;
+	void SetMapVisualDistance(bool valid, float distanceMeters) {
+		mapVisualDistanceValid = valid;
+		mapVisualDistanceMeters = distanceMeters;
 	}
 
 	// Toggle debug quad visibility and set its opacity (0-100)
@@ -84,12 +87,13 @@ private:
 	ID3D11Device* dev;
 	ID3D11DeviceContext* ctx = nullptr;
 
-	// Beam textures are shared by both hand layers. State 0=idle, 1=clicked.
-	XrSwapchain beamChain[2] = {};
+	// Beam textures are shared by both hand layers. State 0=idle,
+	// 1=clicked, 2=standby idle (same appearance as state 0).
+	XrSwapchain beamChain[3] = {};
 	XrCompositionLayerQuad beamLayer[2] = {};
 
-	// Dot textures are shared by both hand layers. State 0=idle, 1=clicked.
-	XrSwapchain dotChain[2] = {};
+	// Dot textures use the same idle/clicked/standby state convention.
+	XrSwapchain dotChain[3] = {};
 	XrCompositionLayerQuad dotLayer[2] = {};
 
 	// Debug quad overlay — semi-transparent rectangle showing the menu hit area
@@ -109,8 +113,8 @@ private:
 	bool menuValid = false;
 	bool showDebugQuad = true;
 	bool mapVisualMode = false;
-	bool mapVisualHitValid = false;
-	XrVector3f mapVisualHitPoint = {};
+	bool mapVisualDistanceValid = false;
+	float mapVisualDistanceMeters = 0.0f;
 	int debugOpacityPercent = 20;
 	int debugColorR = 30, debugColorG = 100, debugColorB = 30; // fill color (default green)
 
@@ -119,9 +123,10 @@ private:
 	bool rayValid[2] = {};
 	float hitU[2] = {}, hitV[2] = {};
 
-	// Per-hand render visibility (pointer-ownership model: only the hand
-	// that last clicked draws its beam/dot)
+	// Both menu beams may render, but only activeHand publishes coordinates and
+	// trigger edges to Skyrim's single Scaleform cursor.
 	bool renderHand[2] = { true, true };
+	int activeHand = 1;
 
 	// Trigger tracking
 	bool triggerState[2] = {}, triggerLast[2] = {};

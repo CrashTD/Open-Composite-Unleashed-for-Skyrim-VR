@@ -214,6 +214,7 @@ namespace OpenCompositeConfigurator
             ["vrsEyeTracked"] = "vrs",
             ["vrsInnerRadius"] = "vrs",
             ["vrsMidRadius"] = "vrs",
+            ["vrsCompatibilityMode"] = "vrs",
             ["vrsOuterRadius"] = "vrs",
             ["vrsFavorHorizontal"] = "vrs",
 

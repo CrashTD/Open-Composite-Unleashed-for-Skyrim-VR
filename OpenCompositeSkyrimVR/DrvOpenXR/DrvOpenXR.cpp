@@ -299,6 +299,17 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 #endif
 
 	OOVR_FAILED_XR_ABORT(xrCreateInstance(&createInfo, &xr_instance));
+	// Record the actual active runtime, not merely the headset/system name. This
+	// distinguishes native PimaxXR/Pimax Play from SteamVR's OpenXR bridge when
+	// diagnosing eye-gaze behavior.
+	XrInstanceProperties instanceProperties{ XR_TYPE_INSTANCE_PROPERTIES };
+	if (XR_SUCCEEDED(xrGetInstanceProperties(xr_instance, &instanceProperties))) {
+		OOVR_LOGF("OpenXR runtime: %s %u.%u.%u",
+		    instanceProperties.runtimeName,
+		    XR_VERSION_MAJOR(instanceProperties.runtimeVersion),
+		    XR_VERSION_MINOR(instanceProperties.runtimeVersion),
+		    XR_VERSION_PATCH(instanceProperties.runtimeVersion));
+	}
 
 #ifdef _DEBUG
 	XrDebugUtilsMessengerCreateInfoEXT dbgCreateInfo{};

@@ -63,6 +63,24 @@
 ; Default: true
 ;vrsEyeTracked=true
 
+; Skyrim shader compatibility. Caps peripheral VRS at half-rate (2x1/1x2)
+; instead of 2x2 to avoid terrain and alpha-tested foliage corruption.
+; Disable only when deliberately selecting a more aggressive performance preset.
+; Default: true
+;vrsCompatibilityMode=true
+
+; Radius of the full-rate 1x1 area. Outside this radius, Compatibility mode
+; uses half-rate shading. Default: 0.60
+;vrsInnerRadius=0.60
+
+; In performance mode, radius of the half-rate ring; 2x2 begins outside it.
+; Ignored while vrsCompatibilityMode=true. Default: 0.80
+;vrsMidRadius=0.80
+
+; Choose whether half-rate tiles use 2x1 (true) or 1x2 (false).
+; Default: true
+;vrsFavorHorizontal=true
+
 ; Render the default OpenComposite controller models.
 ; Set to false if you prefer in-game hand models or use a mod like VRIK.
 ; Default: true

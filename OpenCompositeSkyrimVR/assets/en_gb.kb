@@ -1,4 +1,4 @@
-# British English keyboard
+# OCU English keyboard (US number-row symbols)
 
 width 15
 
@@ -32,8 +32,8 @@ key \f12 \f12 13.25 0 1.05 1
 .label F12
 
 # Number row
-key ` ¬ 0 1
-bank 1234567890-= !"£$%^&*()_+
+key ` ~ 0 1
+bank 1234567890-= !@#$%^&*()_+
 key \b \b
 .label back
 .spans_to_right true

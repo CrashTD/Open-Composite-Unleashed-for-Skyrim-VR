@@ -3,21 +3,13 @@
 #ifdef OC_HAS_NVAPI
 
 #include "VRSManager.h"
+#include "VRSPattern.h"
 #include "../Misc/Config.h"
 #include "../logging.h"
 
 #include <nvapi.h>
 #include <cmath>
 #include <cstring>
-
-static uint8_t DistanceToVRSLevel(float distance, float innerR, float midR, float outerR)
-{
-	if (distance < innerR)
-		return 0; // Full rate (1x1)
-	if (distance < midR)
-		return 1; // Half rate (2x1 or 1x2)
-	return 2; // Quarter rate (2x2)
-}
 
 VRSManager::~VRSManager()
 {
@@ -83,16 +75,21 @@ void VRSManager::UpdatePatterns(int eyeWidth, int eyeHeight)
 	// Check if config changed
 	float innerR = oovr_global_configuration.VrsInnerRadius();
 	float midR = oovr_global_configuration.VrsMidRadius();
-	float outerR = oovr_global_configuration.VrsOuterRadius();
+	bool compatibilityMode = oovr_global_configuration.VrsCompatibilityMode();
 	bool favorH = oovr_global_configuration.VrsFavorHorizontal();
 
 	bool configChanged = (innerR != cachedInnerRadius || midR != cachedMidRadius ||
-	    outerR != cachedOuterRadius || favorH != cachedFavorHorizontal);
+	    compatibilityMode != cachedCompatibilityMode || favorH != cachedFavorHorizontal);
 
 	cachedInnerRadius = innerR;
 	cachedMidRadius = midR;
-	cachedOuterRadius = outerR;
+	cachedCompatibilityMode = compatibilityMode;
 	cachedFavorHorizontal = favorH;
+	if (configChanged) {
+		OOVR_LOGF("VRS pattern: %s, inner=%.2f mid=%.2f half-axis=%s",
+		    compatibilityMode ? "compatibility (max half-rate)" : "performance (up to 2x2)",
+		    innerR, midR, favorH ? "horizontal" : "vertical");
+	}
 
 	// Force shading rate table re-upload on next ApplyForEye if config changed
 	if (configChanged)
@@ -115,7 +112,7 @@ std::vector<uint8_t> VRSManager::CreatePattern(int tileWidth, int tileHeight, fl
 {
 	float innerR = oovr_global_configuration.VrsInnerRadius();
 	float midR = oovr_global_configuration.VrsMidRadius();
-	float outerR = oovr_global_configuration.VrsOuterRadius();
+	bool compatibilityMode = oovr_global_configuration.VrsCompatibilityMode();
 
 	std::vector<uint8_t> data(tileWidth * tileHeight);
 
@@ -126,7 +123,8 @@ std::vector<uint8_t> VRSManager::CreatePattern(int tileWidth, int tileHeight, fl
 			// Distance from projection center, scaled by 2 so radius 1.0 = edge of screen
 			float distance = 2.0f * sqrtf((fx - pX) * (fx - pX) + (fy - pY) * (fy - pY));
 
-			data[y * tileWidth + x] = DistanceToVRSLevel(distance, innerR, midR, outerR);
+			data[y * tileWidth + x] = static_cast<uint8_t>(
+			    ocu_vrs_pattern::SelectLevel(distance, innerR, midR, compatibilityMode));
 		}
 	}
 

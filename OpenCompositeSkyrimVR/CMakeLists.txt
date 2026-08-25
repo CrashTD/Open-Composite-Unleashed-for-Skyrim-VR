@@ -272,6 +272,7 @@ add_library(OCCore STATIC
 	OpenOVR/Compositor/VRSManager.cpp
 	OpenOVR/Compositor/VRSManager.h
 	OpenOVR/Compositor/VRSGaze.h
+	OpenOVR/Compositor/VRSPattern.h
 	OpenOVR/Compositor/dx10compositor.cpp
 	OpenOVR/Compositor/dx12compositor.cpp
 	OpenOVR/Compositor/glcompositor.cpp

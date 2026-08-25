@@ -23,7 +23,40 @@ namespace OpenCompositeConfigurator
     {
         private bool _hovered;
         private bool _pressed;
+        private bool _brightGreen;
+        private float _shinePosition = -1f;
         private ModernButtonRole _visualRole;
+
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        internal bool BrightGreen
+        {
+            get => _brightGreen;
+            set
+            {
+                if (_brightGreen == value)
+                    return;
+                _brightGreen = value;
+                Invalidate();
+            }
+        }
+
+        // Negative disables the sweep. Values from zero through one move the
+        // diagonal sword-shine completely across the pill and its text.
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        internal float ShinePosition
+        {
+            get => _shinePosition;
+            set
+            {
+                float clamped = value < 0f ? -1f : Math.Clamp(value, 0f, 1f);
+                if (Math.Abs(_shinePosition - clamped) < 0.001f)
+                    return;
+                _shinePosition = clamped;
+                Invalidate();
+            }
+        }
 
         [Browsable(false)]
         [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -127,7 +160,17 @@ namespace OpenCompositeConfigurator
             }
             else
             {
-                switch (_visualRole)
+                if (_brightGreen)
+                {
+                    top = _pressed ? ModernUiTheme.AccentPressed
+                        : _hovered ? ModernUiTheme.AccentHover
+                        : ModernUiTheme.Accent;
+                    bottom = ModernUiTheme.AccentSoft;
+                    border = _hovered ? ModernUiTheme.KeyGlowBright : ModernUiTheme.KeyGlow;
+                    text = Color.FromArgb(240, 255, 244);
+                    glowAlpha = _hovered ? 70 : 48;
+                }
+                else switch (_visualRole)
                 {
                     case ModernButtonRole.Positive:
                         top = _pressed ? Color.FromArgb(33, 82, 66)
@@ -200,6 +243,19 @@ namespace OpenCompositeConfigurator
                 graphics.Restore(clip);
             }
 
+            if (Enabled && _shinePosition >= 0f)
+            {
+                GraphicsState shineState = graphics.Save();
+                graphics.SetClip(path);
+                float travelPadding = 70f;
+                float centerX = -travelPadding
+                    + _shinePosition * (Width + travelPadding * 2f);
+                DrawShineBand(graphics, centerX, 42f, Color.FromArgb(18, 120, 255, 166));
+                DrawShineBand(graphics, centerX, 18f, Color.FromArgb(58, 194, 255, 213));
+                DrawShineBand(graphics, centerX, 4f, Color.FromArgb(188, 235, 255, 240));
+                graphics.Restore(shineState);
+            }
+
             using (var outline = new Pen(border, Enabled ? 1.35f : 1f))
                 graphics.DrawPath(outline, path);
 
@@ -210,6 +266,25 @@ namespace OpenCompositeConfigurator
                 | TextFormatFlags.SingleLine
                 | TextFormatFlags.EndEllipsis
                 | TextFormatFlags.NoPrefix);
+
+            if (Enabled && _shinePosition >= 0f)
+            {
+                float travelPadding = 70f;
+                float centerX = -travelPadding
+                    + _shinePosition * (Width + travelPadding * 2f);
+                GraphicsState textShineState = graphics.Save();
+                graphics.SetClip(path);
+                using GraphicsPath textBand = CreateShineBand(centerX, 22f, Height);
+                graphics.SetClip(textBand, CombineMode.Intersect);
+                TextRenderer.DrawText(graphics, Text, Font, textBounds,
+                    Color.FromArgb(238, 255, 242),
+                    TextFormatFlags.HorizontalCenter
+                    | TextFormatFlags.VerticalCenter
+                    | TextFormatFlags.SingleLine
+                    | TextFormatFlags.EndEllipsis
+                    | TextFormatFlags.NoPrefix);
+                graphics.Restore(textShineState);
+            }
 
             if (Focused && ShowFocusCues)
             {
@@ -230,6 +305,28 @@ namespace OpenCompositeConfigurator
             path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0f, 90f);
             path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90f, 90f);
             path.CloseFigure();
+            return path;
+        }
+
+        private static void DrawShineBand(Graphics graphics, float centerX, float width, Color color)
+        {
+            using GraphicsPath band = CreateShineBand(centerX, width, graphics.VisibleClipBounds.Height);
+            using SolidBrush brush = new(color);
+            graphics.FillPath(brush, band);
+        }
+
+        private static GraphicsPath CreateShineBand(float centerX, float width, float height)
+        {
+            float half = width * 0.5f;
+            float slant = Math.Max(10f, height * 0.72f);
+            GraphicsPath path = new();
+            path.AddPolygon(new[]
+            {
+                new PointF(centerX + slant - half, -2f),
+                new PointF(centerX + slant + half, -2f),
+                new PointF(centerX - slant + half, height + 2f),
+                new PointF(centerX - slant - half, height + 2f)
+            });
             return path;
         }
     }

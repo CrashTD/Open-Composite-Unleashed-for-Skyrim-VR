@@ -5244,7 +5244,7 @@ void DX11Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBou
 							// DIAG: head-motion magnitude. Measure clipToClip deviation
 							// from identity — proxies total camera transform between frames.
 							// Also extract translation portion (entries 3,7,11).
-							{
+							if (oovr_debug_logging_enabled()) {
 								static int s_fsr3MVDiagCounter = 0;
 								s_fsr3MVDiagCounter++;
 								if (s_fsr3MVDiagCounter % 30 == 0 && eye == 0) {
@@ -5950,7 +5950,7 @@ void DX11Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBou
 
 						// DIAG: head-motion magnitude. Same computation as FSR3 path
 						// for apples-to-apples comparison in the logs.
-						{
+						if (oovr_debug_logging_enabled()) {
 							static int s_dlssMVDiagCounter = 0;
 							s_dlssMVDiagCounter++;
 							if (s_dlssMVDiagCounter % 30 == 0 && eye == 0) {
@@ -7529,15 +7529,31 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 		s_vrsProjX[eyeIdx] = (-tanL) / (tanR - tanL);
 		s_vrsProjY[eyeIdx] = tanU / (tanU - tanD);
 
-		// On left eye, record the single-eye texture dimensions
-		if (eyeIdx == 0) {
-			auto* src = (ID3D11Texture2D*)texture->handle;
-			D3D11_TEXTURE2D_DESC desc;
-			src->GetDesc(&desc);
-			D3D11_BOX submittedRegion = {};
-			if (ResolveSubmittedTextureRegion(desc, ptrBounds, submittedRegion)) {
-				s_vrsEyeW = submittedRegion.right - submittedRegion.left;
-				s_vrsEyeH = submittedRegion.bottom - submittedRegion.top;
+		// Record the submitted single-eye dimensions and enough one-shot geometry
+		// to diagnose atlas/bounds differences without changing the render path.
+		auto* vrsSource = (ID3D11Texture2D*)texture->handle;
+		D3D11_TEXTURE2D_DESC vrsSourceDesc{};
+		vrsSource->GetDesc(&vrsSourceDesc);
+		D3D11_BOX vrsSubmittedRegion{};
+		if (ResolveSubmittedTextureRegion(vrsSourceDesc, ptrBounds, vrsSubmittedRegion)) {
+			if (eyeIdx == 0) {
+				s_vrsEyeW = vrsSubmittedRegion.right - vrsSubmittedRegion.left;
+				s_vrsEyeH = vrsSubmittedRegion.bottom - vrsSubmittedRegion.top;
+			}
+			static bool loggedVrsInput[2] = { false, false };
+			if (!loggedVrsInput[eyeIdx]) {
+				loggedVrsInput[eyeIdx] = true;
+				const float uMin = ptrBounds ? ptrBounds->uMin : 0.0f;
+				const float uMax = ptrBounds ? ptrBounds->uMax : 1.0f;
+				const float vMin = ptrBounds ? ptrBounds->vMin : 0.0f;
+				const float vMax = ptrBounds ? ptrBounds->vMax : 1.0f;
+				OOVR_LOGF(
+				    "VRS eye input %s: texture=%ux%u region=(%u,%u)-(%u,%u) bounds=(%.3f,%.3f,%.3f,%.3f) fovTan=(L%.4f,R%.4f,U%.4f,D%.4f) opticalUV=(%.4f,%.4f)",
+				    eyeIdx == 0 ? "left" : "right", vrsSourceDesc.Width, vrsSourceDesc.Height,
+				    vrsSubmittedRegion.left, vrsSubmittedRegion.top,
+				    vrsSubmittedRegion.right, vrsSubmittedRegion.bottom,
+				    uMin, uMax, vMin, vMax, tanL, tanR, tanU, tanD,
+				    s_vrsProjX[eyeIdx], s_vrsProjY[eyeIdx]);
 			}
 		}
 
@@ -7546,15 +7562,32 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 			bool gazeUsed = false;
 			if (oovr_global_configuration.VrsEyeTracked()) {
 				if (BaseInput* input = GetUnsafeBaseInput()) {
-					XrVector3f gazeDirection{};
+					XrVector3f gazeFixationPoint{};
+					XrPosef eyeViewPoses[2] = {
+						{ { 0, 0, 0, 1 }, { 0, 0, 0 } },
+						{ { 0, 0, 0, 1 }, { 0, 0, 0 } }
+					};
 					XrTime gazeSampleTime = 0;
-					if (input->SampleEyeGazeDirection(xr_gbl->nextPredictedFrameTime,
-					        gazeDirection, gazeSampleTime)) {
+					if (input->SampleEyeGazePoint(xr_gbl->nextPredictedFrameTime,
+					        gazeFixationPoint, eyeViewPoses, gazeSampleTime)) {
 						ocu_vrs_gaze::Center target[2];
-						gazeUsed = ocu_vrs_gaze::Project(gazeDirection.x, gazeDirection.y, gazeDirection.z,
-						               s_vrsTanL[0], s_vrsTanR[0], s_vrsTanU[0], s_vrsTanD[0], target[0]) &&
-						    ocu_vrs_gaze::Project(gazeDirection.x, gazeDirection.y, gazeDirection.z,
-						        s_vrsTanL[1], s_vrsTanR[1], s_vrsTanU[1], s_vrsTanD[1], target[1]);
+						ocu_vrs_gaze::Direction eyeLocal[2];
+						gazeUsed = ocu_vrs_gaze::ProjectViewSpacePoint(
+						               gazeFixationPoint.x, gazeFixationPoint.y, gazeFixationPoint.z,
+						               eyeViewPoses[0].position.x, eyeViewPoses[0].position.y,
+						               eyeViewPoses[0].position.z,
+						               eyeViewPoses[0].orientation.x, eyeViewPoses[0].orientation.y,
+						               eyeViewPoses[0].orientation.z, eyeViewPoses[0].orientation.w,
+						               s_vrsTanL[0], s_vrsTanR[0], s_vrsTanU[0], s_vrsTanD[0],
+						               target[0], &eyeLocal[0]) &&
+						    ocu_vrs_gaze::ProjectViewSpacePoint(
+						        gazeFixationPoint.x, gazeFixationPoint.y, gazeFixationPoint.z,
+						        eyeViewPoses[1].position.x, eyeViewPoses[1].position.y,
+						        eyeViewPoses[1].position.z,
+						        eyeViewPoses[1].orientation.x, eyeViewPoses[1].orientation.y,
+						        eyeViewPoses[1].orientation.z, eyeViewPoses[1].orientation.w,
+						        s_vrsTanL[1], s_vrsTanR[1], s_vrsTanU[1], s_vrsTanD[1],
+						        target[1], &eyeLocal[1]);
 						if (gazeUsed) {
 							const XrDuration period = xr_gbl->nextPredictedFramePeriod.load(std::memory_order_acquire);
 							const float dt = period > 0 ? (float)((double)period / 1000000000.0) : (1.0f / 90.0f);
@@ -7568,10 +7601,13 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 							// First sample, then roughly every 5-10 seconds depending on
 							// refresh rate. These coordinates prove the fovea is actually
 							// following live gaze instead of merely detecting an extension.
-							if ((s_vrsGazeDiagnosticCounter++ % 600u) == 0u) {
+							if (oovr_debug_logging_enabled() &&
+							    (s_vrsGazeDiagnosticCounter++ % 600u) == 0u) {
 								OOVR_LOGF(
-								    "VRS live gaze: dir=(%.3f,%.3f,%.3f), leftUV=(%.3f,%.3f), rightUV=(%.3f,%.3f), sampleTime=%s",
-								    gazeDirection.x, gazeDirection.y, gazeDirection.z,
+								    "VRS live gaze: fixation=(%.3f,%.3f,%.3f), eyeDirL=(%.3f,%.3f,%.3f), eyeDirR=(%.3f,%.3f,%.3f), leftUV=(%.3f,%.3f), rightUV=(%.3f,%.3f), sampleTime=%s",
+								    gazeFixationPoint.x, gazeFixationPoint.y, gazeFixationPoint.z,
+								    eyeLocal[0].x, eyeLocal[0].y, eyeLocal[0].z,
+								    eyeLocal[1].x, eyeLocal[1].y, eyeLocal[1].z,
 								    s_vrsProjX[0], s_vrsProjY[0], s_vrsProjX[1], s_vrsProjY[1],
 								    gazeSampleTime == 0 ? "unavailable" : "runtime-provided");
 							}

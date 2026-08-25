@@ -867,6 +867,9 @@ void BaseInput::DestroyEyeGazeSpace()
 	if (eyeGazeSpace != XR_NULL_HANDLE)
 		OOVR_FAILED_XR_SOFT_ABORT(xrDestroySpace(eyeGazeSpace));
 	eyeGazeSpace = XR_NULL_HANDLE;
+	eyeGazeViewPoses[0] = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
+	eyeGazeViewPoses[1] = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
+	eyeGazeViewPosesValid = false;
 }
 
 void BaseInput::ResetEyeGazeActionHandle()
@@ -1400,7 +1403,8 @@ void BaseInput::CreateEyeGazeSpace()
 	OOVR_LOG("Eye gaze: action space created after action-set attach");
 }
 
-bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction, XrTime& sampleTime)
+bool BaseInput::SampleEyeGazePoint(XrTime displayTime, XrVector3f& fixationPoint,
+    XrPosef eyeViewPoses[2], XrTime& sampleTime)
 {
 	auto logState = [](int state, const char* description) {
 		// State changes caused by blinks/tracking loss can otherwise flood the log.
@@ -1416,7 +1420,9 @@ bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction
 		}
 	};
 
-	direction = { 0.0f, 0.0f, -1.0f };
+	fixationPoint = { 0.0f, 0.0f, -2.0f };
+	eyeViewPoses[0] = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
+	eyeViewPoses[1] = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
 	sampleTime = 0;
 	if (eyeGazeAction == XR_NULL_HANDLE || eyeGazeSpace == XR_NULL_HANDLE ||
 	    !xr_gbl || xr_gbl->viewSpace == XR_NULL_HANDLE || displayTime <= 0) {
@@ -1451,8 +1457,10 @@ bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction
 		logState(4, "unavailable (xrLocateSpace failed)");
 		return false;
 	}
-	if (!(location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
-		logState(5, "invalid (runtime supplied no valid gaze orientation)");
+	const XrSpaceLocationFlags requiredGazeFlags =
+	    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+	if ((location.locationFlags & requiredGazeFlags) != requiredGazeFlags) {
+		logState(5, "invalid (runtime supplied no complete gaze pose)");
 		return false;
 	}
 
@@ -1465,6 +1473,7 @@ bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction
 	}
 
 	const XrVector3f forward{ 0.0f, 0.0f, -1.0f };
+	XrVector3f direction{};
 	rotate_vector_by_quaternion(forward, location.pose.orientation, direction);
 	const float lengthSq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
 	if (!std::isfinite(lengthSq) || lengthSq < 0.5f || direction.z >= -0.01f) {
@@ -1475,6 +1484,83 @@ bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction
 	direction.x *= invLength;
 	direction.y *= invLength;
 	direction.z *= invLength;
+	// XR_EXT_eye_gaze_interaction supplies a combined-eye aim pose, not separate
+	// per-eye screen coordinates. Project a finite fixation point so the later
+	// eye transforms account for the gaze origin and IPD. Two metres matches the
+	// established OpenXR Toolkit treatment for this standard extension.
+	constexpr float kFixationDistanceMeters = 2.0f;
+	fixationPoint = {
+		location.pose.position.x + direction.x * kFixationDistanceMeters,
+		location.pose.position.y + direction.y * kFixationDistanceMeters,
+		location.pose.position.z + direction.z * kFixationDistanceMeters
+	};
+	if (!std::isfinite(fixationPoint.x) || !std::isfinite(fixationPoint.y) ||
+	    !std::isfinite(fixationPoint.z)) {
+		logState(7, "invalid (non-finite fixation point)");
+		return false;
+	}
+
+	// The gaze action is a combined-eye ray in VIEW space. It must be rotated
+	// into each XrView's local orientation before applying that eye's FOV. On a
+	// parallel headset these orientations are identity; on Pimax and other
+	// canted displays they intentionally differ.
+	bool currentViewPosesValid = false;
+	if (xr_gbl->viewSpaceViewsLatched &&
+	    (xr_gbl->latchedViewSpaceFlags &
+	        (XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT)) ==
+	        (XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT)) {
+		eyeGazeViewPoses[0] = xr_gbl->latchedViewSpaceViews[0].pose;
+		eyeGazeViewPoses[1] = xr_gbl->latchedViewSpaceViews[1].pose;
+		eyeGazeViewPosesValid = true;
+		currentViewPosesValid = true;
+	}
+
+	// Get the calibration once per session if the game has not already caused
+	// GetEyeToHeadTransform to lazy-latch it this frame. Reuse it afterward so
+	// eye tracking adds no recurring xrLocateViews call or CPU/frame-pacing cost.
+	if (!eyeGazeViewPosesValid) {
+		XrViewLocateInfo locateInfo{ XR_TYPE_VIEW_LOCATE_INFO };
+		locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+		locateInfo.displayTime = displayTime;
+		locateInfo.space = xr_gbl->viewSpace;
+		XrViewState viewState{ XR_TYPE_VIEW_STATE };
+		uint32_t viewCount = 0;
+		XrView views[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+		{
+			std::lock_guard<std::mutex> xrCallGuard(xr_session_call_mutex);
+			result = xrLocateViews(session, &locateInfo, &viewState, 2, &viewCount, views);
+		}
+		const XrViewStateFlags requiredViewFlags =
+		    XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
+		if (XR_SUCCEEDED(result) && viewCount == 2 &&
+		    (viewState.viewStateFlags & requiredViewFlags) == requiredViewFlags) {
+			eyeGazeViewPoses[0] = views[0].pose;
+			eyeGazeViewPoses[1] = views[1].pose;
+			eyeGazeViewPosesValid = true;
+			currentViewPosesValid = true;
+		}
+	}
+	if (!eyeGazeViewPosesValid) {
+		logState(10, "unavailable (per-eye VIEW-space poses missing)");
+		return false;
+	}
+
+	eyeViewPoses[0] = eyeGazeViewPoses[0];
+	eyeViewPoses[1] = eyeGazeViewPoses[1];
+	if (currentViewPosesValid) {
+		static bool loggedEyePoses = false;
+		if (!loggedEyePoses) {
+			loggedEyePoses = true;
+			OOVR_LOGF(
+			    "Eye gaze per-eye VIEW poses: Lpos=(%.5f,%.5f,%.5f) Lq=(%.5f,%.5f,%.5f,%.5f), Rpos=(%.5f,%.5f,%.5f) Rq=(%.5f,%.5f,%.5f,%.5f)",
+			    eyeViewPoses[0].position.x, eyeViewPoses[0].position.y, eyeViewPoses[0].position.z,
+			    eyeViewPoses[0].orientation.x, eyeViewPoses[0].orientation.y,
+			    eyeViewPoses[0].orientation.z, eyeViewPoses[0].orientation.w,
+			    eyeViewPoses[1].position.x, eyeViewPoses[1].position.y, eyeViewPoses[1].position.z,
+			    eyeViewPoses[1].orientation.x, eyeViewPoses[1].orientation.y,
+			    eyeViewPoses[1].orientation.z, eyeViewPoses[1].orientation.w);
+		}
+	}
 	sampleTime = gazeTime.time;
 	logState(gazeTime.time == 0 ? 8 : 9,
 	    gazeTime.time == 0 ?

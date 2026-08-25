@@ -2175,12 +2175,14 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				int textBarX = 120 + int(std::round(layout->GetTextBarOffsetX()));
 				int textStartX = textBarX + BORD + 6; // exactly matches Refresh()
 				int relX = clickTexX - textStartX;
+				const float textScale = layout->GetTextBarDesign().fontScale > 0
+				    ? layout->GetTextBarDesign().fontScale : 1.0f;
 
 				// Walk through text characters to find nearest boundary
 				int accumX = 0;
 				int newPos = 0;
 				for (int i = 0; i < (int)text.size(); i++) {
-					int charW = font->Width(text[i]);
+					int charW = std::max(1, int(std::round(font->Width(text[i]) * textScale)));
 					if (relX < accumX + charW / 2)
 						break;
 					accumX += charW;
@@ -2706,6 +2708,64 @@ int VRKeyboard::HitTestLaser(int side)
 	int marginH = 120;
 	int marginTop = 60;
 
+	// Settings controls render after the keyboard's other content, so their
+	// visible arrow rectangles must receive the same topmost hit-test priority.
+	// Authored layouts may move an arrow over the invisible MOVE strip, text bar,
+	// or key area; those underlying regions must not steal the click.
+	{
+		const int hitPad = 14;
+		auto containsArrow = [&](int groupLeft, int groupTop,
+		                         const KeyboardLayout::ControlDesign& design, bool up) {
+			const float partWidth = up ? design.upWidth : design.downWidth;
+			const float partHeight = up ? design.upHeight : design.downHeight;
+			const float offsetX = up ? design.upOffsetX : design.downOffsetX;
+			const float offsetY = up ? design.upOffsetY : design.downOffsetY;
+			const int left = groupLeft + int(std::round((design.width - partWidth) / 2.0f + offsetX));
+			const int top = groupTop + int(std::round(up ? offsetY : design.height - partHeight + offsetY));
+			const int width = std::max(4, int(std::round(partWidth)));
+			const int height = std::max(4, int(std::round(partHeight)));
+			return texX >= left - hitPad && texX < left + width + hitPad
+			    && texY >= top - hitPad && texY < top + height + hitPad;
+		};
+
+		const int rightBaseX = int(texWidth) - 106;
+		const int opacityLeft = rightBaseX + int(std::round(layout->GetOpacityControlOffsetX()));
+		const int opacityTop = 60 + int(std::round(layout->GetOpacityControlOffsetY()));
+		const auto& opacityDesign = layout->GetOpacityControlDesign();
+		if (containsArrow(opacityLeft, opacityTop, opacityDesign, true)) {
+			laserOnOpacityUp[side] = true;
+			return -8;
+		}
+		if (containsArrow(opacityLeft, opacityTop, opacityDesign, false)) {
+			laserOnOpacityDown[side] = true;
+			return -9;
+		}
+
+		const int tiltLeft = rightBaseX + int(std::round(layout->GetTiltControlOffsetX()));
+		const int tiltTop = 270 + int(std::round(layout->GetTiltControlOffsetY()));
+		const auto& tiltDesign = layout->GetTiltControlDesign();
+		if (containsArrow(tiltLeft, tiltTop, tiltDesign, true)) {
+			laserOnTiltUp[side] = true;
+			return -6;
+		}
+		if (containsArrow(tiltLeft, tiltTop, tiltDesign, false)) {
+			laserOnTiltDown[side] = true;
+			return -7;
+		}
+
+		const int sizeLeft = 39 + int(std::round(layout->GetSizeControlOffsetX()));
+		const int sizeTop = 224 + int(std::round(layout->GetSizeControlOffsetY()));
+		const auto& sizeDesign = layout->GetSizeControlDesign();
+		if (containsArrow(sizeLeft, sizeTop, sizeDesign, true)) {
+			laserOnSizeUp[side] = true;
+			return -10;
+		}
+		if (containsArrow(sizeLeft, sizeTop, sizeDesign, false)) {
+			laserOnSizeDown[side] = true;
+			return -11;
+		}
+	}
+
 	// Check invisible grab bar region (top strip of texture) — all drag
 	if (texY < GRAB_BAR_HEIGHT) {
 		laserOnGrabBar[side] = true;
@@ -2720,19 +2780,24 @@ int VRKeyboard::HitTestLaser(int side)
 		int btnStripY = textBarY - btnH - btnGap;
 
 		// Per-button rects, including per-theme art nudges (must match Refresh)
+		const auto& modeDesign = layout->GetModeButtonDesign();
+		const auto& lockDesign = layout->GetLockButtonDesign();
+		int modeBtnW = modeDesign.width > 0 ? std::max(8, int(std::round(modeDesign.width))) : CONSOLE_BTN_WIDTH;
+		int modeBtnH = modeDesign.height > 0 ? std::max(8, int(std::round(modeDesign.height))) : btnH;
+		int lockBtnW = lockDesign.width > 0 ? std::max(8, int(std::round(lockDesign.width))) : TOGGLE_BTN_WIDTH;
+		int lockBtnH = lockDesign.height > 0 ? std::max(8, int(std::round(lockDesign.height))) : btnH;
 		int modeBtnX = marginH + theme->modeBtnOffX + int(std::round(layout->GetModeButtonOffsetX()));
 		int modeBtnY = btnStripY + theme->modeBtnOffY + int(std::round(layout->GetModeButtonOffsetY()));
-		int lockBtnW = TOGGLE_BTN_WIDTH;
-		int lockBtnX = (int)texWidth - marginH - lockBtnW + theme->lockBtnOffX + int(std::round(layout->GetLockButtonOffsetX()));
+		int lockBtnX = (int)texWidth - marginH - TOGGLE_BTN_WIDTH + theme->lockBtnOffX + int(std::round(layout->GetLockButtonOffsetX()));
 		int lockBtnY = btnStripY + theme->lockBtnOffY + int(std::round(layout->GetLockButtonOffsetY()));
 
-		if (texX >= modeBtnX && texX < modeBtnX + CONSOLE_BTN_WIDTH
-		    && texY >= modeBtnY && texY < modeBtnY + btnH) {
+		if (texX >= modeBtnX && texX < modeBtnX + modeBtnW
+		    && texY >= modeBtnY && texY < modeBtnY + modeBtnH) {
 			laserOnConsole[side] = true;
 			return -5; // mode button hit
 		}
 		if (texX >= lockBtnX && texX < lockBtnX + lockBtnW
-		    && texY >= lockBtnY && texY < lockBtnY + btnH) {
+		    && texY >= lockBtnY && texY < lockBtnY + lockBtnH) {
 			laserOnToggle[side] = true;
 			return -3; // toggle button hit
 		}
@@ -2748,11 +2813,13 @@ int VRKeyboard::HitTestLaser(int side)
 	int availW = (int)texWidth - 2 * marginH;
 	int keySize = ((availW - padding) / kbWidth) - padding;
 	if (!minimal) {
+		const auto& textBarDesign = layout->GetTextBarDesign();
 		int textBarX = marginH + int(std::round(layout->GetTextBarOffsetX()));
 		int textBarY = GRAB_BAR_HEIGHT + marginTop + int(std::round(layout->GetTextBarOffsetY()));
-		int textBarH = keySize;
+		int textBarW = textBarDesign.width > 0 ? std::max(8, int(std::round(textBarDesign.width))) : availW;
+		int textBarH = textBarDesign.height > 0 ? std::max(8, int(std::round(textBarDesign.height))) : keySize;
 		if (texY >= textBarY && texY < textBarY + textBarH
-		    && texX >= textBarX && texX < textBarX + availW) {
+		    && texX >= textBarX && texX < textBarX + textBarW) {
 			laserOnTextBar[side] = true;
 			return -4; // text bar hit
 		}
@@ -2771,75 +2838,6 @@ int VRKeyboard::HitTestLaser(int side)
 
 		if (texX >= kx && texX < kx + kw && texY >= ky && texY < ky + kh)
 			return key.id;
-	}
-
-	// Hit-test opacity & tilt arrows in RIGHT margin (matches Refresh() layout)
-	{
-		const int hitPad = 14;
-		auto containsArrow = [&](int groupLeft, int groupTop,
-		                         const KeyboardLayout::ControlDesign& design, bool up) {
-			const float partWidth = up ? design.upWidth : design.downWidth;
-			const float partHeight = up ? design.upHeight : design.downHeight;
-			const float offsetX = up ? design.upOffsetX : design.downOffsetX;
-			const float offsetY = up ? design.upOffsetY : design.downOffsetY;
-			const int left = groupLeft + int(std::round((design.width - partWidth) / 2.0f + offsetX));
-			const int top = groupTop + int(std::round(up ? offsetY : design.height - partHeight + offsetY));
-			const int width = std::max(4, int(std::round(partWidth)));
-			const int height = std::max(4, int(std::round(partHeight)));
-			return texX >= left - hitPad && texX < left + width + hitPad
-			    && texY >= top - hitPad && texY < top + height + hitPad;
-		};
-		const int rightBaseX = int(texWidth) - 106;
-		const int opacLeft = rightBaseX + int(std::round(layout->GetOpacityControlOffsetX()));
-		const int opacTop = 60 + int(std::round(layout->GetOpacityControlOffsetY()));
-		const auto& opacDesign = layout->GetOpacityControlDesign();
-		if (containsArrow(opacLeft, opacTop, opacDesign, true)) {
-			laserOnOpacityUp[side] = true;
-			return -8;
-		}
-		if (containsArrow(opacLeft, opacTop, opacDesign, false)) {
-			laserOnOpacityDown[side] = true;
-			return -9;
-		}
-		const int tiltLeft = rightBaseX + int(std::round(layout->GetTiltControlOffsetX()));
-		const int tiltTop = 270 + int(std::round(layout->GetTiltControlOffsetY()));
-		const auto& tiltDesign = layout->GetTiltControlDesign();
-		if (containsArrow(tiltLeft, tiltTop, tiltDesign, true)) {
-			laserOnTiltUp[side] = true;
-			return -6;
-		}
-		if (containsArrow(tiltLeft, tiltTop, tiltDesign, false)) {
-			laserOnTiltDown[side] = true;
-			return -7;
-		}
-	}
-
-	// Hit-test size arrows in LEFT margin (matches Refresh() layout)
-	{
-		const auto& design = layout->GetSizeControlDesign();
-		const int groupLeft = 39 + int(std::round(layout->GetSizeControlOffsetX()));
-		const int groupTop = 224 + int(std::round(layout->GetSizeControlOffsetY()));
-		const int hitPad = 14;
-		auto containsArrow = [&](bool up) {
-			const float partWidth = up ? design.upWidth : design.downWidth;
-			const float partHeight = up ? design.upHeight : design.downHeight;
-			const float offsetX = up ? design.upOffsetX : design.downOffsetX;
-			const float offsetY = up ? design.upOffsetY : design.downOffsetY;
-			const int left = groupLeft + int(std::round((design.width - partWidth) / 2.0f + offsetX));
-			const int top = groupTop + int(std::round(up ? offsetY : design.height - partHeight + offsetY));
-			const int width = std::max(4, int(std::round(partWidth)));
-			const int height = std::max(4, int(std::round(partHeight)));
-			return texX >= left - hitPad && texX < left + width + hitPad
-			    && texY >= top - hitPad && texY < top + height + hitPad;
-		};
-		if (containsArrow(true)) {
-			laserOnSizeUp[side] = true;
-			return -10;
-		}
-		if (containsArrow(false)) {
-			laserOnSizeDown[side] = true;
-			return -11;
-		}
 	}
 
 	// Any empty parchment area is draggable
@@ -3639,6 +3637,11 @@ void VRKeyboard::LoadKeyboardArtwork()
 	KeyboardLayout::ImageLayer arrowPlacement;
 	arrowPlacement.file = layout->GetControlArrowFile();
 	arrowPlacement.rotation = layout->GetControlArrowRotation();
+	arrowPlacement.glowEnabled = layout->GetControlArrowGlowEnabled();
+	const uint8_t* arrowGlowColor = layout->GetControlArrowGlowColor();
+	std::copy(arrowGlowColor, arrowGlowColor + 4, arrowPlacement.glowColor);
+	arrowPlacement.glowStrength = layout->GetControlArrowGlowStrength();
+	arrowPlacement.glowRadius = layout->GetControlArrowGlowRadius();
 	arrowPlacement.breatheEnabled = layout->GetControlArrowBreatheEnabled();
 	arrowPlacement.breatheMinPercent = layout->GetControlArrowBreatheMinPercent();
 	arrowPlacement.breathePeriodSeconds = layout->GetControlArrowBreathePeriodSeconds();
@@ -4151,17 +4154,20 @@ void VRKeyboard::Refresh()
 		int btnGap = 4; // gap between buttons and text bar
 		int btnY = textBarY - btnH - btnGap;
 		int fontH = (int)font->GetLineHeight();
-		int textYOff = (btnH - fontH) / 2 + 4;
 
 		bool modeHover = (laserOnConsole[0] || laserOnConsole[1]);
 		bool lockHover = (laserOnToggle[0] || laserOnToggle[1]);
 
 		// Button positions aligned with text bar, plus per-theme art nudges
+		const auto& modeDesign = layout->GetModeButtonDesign();
+		const auto& lockDesign = layout->GetLockButtonDesign();
+		int modeBtnW = modeDesign.width > 0 ? std::max(8, int(std::round(modeDesign.width))) : CONSOLE_BTN_WIDTH;
+		int modeBtnH = modeDesign.height > 0 ? std::max(8, int(std::round(modeDesign.height))) : btnH;
+		int lockBtnW = lockDesign.width > 0 ? std::max(8, int(std::round(lockDesign.width))) : TOGGLE_BTN_WIDTH;
+		int lockBtnH = lockDesign.height > 0 ? std::max(8, int(std::round(lockDesign.height))) : btnH;
 		int modeBtnX = marginH + T.modeBtnOffX + int(std::round(layout->GetModeButtonOffsetX()));
 		int modeBtnY = btnY + T.modeBtnOffY + int(std::round(layout->GetModeButtonOffsetY()));
-		int modeBtnW = CONSOLE_BTN_WIDTH;
-		int lockBtnW = TOGGLE_BTN_WIDTH;
-		int lockBtnX = (int)desc.Width - marginH - lockBtnW + T.lockBtnOffX + int(std::round(layout->GetLockButtonOffsetX()));
+		int lockBtnX = (int)desc.Width - marginH - TOGGLE_BTN_WIDTH + T.lockBtnOffX + int(std::round(layout->GetLockButtonOffsetX()));
 		int lockBtnY = btnY + T.lockBtnOffY + int(std::round(layout->GetLockButtonOffsetY()));
 
 		// ── MODE toggle button (left) ──
@@ -4171,10 +4177,10 @@ void VRKeyboard::Refresh()
 		    : modeHover ? T.btnFillHover : sendInputOnly ? T.btnFillActive : T.btnFillIdle;
 		if (VS.topButtonPlatesEnabled) {
 			if (modernKeys) {
-				paintModernPlate(modeBtnX, modeBtnY, modeBtnW, btnH, modeFill, modeHover || sendInputOnly);
+				paintModernPlate(modeBtnX, modeBtnY, modeBtnW, modeBtnH, modeFill, modeHover || sendInputOnly);
 			} else {
-				fillArea(modeBtnX, modeBtnY, modeBtnW, btnH, KBT4(btnBorder));
-				fillArea(modeBtnX + 1, modeBtnY + 1, modeBtnW - 2, btnH - 2,
+				fillArea(modeBtnX, modeBtnY, modeBtnW, modeBtnH, KBT4(btnBorder));
+				fillArea(modeBtnX + 1, modeBtnY + 1, modeBtnW - 2, modeBtnH - 2,
 				    modeFill[0], modeFill[1], modeFill[2], modeFill[3]);
 			}
 		}
@@ -4186,8 +4192,14 @@ void VRKeyboard::Refresh()
 		        : modeHover
 		            ? tp(T.btnInkHover)
 		            : sendInputOnly ? tp(T.btnInkActive) : tp(T.btnInkIdle);
-		int modeTextW = font->Width(modeLabel);
-		print(modeBtnX + (modeBtnW - modeTextW) / 2, modeBtnY + textYOff, modeColour, modeLabel, false);
+		if (modeDesign.fontScale > 0) {
+			drawCenteredText(modeLabel, modeBtnX, modeBtnY, modeBtnW, modeBtnH,
+			    0, 0, modeDesign.fontScale, modeColour, effectiveOutline);
+		} else {
+			int modeTextW = font->Width(modeLabel);
+			int modeTextYOff = (modeBtnH - fontH) / 2 + 4;
+			print(modeBtnX + (modeBtnW - modeTextW) / 2, modeBtnY + modeTextYOff, modeColour, modeLabel, false);
+		}
 
 		// ── LOCK button (right) ──
 		const uint8_t* lockFill = customStyle
@@ -4195,10 +4207,10 @@ void VRKeyboard::Refresh()
 		    : headLocked ? T.btnFillActive : lockHover ? T.btnFillHover : T.btnFillIdle;
 		if (VS.topButtonPlatesEnabled) {
 			if (modernKeys) {
-				paintModernPlate(lockBtnX, lockBtnY, lockBtnW, btnH, lockFill, headLocked || lockHover);
+				paintModernPlate(lockBtnX, lockBtnY, lockBtnW, lockBtnH, lockFill, headLocked || lockHover);
 			} else {
-				fillArea(lockBtnX, lockBtnY, lockBtnW, btnH, KBT4(btnBorder));
-				fillArea(lockBtnX + 1, lockBtnY + 1, lockBtnW - 2, btnH - 2,
+				fillArea(lockBtnX, lockBtnY, lockBtnW, lockBtnH, KBT4(btnBorder));
+				fillArea(lockBtnX + 1, lockBtnY + 1, lockBtnW - 2, lockBtnH - 2,
 				    lockFill[0], lockFill[1], lockFill[2], lockFill[3]);
 			}
 		}
@@ -4209,8 +4221,14 @@ void VRKeyboard::Refresh()
 		        : headLocked
 		            ? tp(T.btnInkActive)
 		            : lockHover ? tp(T.btnInkHover) : tp(T.ink);
-		int lockTextW = font->Width(L"LOCK");
-		print(lockBtnX + (lockBtnW - lockTextW) / 2, lockBtnY + textYOff, lockColour, L"LOCK", false);
+		if (lockDesign.fontScale > 0) {
+			drawCenteredText(L"LOCK", lockBtnX, lockBtnY, lockBtnW, lockBtnH,
+			    0, 0, lockDesign.fontScale, lockColour, effectiveOutline);
+		} else {
+			int lockTextW = font->Width(L"LOCK");
+			int lockTextYOff = (lockBtnH - fontH) / 2 + 4;
+			print(lockBtnX + (lockBtnW - lockTextW) / 2, lockBtnY + lockTextYOff, lockColour, L"LOCK", false);
+		}
 	}
 
 	int kbWidth = layout->GetWidth();
@@ -4457,18 +4475,38 @@ void VRKeyboard::Refresh()
 				int py = baseY + row;
 				if (px >= 0 && px < (int)desc.Width && py >= 0 && py < (int)desc.Height) {
 					pix_t& p = pixels[px + py * desc.Width];
-					p.r = col.r; p.g = col.g; p.b = col.b;
-					if (p.a < 200) p.a = 200;
+					const float alpha = col.a / 255.0f;
+					p.r = uint8_t(col.r * alpha + p.r * (1.0f - alpha));
+					p.g = uint8_t(col.g * alpha + p.g * (1.0f - alpha));
+					p.b = uint8_t(col.b * alpha + p.b * (1.0f - alpha));
+					p.a = uint8_t(std::min(255.0f, col.a + p.a * (1.0f - alpha)));
 				}
 			}
 		}
 	};
-	auto drawControlArrow = [&](int left, int topY, int arrowW, int arrowH,
+		auto drawControlArrow = [&](int left, int topY, int arrowW, int arrowH,
 	                            bool pointUp, pix_t col, bool hover) {
 		const int cx = left + arrowW / 2;
 		if (hover) {
 			fillArea(left - 3, topY - 3, arrowW + 6, arrowH + 6,
 			    effectiveHoverPlate[0], effectiveHoverPlate[1], effectiveHoverPlate[2], effectiveHoverPlate[3]);
+		}
+		if (layout->GetControlArrowGlowEnabled() && layout->GetControlArrowGlowStrength() > 0) {
+			KeyboardLayout::ImageLayer glowPulse;
+			glowPulse.breatheEnabled = layout->GetControlArrowBreatheEnabled();
+			glowPulse.breatheMinPercent = layout->GetControlArrowBreatheMinPercent();
+			glowPulse.breathePeriodSeconds = layout->GetControlArrowBreathePeriodSeconds();
+			glowPulse.breathePhaseDegrees = layout->GetControlArrowBreathePhaseDegrees();
+			const float pulse = breatheMultiplier(glowPulse);
+			const uint8_t* glow = layout->GetControlArrowGlowColor();
+			const int radius = std::clamp(layout->GetControlArrowGlowRadius(), 1, 48);
+			const float strength = std::clamp(layout->GetControlArrowGlowStrength(), 0, 100) / 100.0f;
+			for (int ring = radius; ring >= 1; --ring) {
+				const float falloff = 1.0f - float(ring) / float(radius + 1);
+				const uint8_t alpha = uint8_t(std::clamp(glow[3] * strength * pulse * falloff * 0.18f, 0.0f, 255.0f));
+				drawTriangle(cx, topY - ring, arrowH + ring * 2, arrowW + ring * 2,
+				    pointUp, pix_t{ glow[0], glow[1], glow[2], alpha });
+			}
 		}
 		if (!customControlArrow.pixels.empty()) {
 			KeyboardLayout::ImageLayer placement = customControlArrow.placement;
@@ -4552,34 +4590,44 @@ void VRKeyboard::Refresh()
 
 	if (!minimal) {
 		// Text input bar — subtle border on parchment (shifted below grab bar)
+		const auto& textBarDesign = layout->GetTextBarDesign();
 		int textBarX = marginH + int(std::round(layout->GetTextBarOffsetX()));
 		int textBarY = GRAB_BAR_HEIGHT + marginTop + int(std::round(layout->GetTextBarOffsetY()));
-		int textBarW = (int)desc.Width - 2 * marginH;
+		int textBarW = textBarDesign.width > 0 ? std::max(8, int(std::round(textBarDesign.width))) : (int)desc.Width - 2 * marginH;
+		int textBarH = textBarDesign.height > 0 ? std::max(8, int(std::round(textBarDesign.height))) : keySize;
 		if (VS.inputBarPlateEnabled) {
 			// Faint 1px border. Visibility is independent of the text/caret hit area.
 			fillArea(textBarX, textBarY, textBarW, 1,
 			    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
-			fillArea(textBarX, textBarY + keySize - 1, textBarW, 1,
+			fillArea(textBarX, textBarY + textBarH - 1, textBarW, 1,
 			    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
-			fillArea(textBarX, textBarY, 1, keySize,
+			fillArea(textBarX, textBarY, 1, textBarH,
 			    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
-			fillArea(textBarX + textBarW - 1, textBarY, 1, keySize,
+			fillArea(textBarX + textBarW - 1, textBarY, 1, textBarH,
 			    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
 		}
 
 		if (!sendInputOnly) {
 			// Show typed text with blinking cursor (game-opened keyboard only)
 			pix_t targetColour = useWhiteInk ? pix_t{ 255, 255, 255, 255 } : tp(effectiveInk);
-			print(textBarX + BORD + 6, textBarY + BORD + 4, targetColour, text);
+			const float textScale = textBarDesign.fontScale > 0 ? textBarDesign.fontScale : 1.0f;
+			const int textStartX = textBarX + BORD + 6;
+			if (textBarDesign.fontScale > 0 && !text.empty()) {
+				int textWidth = std::max(1, int(std::round(font->Width(text) * textScale)));
+				drawCenteredText(text, textStartX, textBarY, textWidth, textBarH,
+				    0, 0, textScale, targetColour, effectiveOutline);
+			} else {
+				print(textStartX, textBarY + BORD + 4, targetColour, text);
+			}
 
 			// Blinking text cursor
 			bool cursorVisible = ((GetTickCount64() / 500) % 2) == 0;
 			if (cursorVisible) {
-				int cursorX = textBarX + BORD + 6;
+				int cursorX = textStartX;
 				for (int i = 0; i < cursorPos && i < (int)text.size(); i++)
-					cursorX += font->Width(text[i]);
+					cursorX += std::max(1, int(std::round(font->Width(text[i]) * textScale)));
 				int cursorY = textBarY + BORD + 2;
-				int cursorH = keySize - BORD * 2 - 4;
+				int cursorH = std::max(2, textBarH - BORD * 2 - 4);
 				fillArea(cursorX, cursorY, 2, cursorH, targetColour.r, targetColour.g, targetColour.b, 255);
 			}
 		}

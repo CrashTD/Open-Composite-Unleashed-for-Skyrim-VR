@@ -11,6 +11,12 @@ internal static class StudioSelfTest
             var document = KeyboardDocument.Load(layoutPath);
             if (document.Keys.Count < 60)
                 throw new InvalidDataException($"Expected the full OCU layout, got only {document.Keys.Count} keys.");
+            KeyboardKey numberThree = document.Keys.Single(key => key.Character == '3');
+            if (numberThree.ShiftCharacter != '#')
+                throw new InvalidDataException("The bundled number row does not map Shift+3 to #.");
+            if (!PhysicalKeyboardTranslator.TryTranslate(Keys.PrintScreen, out PhysicalKeyAssignment printScreen)
+                || printScreen.Normal != '\x1F' || printScreen.Shifted != '\x1F')
+                throw new InvalidDataException("Physical-key capture did not translate Print Screen to OCU's supported output.");
 
             KeyboardKey f10 = document.Keys.Single(key => key.Label == "F10");
             f10.LabelOffsetY = -1;
@@ -93,10 +99,19 @@ internal static class StudioSelfTest
             document.TiltControlOffsetY = 9;
             document.TextBarOffsetX = 14;
             document.TextBarOffsetY = -7;
+            document.TextBarWidth = 700;
+            document.TextBarHeight = 50;
+            document.TextBarFontScale = 0.8f;
             document.ModeButtonOffsetX = 19;
             document.ModeButtonOffsetY = 8;
+            document.ModeButtonWidth = 240;
+            document.ModeButtonHeight = 40;
+            document.ModeButtonFontScale = 0.9f;
             document.LockButtonOffsetX = -11;
             document.LockButtonOffsetY = 6;
+            document.LockButtonWidth = 140;
+            document.LockButtonHeight = 36;
+            document.LockButtonFontScale = 1.1f;
             document.SizeControlDesign.Width = 128;
             document.SizeControlDesign.Height = 116;
             document.SizeControlDesign.UpOffsetX = 11;
@@ -116,6 +131,10 @@ internal static class StudioSelfTest
             document.ControlArrowImagePath = Path.Combine(assets, "spacebar.png");
             document.ControlArrowFileName = "OCUKeyboardControlArrow.png";
             document.ControlArrowRotation = 12;
+            document.ControlArrowGlowEnabled = true;
+            document.ControlArrowGlowColor = Color.FromArgb(230, 70, 210, 255);
+            document.ControlArrowGlowStrength = 63;
+            document.ControlArrowGlowRadius = 9;
             document.ControlArrowBreatheEnabled = true;
             document.ControlArrowBreatheMinPercent = 40;
             document.ControlArrowBreathePeriodSeconds = 3;
@@ -131,6 +150,13 @@ internal static class StudioSelfTest
             string? detectedRoot = MainForm.FindOcuRootFromStudioDirectory(hostedStudio);
             if (!string.Equals(Path.GetFullPath(hostedRoot), detectedRoot, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Studio did not auto-detect its containing OCU mod root.");
+            string? explicitRoot = MainForm.ResolveSelectedOcuRoot(hostFixture);
+            if (!string.Equals(Path.GetFullPath(hostedRoot), explicitRoot, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Studio did not resolve the OCU root explicitly supplied by Configurator.");
+            string? launchRoot = Program.GetOptionValue(
+                ["--unrelated", "value", "--ocu-root", hostFixture], "--ocu-root");
+            if (!string.Equals(hostFixture, launchRoot, StringComparison.Ordinal))
+                throw new InvalidDataException("Studio did not parse Configurator's explicit OCU root handoff.");
             string roundTrip = Path.Combine(outputDirectory, "keyboard-studio-roundtrip.kb");
             document.Save(roundTrip);
             KeyboardDocument loaded = KeyboardDocument.Load(roundTrip);
@@ -176,8 +202,14 @@ internal static class StudioSelfTest
                 || Math.Abs(loaded.Sprites[1].Rotation - 7f) > 0.001f
                 || loaded.SizeControlOffsetX != 8 || loaded.TiltControlOffsetY != 9
                 || loaded.TextBarOffsetX != 14 || loaded.TextBarOffsetY != -7
+                || loaded.TextBarWidth != 700 || loaded.TextBarHeight != 50
+                || Math.Abs(loaded.TextBarFontScale - 0.8f) > 0.001f
                 || loaded.ModeButtonOffsetX != 19 || loaded.ModeButtonOffsetY != 8
+                || loaded.ModeButtonWidth != 240 || loaded.ModeButtonHeight != 40
+                || Math.Abs(loaded.ModeButtonFontScale - 0.9f) > 0.001f
                 || loaded.LockButtonOffsetX != -11 || loaded.LockButtonOffsetY != 6
+                || loaded.LockButtonWidth != 140 || loaded.LockButtonHeight != 36
+                || Math.Abs(loaded.LockButtonFontScale - 1.1f) > 0.001f
                 || loaded.SizeControlDesign.Width != 128 || loaded.SizeControlDesign.Height != 116
                 || loaded.SizeControlDesign.UpOffsetX != 11 || loaded.SizeControlDesign.UpOffsetY != -3
                 || loaded.SizeControlDesign.UpWidth != 31 || loaded.SizeControlDesign.UpHeight != 23
@@ -188,9 +220,19 @@ internal static class StudioSelfTest
                 || loaded.SizeControlDesign.ValueOffsetX != -3 || loaded.SizeControlDesign.ValueOffsetY != 2
                 || Math.Abs(loaded.SizeControlDesign.ValueScale - 0.66f) > 0.001f
                 || loaded.ControlArrowFileName != "OCUKeyboardControlArrow.png"
+                || !loaded.ControlArrowGlowEnabled || loaded.ControlArrowGlowColor.B != 255
+                || loaded.ControlArrowGlowColor.A != 230 || loaded.ControlArrowGlowStrength != 63
+                || loaded.ControlArrowGlowRadius != 9
                 || !loaded.ControlArrowBreatheEnabled || loaded.ControlArrowBreatheMinPercent != 40
                 || Math.Abs(loaded.ControlArrowRotation - 12f) > 0.001f)
                 throw new InvalidDataException("Keyboard appearance settings did not survive the save/load round trip.");
+            KeyboardDocument negativePositionDocument = loaded.Clone();
+            negativePositionDocument.Keys[0].X = -2.25f;
+            negativePositionDocument.Keys[0].Y = -1.5f;
+            KeyboardDocument negativePositionLoaded = KeyboardDocument.Parse(negativePositionDocument.Serialize());
+            if (Math.Abs(negativePositionLoaded.Keys[0].X + 2.25f) > 0.001f
+                || Math.Abs(negativePositionLoaded.Keys[0].Y + 1.5f) > 0.001f)
+                throw new InvalidDataException("Negative key coordinates did not survive layout serialization.");
             // The serialized paths are portable names beside the layout. Point
             // this isolated test document back to its source art before render/export.
             loaded.BackgroundImagePath = Path.Combine(assets, "skyui-bg.png");
@@ -303,11 +345,17 @@ internal static class StudioSelfTest
             RectangleF lockButton = renderer.TopElementRectangle(loaded, KeyboardTopElement.Lock);
             if (Math.Abs(textBar.Left - (KeyboardRenderer.MarginHorizontal + 14)) > 0.001f
                 || Math.Abs(textBar.Top - (KeyboardRenderer.GrabBarHeight + KeyboardRenderer.MarginTop - 7)) > 0.001f
+                || Math.Abs(textBar.Width - 700) > 0.001f || Math.Abs(textBar.Height - 50) > 0.001f
                 || Math.Abs(modeButton.Left - (KeyboardRenderer.MarginHorizontal + 19)) > 0.001f
                 || Math.Abs(modeButton.Top - (KeyboardRenderer.GrabBarHeight + KeyboardRenderer.MarginTop - 36 + 8)) > 0.001f
+                || Math.Abs(modeButton.Width - 240) > 0.001f || Math.Abs(modeButton.Height - 40) > 0.001f
                 || Math.Abs(lockButton.Left - (KeyboardRenderer.TextureWidth - KeyboardRenderer.MarginHorizontal - 120 - 11)) > 0.001f
-                || Math.Abs(lockButton.Top - (KeyboardRenderer.GrabBarHeight + KeyboardRenderer.MarginTop - 36 + 6)) > 0.001f)
-                throw new InvalidDataException("Movable top-bar geometry did not apply its saved offsets.");
+                || Math.Abs(lockButton.Top - (KeyboardRenderer.GrabBarHeight + KeyboardRenderer.MarginTop - 36 + 6)) > 0.001f
+                || Math.Abs(lockButton.Width - 140) > 0.001f || Math.Abs(lockButton.Height - 36) > 0.001f
+                || Math.Abs(renderer.TopElementFontScale(loaded, KeyboardTopElement.TextBar) - 0.8f) > 0.001f
+                || Math.Abs(renderer.TopElementFontScale(loaded, KeyboardTopElement.Mode) - 0.9f) > 0.001f
+                || Math.Abs(renderer.TopElementFontScale(loaded, KeyboardTopElement.Lock) - 1.1f) > 0.001f)
+                throw new InvalidDataException("Movable/resizable top-bar geometry did not survive round trip.");
             KeyboardDocument visibleTopPlates = loaded.Clone();
             visibleTopPlates.TopButtonPlatesEnabled = true;
             visibleTopPlates.InputBarPlateEnabled = true;
@@ -500,8 +548,121 @@ internal static class StudioSelfTest
                     throw new InvalidDataException("JPEG background was not transcoded to a real PNG in the MO2 archive.");
             }
 
+            string portablePackage = Path.Combine(outputDirectory, "keyboard-studio-portable.ocukb");
+            KeyboardPackage.Export(portablePackage, loaded, "Portable Test Keyboard");
+            using (var archive = System.IO.Compression.ZipFile.OpenRead(portablePackage))
+            {
+                if (archive.GetEntry("manifest.json") is null
+                    || archive.GetEntry("keyboard.kb") is null
+                    || archive.GetEntry("OCUKeyboardBackground.png") is null
+                    || archive.GetEntry("OCUKeyboardSprite01.png") is null
+                    || archive.GetEntry("OCUKeyboardSprite02.png") is null
+                    || archive.GetEntry("OCUKeyboardControlArrow.png") is null)
+                    throw new InvalidDataException("Portable .ocukb is missing its layout or artwork.");
+            }
+            string portableLibrary = Path.Combine(outputDirectory, "portable-design-library");
+            KeyboardPackageImportResult importedPackage = KeyboardPackage.Import(portablePackage, portableLibrary);
+            KeyboardDocument importedDocument = KeyboardDocument.Load(importedPackage.LayoutPath);
+            if (importedPackage.DisplayName != "Portable Test Keyboard"
+                || importedPackage.ArtworkCount != 4
+                || importedDocument.Sprites.Count != 2
+                || string.IsNullOrWhiteSpace(importedDocument.BackgroundImagePath)
+                || !File.Exists(importedDocument.BackgroundImagePath)
+                || importedDocument.Sprites.Any(sprite => string.IsNullOrWhiteSpace(sprite.SourcePath) || !File.Exists(sprite.SourcePath))
+                || string.IsNullOrWhiteSpace(importedDocument.ControlArrowImagePath)
+                || !File.Exists(importedDocument.ControlArrowImagePath))
+                throw new InvalidDataException("Portable .ocukb did not round-trip its layout and artwork.");
+
+            string firstImportedLayout = importedPackage.LayoutPath;
+            KeyboardDocument updatedPackageDocument = importedDocument.Clone();
+            updatedPackageDocument.FontGlowStrength = importedDocument.FontGlowStrength == 100
+                ? 99 : importedDocument.FontGlowStrength + 1;
+            KeyboardPackage.Export(portablePackage, updatedPackageDocument, "Portable Test Keyboard");
+            KeyboardPackageImportResult refreshedPackage = KeyboardPackage.Import(portablePackage, portableLibrary);
+            KeyboardDocument refreshedDocument = KeyboardDocument.Load(refreshedPackage.LayoutPath);
+            if (!refreshedPackage.LayoutPath.Equals(firstImportedLayout, StringComparison.OrdinalIgnoreCase)
+                || refreshedDocument.FontGlowStrength != updatedPackageDocument.FontGlowStrength)
+                throw new InvalidDataException("Re-saving one .ocukb did not refresh its existing managed design.");
+
+            string unsafePackage = Path.Combine(outputDirectory, "keyboard-studio-unsafe.ocukb");
+            using (var file = new FileStream(unsafePackage, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var archive = new System.IO.Compression.ZipArchive(file, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                void WriteUnsafeEntry(string name, string contents)
+                {
+                    var entry = archive.CreateEntry(name);
+                    using var writer = new StreamWriter(entry.Open(), new System.Text.UTF8Encoding(false));
+                    writer.Write(contents);
+                }
+                WriteUnsafeEntry("manifest.json", "{\"formatVersion\":1,\"name\":\"Unsafe\",\"layout\":\"keyboard.kb\"}");
+                WriteUnsafeEntry("keyboard.kb", loaded.Serialize());
+                WriteUnsafeEntry("../escaped.png", "not an image");
+            }
+            bool traversalRejected = false;
+            try
+            {
+                KeyboardPackage.Import(unsafePackage, Path.Combine(outputDirectory, "unsafe-import-library"));
+            }
+            catch (InvalidDataException)
+            {
+                traversalRejected = true;
+            }
+            if (!traversalRejected || File.Exists(Path.Combine(outputDirectory, "escaped.png")))
+                throw new InvalidDataException("Portable package traversal protection failed.");
+
+            KeyboardTheme dwemerTheme = KeyboardTheme.BuiltIns.Single(theme => theme.Name == "Dwemer");
+            var stockStyle = new KeyboardDocument();
+            stockStyle.EnableCustomStyleFromTheme(dwemerTheme);
+            if (!stockStyle.CustomStyleEnabled || !stockStyle.CustomStyleInitialized
+                || stockStyle.FontColor != dwemerTheme.Ink
+                || stockStyle.KeyColor != dwemerTheme.Accent
+                || stockStyle.PlateFillColor != dwemerTheme.KeyIdle
+                || stockStyle.GlowColor != dwemerTheme.Bright
+                || stockStyle.KeyRoundness != 2
+                || stockStyle.PlateOutlineWidth != 1)
+                throw new InvalidDataException("Enabling custom colors did not seed the visible Dwemer theme values.");
+            Color rememberedDwemerFont = Color.Fuchsia;
+            stockStyle.FontColor = rememberedDwemerFont;
+            stockStyle.CustomStyleEnabled = false;
+            stockStyle.EnableCustomStyleFromTheme(dwemerTheme);
+            if (stockStyle.FontColor != rememberedDwemerFont)
+                throw new InvalidDataException("Re-enabling custom colors discarded the user's prior swatches.");
+
+            string stockDwemerLayout = Path.Combine(assets, "Stock Designs", "Dwemer", "Dwemer.kb");
+            if (!File.Exists(stockDwemerLayout))
+                throw new FileNotFoundException("The stock Dwemer layout is missing.", stockDwemerLayout);
+            KeyboardDocument stockDwemerDocument = KeyboardDocument.Load(stockDwemerLayout);
+            if (!stockDwemerDocument.BaseTheme.Equals("dwemer", StringComparison.OrdinalIgnoreCase)
+                || !stockDwemerDocument.CustomStyleEnabled
+                || stockDwemerDocument.Keys.Count < 50)
+                throw new InvalidDataException("The bundled Dwemer design is not the authored stock layout.");
+            string dwemerBaseThemePath = Path.Combine(assets, "dwemer-bg.png");
+            renderer.Theme = dwemerTheme;
+            using (Bitmap dwemerBaseTheme = new(dwemerBaseThemePath))
+            using (Bitmap authoredDwemerBackground = renderer.RenderBackgroundExact(stockDwemerDocument))
+            {
+                if (dwemerBaseTheme.Width != KeyboardRenderer.TextureWidth
+                    || dwemerBaseTheme.Height != KeyboardRenderer.TextureHeight
+                    || authoredDwemerBackground.Width != KeyboardRenderer.TextureWidth
+                    || authoredDwemerBackground.Height != KeyboardRenderer.TextureHeight)
+                    throw new InvalidDataException("The Dwemer Base Theme or stock preview is not the runtime 1024x560 size.");
+            }
+
+            string stockPugLayout = Path.Combine(assets, "Stock Designs", "PugDragonKeyboard", "PugDragonKeyboard.kb");
+            KeyboardDocument stockPugDocument = KeyboardDocument.Load(stockPugLayout);
+            if (string.IsNullOrWhiteSpace(stockPugDocument.BackgroundImagePath)
+                || !File.Exists(stockPugDocument.BackgroundImagePath))
+                throw new InvalidDataException("The bundled Pug Dragon design is missing its packaged background.");
+
+            RectangleF normalizedMarquee = KeyboardCanvas.RectangleFromPoints(new PointF(90, 80), new PointF(10, 20));
+            if (normalizedMarquee != new RectangleF(10, 20, 80, 60)
+                || !KeyboardCanvas.MarqueeSelects(normalizedMarquee, new RectangleF(85, 75, 20, 20), requireContainment: false)
+                || KeyboardCanvas.MarqueeSelects(normalizedMarquee, new RectangleF(85, 75, 20, 20), requireContainment: true)
+                || !KeyboardCanvas.MarqueeSelects(normalizedMarquee, new RectangleF(20, 30, 10, 10), requireContainment: true))
+                throw new InvalidDataException("Marquee selection intersection/containment behavior failed.");
+
             File.WriteAllText(Path.Combine(outputDirectory, "keyboard-studio-self-test.txt"),
-                $"PASS\nKeys={loaded.Keys.Count}\nTheme=modern_green\nFont=ocu_nordic\nPreview=1024x560\nCustomStyle=True\nKeyPlates=False\nPlateLayers=Fill+OutlineRing+OutsideGlowIndependent\nParchmentRibbon=Selectable+Movable+Resizable+Removable\nOcuTarget=ContainingModRootAutoDetected\nTopPlates=ModeLock+InputBarIndependent\nArtwork=MovableBackground+2Sprites+ControlArrow\nControls=NestedSelectableBoxes\nControlFontHit=PaintedGlyphPixelsOnly\nArrowKeys=IndependentMove+Resize\nTopBar=TextBar+Mode+LockMovable\nHistory=NoOpFiltered+VisualChangesDetected\nBackgroundFeather=RoundedPillBoundary\nHighDpiArtwork=PixelSized\nTextEffects=OutlineColor+FontGlow+IndependentBreathing\nTTFImport=ExistingKeysOnly+NewKeyRebuild\nCustomFontExport=SFN+PNG\nBreathing=Keys+Font+Sprite+Arrow\nAnimationPreviewAverageMs={averageAnimationFrameMs:F2}\nSampling=PremultipliedBilinear\nJpegBackground=TranscodedToPng\nMO2Archive=root/OCUKeyboard.kb\n");
+                $"PASS\nKeys={loaded.Keys.Count}\nTheme=modern_green\nFont=ocu_nordic\nPreview=1024x560\nCustomStyle=True\nCustomStyleSeed=VisibleBaseTheme+RestorePriorValues\nStockDwemer=LatestAuthoredDesign\nStockPugDragon=BundledArtworkDesign\nDwemerBaseTheme=AuthoredStockBackground1024x560\nCanvasZoom=WheelZoomUnlessTextSelected+MiddlePan\nKeyPlates=False\nPlateLayers=Fill+OutlineRing+OutsideGlowIndependent\nParchmentRibbon=Selectable+Movable+Resizable+Removable\nOcuTarget=ContainingModRootAutoDetected\nTopPlates=ModeLock+InputBarIndependent\nArtwork=MovableBackground+2Sprites+ControlArrow\nControls=NestedSelectableBoxes\nControlFontHit=PaintedGlyphPixelsOnly\nControlArrowGlow=BuiltInOrPng+Breathing\nArrowKeys=IndependentMove+Resize\nTopBar=TextBar+Mode+LockMove+PlateResize+FontScale\nKeyPosition=NegativeGridCoordinatesSupported\nGridControl=ColumnCountDensity\nHistory=NoOpFiltered+VisualChangesDetected\nMarqueeSelection=VisibleItems+Additive+GroupMove\nDragPreview=Coalesced16ms+InspectorOnRelease\nBackgroundFeather=RoundedPillBoundary\nHighDpiArtwork=PixelSized\nTextEffects=OutlineColor+FontGlow+IndependentBreathing\nTTFImport=ExistingKeysOnly+NewKeyRebuild\nCustomFontExport=SFN+PNG\nBreathing=Keys+Font+Sprite+Arrow\nAnimationPreviewAverageMs={averageAnimationFrameMs:F2}\nSampling=PremultipliedBilinear\nJpegBackground=TranscodedToPng\nMO2Archive=root/OCUKeyboard.kb\nPortablePackage=.ocukb+ArtworkRoundTrip+StableResave+TraversalGuard\n");
             return 0;
         }
         catch (Exception exception)

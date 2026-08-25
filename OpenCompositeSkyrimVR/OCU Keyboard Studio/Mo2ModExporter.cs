@@ -35,7 +35,7 @@ internal static class Mo2ModExporter
         readme.WriteLine($"Authored with OCU Keyboard Studio on {DateTime.Now:yyyy-MM-dd}.");
     }
 
-    private static void AddArtwork(ZipArchive archive, string? sourcePath, string entryName)
+    internal static void AddArtwork(ZipArchive archive, string? sourcePath, string entryName)
     {
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
             return;
@@ -54,7 +54,7 @@ internal static class Mo2ModExporter
         converted.CopyTo(output);
     }
 
-    private static void AddFile(ZipArchive archive, string? sourcePath, string entryName)
+    internal static void AddFile(ZipArchive archive, string? sourcePath, string entryName)
     {
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
             return;

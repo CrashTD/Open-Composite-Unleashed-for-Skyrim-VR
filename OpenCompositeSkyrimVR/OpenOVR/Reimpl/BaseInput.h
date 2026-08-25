@@ -347,10 +347,13 @@ public: // INTERNAL FUNCTIONS
 	// must be destroyed and recreated for the replacement session.
 	void PrepareForSessionShutdown();
 
-	// Read the standard OpenXR combined-eye pose in VIEW space. Failure leaves
-	// eye-tracked VRS unavailable; Fixed remains an independent user choice.
+	// Project the standard OpenXR combined-eye pose to a VIEW-space fixation
+	// point and return both eye poses in that same space. The compositor uses the
+	// full poses to account for cant, asymmetric views, IPD, and gaze origin.
+	// Failure leaves eye-tracked VRS unavailable; Fixed remains independent.
 	// This never mutates image, render-scale, controller, or DAPA state.
-	bool SampleEyeGazeDirection(XrTime displayTime, XrVector3f& direction, XrTime& sampleTime);
+	bool SampleEyeGazePoint(XrTime displayTime, XrVector3f& fixationPoint,
+	    XrPosef eyeViewPoses[2], XrTime& sampleTime);
 
 	/**
 	 * Similar to setting the manifest, but doesn't actually load one. Equivalent to passing in a blank manifest.
@@ -731,6 +734,11 @@ private:
 	XrActionSet legacyInputsSet = XR_NULL_HANDLE;
 	XrAction eyeGazeAction = XR_NULL_HANDLE; // owned by legacyInputsSet
 	XrSpace eyeGazeSpace = XR_NULL_HANDLE;   // owned by the current session
+	XrPosef eyeGazeViewPoses[2] = {
+		{ { 0, 0, 0, 1 }, { 0, 0, 0 } },
+		{ { 0, 0, 0, 1 }, { 0, 0, 0 } }
+	};
+	bool eyeGazeViewPosesValid = false;
 	void CreateEyeGazeAction();
 	void CreateEyeGazeSpace();
 	void DestroyEyeGazeSpace();

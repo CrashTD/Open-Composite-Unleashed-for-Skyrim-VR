@@ -79,6 +79,14 @@ public:
 		float valueScale = 0.58f;
 	};
 
+	// Zero values preserve the legacy hard-coded size/font behavior. Keyboard
+	// Studio writes explicit values only after the author changes an element.
+	struct TopElementDesign {
+		float width = 0;
+		float height = 0;
+		float fontScale = 0;
+	};
+
 	struct Key {
 		int id;
 
@@ -124,11 +132,18 @@ public:
 	float GetModeButtonOffsetY() const { return modeButtonOffsetY; }
 	float GetLockButtonOffsetX() const { return lockButtonOffsetX; }
 	float GetLockButtonOffsetY() const { return lockButtonOffsetY; }
+	const TopElementDesign& GetTextBarDesign() const { return textBarDesign; }
+	const TopElementDesign& GetModeButtonDesign() const { return modeButtonDesign; }
+	const TopElementDesign& GetLockButtonDesign() const { return lockButtonDesign; }
 	const ControlDesign& GetSizeControlDesign() const { return sizeControlDesign; }
 	const ControlDesign& GetOpacityControlDesign() const { return opacityControlDesign; }
 	const ControlDesign& GetTiltControlDesign() const { return tiltControlDesign; }
 	const std::string& GetControlArrowFile() const { return controlArrowFile; }
 	float GetControlArrowRotation() const { return controlArrowRotation; }
+	bool GetControlArrowGlowEnabled() const { return controlArrowGlowEnabled; }
+	const uint8_t* GetControlArrowGlowColor() const { return controlArrowGlowColor; }
+	int GetControlArrowGlowStrength() const { return controlArrowGlowStrength; }
+	int GetControlArrowGlowRadius() const { return controlArrowGlowRadius; }
 	bool GetControlArrowBreatheEnabled() const { return controlArrowBreatheEnabled; }
 	int GetControlArrowBreatheMinPercent() const { return controlArrowBreatheMinPercent; }
 	float GetControlArrowBreathePeriodSeconds() const { return controlArrowBreathePeriodSeconds; }
@@ -137,7 +152,7 @@ public:
 		if ((visualStyle.enabled && visualStyle.glowEnabled && visualStyle.keyBreatheEnabled)
 		    || (visualStyle.enabled && visualStyle.fontGlowEnabled && visualStyle.fontBreatheEnabled)
 		    || (!background.file.empty() && background.breatheEnabled)
-		    || (!controlArrowFile.empty() && controlArrowBreatheEnabled))
+		    || (controlArrowGlowEnabled && controlArrowBreatheEnabled))
 			return true;
 		for (const ImageLayer& sprite : sprites) {
 			if (sprite.glowEnabled && sprite.breatheEnabled)
@@ -172,11 +187,18 @@ private:
 	float modeButtonOffsetY = 0;
 	float lockButtonOffsetX = 0;
 	float lockButtonOffsetY = 0;
+	TopElementDesign textBarDesign;
+	TopElementDesign modeButtonDesign;
+	TopElementDesign lockButtonDesign;
 	ControlDesign sizeControlDesign;
 	ControlDesign opacityControlDesign;
 	ControlDesign tiltControlDesign;
 	std::string controlArrowFile;
 	float controlArrowRotation = 0;
+	bool controlArrowGlowEnabled = false;
+	uint8_t controlArrowGlowColor[4] = { 132, 242, 158, 255 };
+	int controlArrowGlowStrength = 55;
+	int controlArrowGlowRadius = 6;
 	bool controlArrowBreatheEnabled = false;
 	int controlArrowBreatheMinPercent = 35;
 	float controlArrowBreathePeriodSeconds = 2.0f;

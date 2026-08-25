@@ -765,8 +765,8 @@ bool Fsr3Upscaler::DispatchInternal(int eyeIdx, ID3D11DeviceContext* d3d11Ctx,
 	    | FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;
 
 
-	// DIAG: log the actual dispatch params once per ~30 stereo frames per eye
-	{
+	// Keep high-frequency dispatch telemetry behind the explicit debug log level.
+	if (oovr_debug_logging_enabled()) {
 		static int s_fsr3DispDiag[2] = { 0, 0 };
 		s_fsr3DispDiag[eyeIdx]++;
 		if (s_fsr3DispDiag[eyeIdx] % 30 == 0) {

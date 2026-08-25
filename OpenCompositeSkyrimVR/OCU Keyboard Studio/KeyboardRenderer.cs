@@ -22,6 +22,7 @@ internal sealed record KeyboardTheme(
     public float ModeButtonOffsetY { get; init; }
     public float LockButtonOffsetX { get; init; }
     public float LockButtonOffsetY { get; init; }
+    public override string ToString() => Name;
 
     public static IReadOnlyList<KeyboardTheme> BuiltIns { get; } =
     [
@@ -91,25 +92,82 @@ internal sealed class KeyboardRenderer
 
     public RectangleF TopElementRectangle(KeyboardDocument document, KeyboardTopElement element)
     {
-        int keySize = KeySize(document);
         int textBarY = GrabBarHeight + MarginTop;
         int buttonY = textBarY - 36;
+        float width = TopElementWidth(document, element);
+        float height = TopElementHeight(document, element);
         return element switch
         {
             KeyboardTopElement.TextBar => new RectangleF(
                 MarginHorizontal + document.TextBarOffsetX,
                 textBarY + document.TextBarOffsetY,
-                TextureWidth - MarginHorizontal * 2,
-                keySize),
+                width, height),
             KeyboardTopElement.Mode => new RectangleF(
                 MarginHorizontal + Theme.ModeButtonOffsetX + document.ModeButtonOffsetX,
                 buttonY + Theme.ModeButtonOffsetY + document.ModeButtonOffsetY,
-                220, 32),
+                width, height),
             _ => new RectangleF(
                 TextureWidth - MarginHorizontal - 120 + Theme.LockButtonOffsetX + document.LockButtonOffsetX,
                 buttonY + Theme.LockButtonOffsetY + document.LockButtonOffsetY,
-                120, 32)
+                width, height)
         };
+    }
+
+    public float TopElementWidth(KeyboardDocument document, KeyboardTopElement element) => element switch
+    {
+        KeyboardTopElement.TextBar => document.TextBarWidth > 0 ? document.TextBarWidth : TextureWidth - MarginHorizontal * 2,
+        KeyboardTopElement.Mode => document.ModeButtonWidth > 0 ? document.ModeButtonWidth : 220,
+        _ => document.LockButtonWidth > 0 ? document.LockButtonWidth : 120
+    };
+
+    public float TopElementHeight(KeyboardDocument document, KeyboardTopElement element) => element switch
+    {
+        KeyboardTopElement.TextBar => document.TextBarHeight > 0 ? document.TextBarHeight : KeySize(document),
+        KeyboardTopElement.Mode => document.ModeButtonHeight > 0 ? document.ModeButtonHeight : 32,
+        _ => document.LockButtonHeight > 0 ? document.LockButtonHeight : 32
+    };
+
+    public float TopElementFontScale(KeyboardDocument document, KeyboardTopElement element) => element switch
+    {
+        KeyboardTopElement.TextBar => document.TextBarFontScale > 0 ? document.TextBarFontScale : 0.72f,
+        KeyboardTopElement.Mode => document.ModeButtonFontScale > 0 ? document.ModeButtonFontScale : 0.75f,
+        _ => document.LockButtonFontScale > 0 ? document.LockButtonFontScale : 0.75f
+    };
+
+    public bool IsPointOnTopElementContent(KeyboardDocument document, KeyboardTopElement element, PointF point)
+    {
+        RectangleF rectangle = TopElementRectangle(document, element);
+        string text = element switch
+        {
+            KeyboardTopElement.TextBar => "OCU Keyboard Studio Preview",
+            KeyboardTopElement.Mode => "PC MODE",
+            _ => "LOCK"
+        };
+        float scale = TopElementFontScale(document, element);
+        return Font.HitTestText(text, rectangle, 0, 0, scale, point);
+    }
+
+    public RectangleF TopElementContentRectangle(KeyboardDocument document, KeyboardTopElement element)
+    {
+        RectangleF rectangle = TopElementRectangle(document, element);
+        string text = element switch
+        {
+            KeyboardTopElement.TextBar => "OCU Keyboard Studio Preview",
+            KeyboardTopElement.Mode => "PC MODE",
+            _ => "LOCK"
+        };
+        float scale = TopElementFontScale(document, element);
+        RectangleF visible = Font.VisibleTextRectangle(text, rectangle, 0, 0, scale);
+        return visible.IsEmpty ? RectangleF.Empty : RectangleF.Inflate(visible, 2, 2);
+    }
+
+    public bool HasVisibleKeyContent(KeyboardDocument document, KeyboardKey key)
+    {
+        if (ShowsParchmentRibbon(document, key)
+            || key.Character is '\x04' or '\x05' or '\x06' or '\x07')
+            return true;
+        string label = State == KeyboardPreviewState.Lower ? key.Label : key.ShiftLabel;
+        return !string.IsNullOrWhiteSpace(label);
     }
 
     public RectangleF KeyContentRectangle(KeyboardDocument document, KeyboardKey key)
@@ -190,6 +248,9 @@ internal sealed class KeyboardRenderer
 
         return surface.ToBitmap();
     }
+
+    public Bitmap RenderBackgroundExact(KeyboardDocument document)
+        => CreateBackground(document).ToBitmap();
 
     private PixelSurface CreateBackground(KeyboardDocument document)
     {
@@ -417,12 +478,15 @@ internal sealed class KeyboardRenderer
             DrawPlate(surface, document, mode, false);
             DrawPlate(surface, document, lockButton, false);
         }
-        DrawStyledText(surface, document, "PC MODE", mode, 0, 0, 0.75f, Ink(document));
-        DrawStyledText(surface, document, "LOCK", lockButton, 0, 0, 0.75f, Ink(document));
+        DrawStyledText(surface, document, "PC MODE", mode, 0, 0,
+            TopElementFontScale(document, KeyboardTopElement.Mode), Ink(document));
+        DrawStyledText(surface, document, "LOCK", lockButton, 0, 0,
+            TopElementFontScale(document, KeyboardTopElement.Lock), Ink(document));
         if (document.InputBarPlateEnabled)
             DrawPlate(surface, document, textBar, false);
         Color ink = Ink(document);
-        DrawStyledText(surface, document, "OCU Keyboard Studio Preview", textBar, 0, 0, 0.72f, Color.FromArgb(170, ink));
+        DrawStyledText(surface, document, "OCU Keyboard Studio Preview", textBar, 0, 0,
+            TopElementFontScale(document, KeyboardTopElement.TextBar), Color.FromArgb(170, ink));
     }
 
     private void DrawKeyPlate(PixelSurface surface, KeyboardDocument document, Rectangle rectangle, bool active, bool selected)
@@ -662,16 +726,31 @@ internal sealed class KeyboardRenderer
 
     private void DrawControlArrow(PixelSurface surface, KeyboardDocument document, Rectangle rectangle, bool down, Color fallback)
     {
+        int width = Math.Max(1, rectangle.Width);
+        int height = Math.Max(1, rectangle.Height);
+        var arrow = new PixelSurface(width, height);
         if (!string.IsNullOrWhiteSpace(document.ControlArrowImagePath) && File.Exists(document.ControlArrowImagePath))
         {
             using var image = new Bitmap(document.ControlArrowImagePath);
-            int opacity = AnimatedOpacity(100, document.ControlArrowBreatheEnabled,
-                document.ControlArrowBreatheMinPercent, document.ControlArrowBreathePeriodSeconds,
-                document.ControlArrowBreathePhaseDegrees);
-            surface.BlendBitmap(image, rectangle, opacity, 0, document.ControlArrowRotation + (down ? 180 : 0));
-            return;
+            arrow.BlendBitmap(image, new Rectangle(0, 0, width, height), 100, 0,
+                document.ControlArrowRotation + (down ? 180 : 0));
         }
-        DrawArrow(surface, Rectangle.Inflate(rectangle, -2, -2), down ? '\x05' : '\x04', fallback);
+        else
+        {
+            DrawArrow(arrow, Rectangle.Inflate(new Rectangle(0, 0, width, height), -2, -2),
+                down ? '\x05' : '\x04', fallback);
+        }
+
+        if (document.ControlArrowGlowEnabled && document.ControlArrowGlowStrength > 0)
+        {
+            int radius = Math.Clamp(document.ControlArrowGlowRadius, 1, 48);
+            PixelSurface glow = CreateGlowSurface(arrow, document.ControlArrowGlowColor, radius);
+            int glowOpacity = AnimatedOpacity(document.ControlArrowGlowStrength,
+                document.ControlArrowBreatheEnabled, document.ControlArrowBreatheMinPercent,
+                document.ControlArrowBreathePeriodSeconds, document.ControlArrowBreathePhaseDegrees);
+            surface.BlendSurface(glow, rectangle.Left - radius, rectangle.Top - radius, glowOpacity);
+        }
+        surface.BlendSurface(arrow, rectangle.Left, rectangle.Top, 100);
     }
 
     private int AnimatedOpacity(int baseOpacity, bool enabled, int minimumPercent, float periodSeconds, float phaseDegrees)

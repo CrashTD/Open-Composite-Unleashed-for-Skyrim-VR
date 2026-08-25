@@ -514,8 +514,9 @@ bool DlssUpscaler::Dispatch(int eyeIdx, ID3D11DeviceContext* ctx, const Dispatch
 	evalParams.InRenderSubrectDimensions.Width  = params.renderWidth;
 	evalParams.InRenderSubrectDimensions.Height = params.renderHeight;
 
-	// DIAG: log the actual dispatch params once per ~30 stereo frames per eye
-	{
+	// Detailed dispatch telemetry is useful for tester builds, but writing it every
+	// 30 frames is inappropriate for a normal public release.
+	if (oovr_debug_logging_enabled()) {
 		static int s_dlssDispDiag[kHandleCount] = {};
 		int diagEye = (eyeIdx >= 0 && eyeIdx < kHandleCount) ? eyeIdx : 0;
 		s_dlssDispDiag[diagEye]++;

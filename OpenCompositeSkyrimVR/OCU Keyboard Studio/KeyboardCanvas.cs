@@ -43,9 +43,23 @@ internal sealed class KeyboardCanvas : Control
     private float _dragStartRotation;
     private float _dragStartAngle;
     private KeyboardControlDesign? _dragStartControlDesign;
+    private KeyboardDocument? _dragStartDocument;
+    private bool _dragChanged;
+    private bool _marqueeSelecting;
+    private PointF _marqueeStartTexture;
+    private PointF _marqueeCurrentTexture;
+    private readonly HashSet<CanvasSelectionState> _multiSelection = [];
+    private HashSet<CanvasSelectionState> _marqueeBaseSelection = [];
     private KeyboardSprite? _spriteClipboard;
     private readonly System.Windows.Forms.Timer _animationTimer = new() { Interval = 50 };
+    private readonly System.Windows.Forms.Timer _previewRefreshTimer = new() { Interval = 16 };
+    private bool _previewRefreshPending;
     private readonly System.Diagnostics.Stopwatch _animationClock = System.Diagnostics.Stopwatch.StartNew();
+    private float _viewZoom = 1f;
+    private PointF _viewOffset;
+    private bool _panningView;
+    private Point _panStartClient;
+    private PointF _panStartOffset;
 
     public event EventHandler? SelectionChanged;
     public event EventHandler? EditStarted;
@@ -53,6 +67,8 @@ internal sealed class KeyboardCanvas : Control
     public event EventHandler? EditCompleted;
     public event EventHandler? ChooseControlArrowRequested;
     public event EventHandler? UseBuiltInControlArrowRequested;
+    public event EventHandler? ViewZoomChanged;
+    public event Action<string>? KeyboardFileDropped;
 
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public KeyboardDocument? Document
@@ -72,6 +88,12 @@ internal sealed class KeyboardCanvas : Control
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public CanvasSelectionKind SelectionKind => _selectionKind;
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int SelectionCount => _multiSelection.Count > 0 ? _multiSelection.Count : (_selectionKind == CanvasSelectionKind.None ? 0 : 1);
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool HasMultipleSelection => _multiSelection.Count > 1;
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int ViewZoomPercent => (int)MathF.Round(_viewZoom * 100f);
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public KeyboardTopElement? SelectedTopElement => _selectionKind switch
     {
         CanvasSelectionKind.TopTextBar => KeyboardTopElement.TextBar,
@@ -86,6 +108,7 @@ internal sealed class KeyboardCanvas : Control
         get => _selectedKeyId;
         set
         {
+            _multiSelection.Clear();
             int normalized = value;
             if (_document is not null && !_document.Keys.Any(key => key.Id == normalized)) normalized = -1;
             bool changed = _selectedKeyId != normalized;
@@ -103,6 +126,7 @@ internal sealed class KeyboardCanvas : Control
         get => _selectedSpriteId;
         set
         {
+            _multiSelection.Clear();
             Guid? normalized = value is Guid id && _document?.Sprites.Any(sprite => sprite.Id == id) == true ? id : null;
             bool changed = _selectedSpriteId != normalized || (normalized is not null && _selectionKind != CanvasSelectionKind.Sprite);
             _selectedSpriteId = normalized;
@@ -120,6 +144,7 @@ internal sealed class KeyboardCanvas : Control
     public void ReplaceDocument(KeyboardDocument? value, bool preserveSelection)
     {
         CanvasSelectionState previous = CaptureSelection();
+        _multiSelection.Clear();
         _document = value;
 
         if (preserveSelection && value is not null)
@@ -165,17 +190,32 @@ internal sealed class KeyboardCanvas : Control
         TabStop = true;
         AllowDrop = true;
         SetStyle(ControlStyles.ResizeRedraw, true);
-        _animationTimer.Tick += (_, _) => { if (Visible && _document?.HasBreathingEffects == true) RefreshPreview(); };
+        _animationTimer.Tick += (_, _) =>
+        {
+            if (Visible && !_dragging && !_marqueeSelecting && !_previewRefreshTimer.Enabled
+                && _document?.HasBreathingEffects == true)
+                RefreshPreview();
+        };
+        _previewRefreshTimer.Tick += (_, _) =>
+        {
+            _previewRefreshTimer.Stop();
+            if (!_previewRefreshPending)
+                return;
+            _previewRefreshPending = false;
+            RefreshPreview();
+        };
         _animationTimer.Start();
     }
 
     public void SelectSprite(KeyboardSprite? sprite) => SelectedSpriteId = sprite?.Id;
     public void SelectBackground()
     {
+        _multiSelection.Clear();
         if (_document is not null && !string.IsNullOrWhiteSpace(_document.BackgroundImagePath)) SetSelection(CanvasSelectionKind.Background);
     }
     public void SelectControl(KeyboardRuntimeControl control, KeyboardControlPart part = KeyboardControlPart.Group)
     {
+        _multiSelection.Clear();
         CanvasSelectionKind kind = CanvasKindForControlPart(part);
         bool selectionEventWillFire = _selectionKind != kind;
         SelectedControl = control;
@@ -186,9 +226,19 @@ internal sealed class KeyboardCanvas : Control
 
     public void RefreshPreview()
     {
+        _previewRefreshTimer.Stop();
+        _previewRefreshPending = false;
         if (_renderer is not null) _renderer.AnimationTimeSeconds = _animationClock.Elapsed.TotalSeconds;
         _preview?.Dispose();
         _preview = _document is not null && _renderer is not null ? _renderer.Render(_document) : null;
+        Invalidate();
+    }
+
+    private void RequestPreviewRefresh()
+    {
+        _previewRefreshPending = true;
+        if (!_previewRefreshTimer.Enabled)
+            _previewRefreshTimer.Start();
         Invalidate();
     }
 
@@ -200,8 +250,21 @@ internal sealed class KeyboardCanvas : Control
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _animationTimer.Stop(); _animationTimer.Dispose(); _preview?.Dispose(); }
+        if (disposing)
+        {
+            _animationTimer.Stop();
+            _animationTimer.Dispose();
+            _previewRefreshTimer.Stop();
+            _previewRefreshTimer.Dispose();
+            _preview?.Dispose();
+        }
         base.Dispose(disposing);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        _viewOffset = ClampViewOffset(_viewOffset, _viewZoom);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -221,44 +284,93 @@ internal sealed class KeyboardCanvas : Control
         e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
         e.Graphics.DrawImage(_preview, destination);
 
-        if (SelectionRectangle() is not RectangleF selectedTexture) return;
-        RectangleF selected = TextureToClient(selectedTexture);
         using var pen = new Pen(Color.FromArgb(255, 132, 242, 158), 2f) { DashStyle = DashStyle.Dash };
-        e.Graphics.DrawRectangle(pen, selected.X, selected.Y, selected.Width, selected.Height);
-        if (CanResizeSelection())
+        if (_multiSelection.Count > 0)
         {
-            using var brush = new SolidBrush(Color.FromArgb(255, 132, 242, 158));
-            foreach (RectangleF handle in ResizeHandleRectangles(selected).Values) e.Graphics.FillRectangle(brush, handle);
+            foreach (CanvasSelectionState state in _multiSelection)
+            {
+                if (SelectionRectangle(state) is not RectangleF itemTexture)
+                    continue;
+                RectangleF item = TextureToClient(itemTexture);
+                e.Graphics.DrawRectangle(pen, item.X, item.Y, item.Width, item.Height);
+            }
+            if (_multiSelection.Count > 1 && MultiSelectionRectangle() is RectangleF groupTexture)
+            {
+                RectangleF group = TextureToClient(groupTexture);
+                using var groupPen = new Pen(Color.FromArgb(245, 82, 235, 131), 2.5f) { DashStyle = DashStyle.Dash };
+                e.Graphics.DrawRectangle(groupPen, group.X, group.Y, group.Width, group.Height);
+            }
         }
-        if (CanRotateSelection())
+        else if (SelectionRectangle() is RectangleF selectedTexture)
         {
-            PointF rotate = new(selected.Left + selected.Width / 2f, selected.Top - 25f);
-            using var connector = new Pen(Color.FromArgb(210, 132, 242, 158), 1.5f);
-            e.Graphics.DrawLine(connector, selected.Left + selected.Width / 2f, selected.Top, rotate.X, rotate.Y + 6);
-            using var brush = new SolidBrush(Color.FromArgb(255, 132, 242, 158));
-            e.Graphics.FillEllipse(brush, rotate.X - 7, rotate.Y - 7, 14, 14);
+            RectangleF selected = TextureToClient(selectedTexture);
+            e.Graphics.DrawRectangle(pen, selected.X, selected.Y, selected.Width, selected.Height);
+            if (CanResizeSelection())
+            {
+                using var brush = new SolidBrush(Color.FromArgb(255, 132, 242, 158));
+                foreach (RectangleF handle in ResizeHandleRectangles(selected).Values) e.Graphics.FillRectangle(brush, handle);
+            }
+            if (CanRotateSelection())
+            {
+                PointF rotate = new(selected.Left + selected.Width / 2f, selected.Top - 25f);
+                using var connector = new Pen(Color.FromArgb(210, 132, 242, 158), 1.5f);
+                e.Graphics.DrawLine(connector, selected.Left + selected.Width / 2f, selected.Top, rotate.X, rotate.Y + 6);
+                using var brush = new SolidBrush(Color.FromArgb(255, 132, 242, 158));
+                e.Graphics.FillEllipse(brush, rotate.X - 7, rotate.Y - 7, 14, 14);
+            }
+        }
+
+        if (_marqueeSelecting)
+        {
+            RectangleF marquee = TextureToClient(RectangleFromPoints(_marqueeStartTexture, _marqueeCurrentTexture));
+            using var fill = new SolidBrush(Color.FromArgb(38, 82, 235, 131));
+            using var marqueePen = new Pen(Color.FromArgb(235, 132, 242, 158), 1.5f) { DashStyle = DashStyle.Dash };
+            e.Graphics.FillRectangle(fill, marquee);
+            e.Graphics.DrawRectangle(marqueePen, marquee.X, marquee.Y, marquee.Width, marquee.Height);
         }
     }
 
     private RectangleF? SelectionRectangle()
     {
+        if (_multiSelection.Count > 1)
+            return MultiSelectionRectangle();
+        return SelectionRectangle(CaptureSelection());
+    }
+
+    private RectangleF? SelectionRectangle(CanvasSelectionState state)
+    {
         if (_document is null || _renderer is null) return null;
-        return _selectionKind switch
+        KeyboardKey? key = _document.Keys.FirstOrDefault(item => item.Id == state.KeyId);
+        KeyboardSprite? sprite = state.SpriteId is Guid spriteId
+            ? _document.Sprites.FirstOrDefault(item => item.Id == spriteId) : null;
+        return state.Kind switch
         {
-            CanvasSelectionKind.KeyContent when SelectedKey is KeyboardKey key => _renderer.KeyContentRectangle(_document, key),
-            CanvasSelectionKind.KeyPlate when SelectedKey is KeyboardKey key => _renderer.KeyRectangle(_document, key),
-            CanvasSelectionKind.Sprite when SelectedSprite is KeyboardSprite sprite => SpriteRectangle(sprite),
+            CanvasSelectionKind.KeyContent when key is not null => _renderer.KeyContentRectangle(_document, key),
+            CanvasSelectionKind.KeyPlate when key is not null => _renderer.KeyRectangle(_document, key),
+            CanvasSelectionKind.Sprite when sprite is not null => SpriteRectangle(sprite),
             CanvasSelectionKind.Background when !string.IsNullOrWhiteSpace(_document.BackgroundImagePath) => BackgroundRectangle(),
-            CanvasSelectionKind.Control => _renderer.RuntimeControlRectangle(_document, SelectedControl),
-            CanvasSelectionKind.ControlUpArrow => _renderer.RuntimeControlPartRectangle(_document, SelectedControl, KeyboardControlPart.UpArrow),
-            CanvasSelectionKind.ControlLabel => _renderer.RuntimeControlPartRectangle(_document, SelectedControl, KeyboardControlPart.Label),
-            CanvasSelectionKind.ControlValue => _renderer.RuntimeControlPartRectangle(_document, SelectedControl, KeyboardControlPart.Value),
-            CanvasSelectionKind.ControlDownArrow => _renderer.RuntimeControlPartRectangle(_document, SelectedControl, KeyboardControlPart.DownArrow),
-            CanvasSelectionKind.TopTextBar => _renderer.TopElementRectangle(_document, KeyboardTopElement.TextBar),
-            CanvasSelectionKind.TopMode => _renderer.TopElementRectangle(_document, KeyboardTopElement.Mode),
-            CanvasSelectionKind.TopLock => _renderer.TopElementRectangle(_document, KeyboardTopElement.Lock),
+            CanvasSelectionKind.Control => _renderer.RuntimeControlRectangle(_document, state.Control),
+            CanvasSelectionKind.ControlUpArrow => _renderer.RuntimeControlPartRectangle(_document, state.Control, KeyboardControlPart.UpArrow),
+            CanvasSelectionKind.ControlLabel => _renderer.RuntimeControlPartRectangle(_document, state.Control, KeyboardControlPart.Label),
+            CanvasSelectionKind.ControlValue => _renderer.RuntimeControlPartRectangle(_document, state.Control, KeyboardControlPart.Value),
+            CanvasSelectionKind.ControlDownArrow => _renderer.RuntimeControlPartRectangle(_document, state.Control, KeyboardControlPart.DownArrow),
+            CanvasSelectionKind.TopTextBar => TopSelectionRectangle(KeyboardTopElement.TextBar),
+            CanvasSelectionKind.TopMode => TopSelectionRectangle(KeyboardTopElement.Mode),
+            CanvasSelectionKind.TopLock => TopSelectionRectangle(KeyboardTopElement.Lock),
             _ => null
         };
+    }
+
+    private RectangleF? MultiSelectionRectangle()
+    {
+        RectangleF? result = null;
+        foreach (CanvasSelectionState state in _multiSelection)
+        {
+            if (SelectionRectangle(state) is not RectangleF rectangle)
+                continue;
+            result = result is RectangleF current ? RectangleF.Union(current, rectangle) : rectangle;
+        }
+        return result;
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -266,6 +378,15 @@ internal sealed class KeyboardCanvas : Control
         base.OnMouseDown(e);
         Focus();
         if (_document is null || _renderer is null) return;
+        if (e.Button == MouseButtons.Middle)
+        {
+            _panningView = true;
+            _panStartClient = e.Location;
+            _panStartOffset = _viewOffset;
+            Capture = true;
+            Cursor = Cursors.Hand;
+            return;
+        }
         PointF texturePoint = ClientToTexture(e.Location);
         if (e.Button == MouseButtons.Right)
         {
@@ -276,12 +397,45 @@ internal sealed class KeyboardCanvas : Control
         if (e.Button != MouseButtons.Left) return;
         CanvasDragOperation operation = HitSelectionHandle(e.Location);
         if (operation != CanvasDragOperation.None) { BeginDrag(texturePoint, operation); return; }
+        if (_multiSelection.Count > 1 && MultiSelectionHitTest(texturePoint) is CanvasSelectionState grouped)
+        {
+            ApplyPrimarySelection(grouped, preserveMultiSelection: true);
+            BeginDrag(texturePoint, CanvasDragOperation.Move);
+            return;
+        }
+
+        CanvasSelectionKind hit = HitTest(texturePoint);
+        bool movingSelectedBackground = hit == CanvasSelectionKind.Background
+            && _selectionKind == CanvasSelectionKind.Background
+            && SelectionRectangle() is RectangleF background && background.Contains(texturePoint);
+        if (hit == CanvasSelectionKind.None || (hit == CanvasSelectionKind.Background && !movingSelectedBackground))
+        {
+            BeginMarquee(texturePoint, ModifierKeys.HasFlag(Keys.Control) || ModifierKeys.HasFlag(Keys.Shift));
+            return;
+        }
         if (SelectAt(texturePoint, false)) BeginDrag(texturePoint, CanvasDragOperation.Move);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (_panningView)
+        {
+            _viewOffset = ClampViewOffset(new PointF(
+                _panStartOffset.X + e.X - _panStartClient.X,
+                _panStartOffset.Y + e.Y - _panStartClient.Y), _viewZoom);
+            Cursor = Cursors.Hand;
+            Invalidate();
+            return;
+        }
+        if (_marqueeSelecting && _document is not null && _renderer is not null)
+        {
+            _marqueeCurrentTexture = ClientToTexture(e.Location);
+            UpdateMarqueeSelection();
+            Cursor = Cursors.Cross;
+            Invalidate();
+            return;
+        }
         if (!_dragging || _document is null || _renderer is null)
         {
             Cursor = CursorFor(HitSelectionHandle(e.Location));
@@ -291,38 +445,51 @@ internal sealed class KeyboardCanvas : Control
         PointF point = ClientToTexture(e.Location);
         ApplyDrag(point, point.X - _dragStartTexture.X, point.Y - _dragStartTexture.Y);
         _document.IsDirty = true;
-        RefreshPreview();
-        DocumentChanged?.Invoke(this, EventArgs.Empty);
+        _dragChanged = true;
+        RequestPreviewRefresh();
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (_panningView && e.Button == MouseButtons.Middle)
+        {
+            _panningView = false;
+            Capture = false;
+            Cursor = Cursors.Default;
+            return;
+        }
+        if (_marqueeSelecting)
+        {
+            EndMarquee();
+            return;
+        }
         if (!_dragging) return;
         _dragging = false;
         _dragOperation = CanvasDragOperation.None;
         _dragStartKey = null;
         _dragStartControlDesign = null;
+        _dragStartDocument = null;
         Capture = false;
+        RefreshPreview();
+        if (_dragChanged)
+            DocumentChanged?.Invoke(this, EventArgs.Empty);
         EditCompleted?.Invoke(this, EventArgs.Empty);
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
-        base.OnMouseWheel(e);
         if (_document is null || e.Delta == 0) return;
         float factor = e.Delta > 0 ? 1.05f : 0.95f;
-        bool handled = _selectionKind is CanvasSelectionKind.KeyContent or CanvasSelectionKind.Sprite or CanvasSelectionKind.Background
-            or CanvasSelectionKind.ControlLabel or CanvasSelectionKind.ControlValue;
-        if (!handled) return;
+        if (!HasSelectedText())
+        {
+            ZoomViewAt(e.Location, e.Delta > 0 ? 1.12f : 1f / 1.12f);
+            return;
+        }
         PerformEdit(() =>
         {
             if (_selectionKind == CanvasSelectionKind.KeyContent && SelectedKey is KeyboardKey key)
                 key.LabelScale = MathF.Round(Math.Clamp(key.LabelScale * factor, 0.25f, 3f) * 20f) / 20f;
-            else if (_selectionKind == CanvasSelectionKind.Sprite && SelectedSprite is KeyboardSprite sprite)
-                ScaleAroundCenter(sprite, factor);
-            else if (_selectionKind == CanvasSelectionKind.Background)
-                ScaleBackgroundAroundCenter(factor);
             else if (_selectionKind is CanvasSelectionKind.ControlLabel or CanvasSelectionKind.ControlValue)
             {
                 KeyboardControlDesign design = _document.GetControlDesign(SelectedControl);
@@ -331,19 +498,63 @@ internal sealed class KeyboardCanvas : Control
                 else
                     design.ValueScale = MathF.Round(Math.Clamp(design.ValueScale * factor, 0.2f, 3f) * 100f) / 100f;
             }
+            else if (SelectedTopElement is KeyboardTopElement topElement && _renderer is not null)
+                SetTopElementFontScale(topElement, MathF.Round(Math.Clamp(
+                    _renderer.TopElementFontScale(_document, topElement) * factor, 0.2f, 3f) * 100f) / 100f);
         });
+    }
+
+    private bool HasSelectedText()
+    {
+        if (_document is null)
+            return false;
+        return (_selectionKind == CanvasSelectionKind.KeyContent && SelectedKey is not null)
+            || _selectionKind is CanvasSelectionKind.ControlLabel or CanvasSelectionKind.ControlValue
+            || SelectedTopElement is not null;
+    }
+
+    private void ZoomViewAt(Point location, float factor)
+    {
+        RectangleF oldBounds = PreviewBounds();
+        float textureX = (location.X - oldBounds.Left) / Math.Max(1f, oldBounds.Width);
+        float textureY = (location.Y - oldBounds.Top) / Math.Max(1f, oldBounds.Height);
+        float nextZoom = MathF.Round(Math.Clamp(_viewZoom * factor, 1f, 5f) * 100f) / 100f;
+        if (Math.Abs(nextZoom - _viewZoom) < 0.001f)
+            return;
+
+        _viewZoom = nextZoom;
+        RectangleF fitted = FittedPreviewBounds();
+        float width = fitted.Width * _viewZoom;
+        float height = fitted.Height * _viewZoom;
+        float centeredLeft = (ClientSize.Width - width) / 2f;
+        float centeredTop = (ClientSize.Height - height) / 2f;
+        _viewOffset = ClampViewOffset(new PointF(
+            location.X - textureX * width - centeredLeft,
+            location.Y - textureY * height - centeredTop), _viewZoom);
+        if (_viewZoom <= 1.001f)
+            _viewOffset = PointF.Empty;
+        Invalidate();
+        ViewZoomChanged?.Invoke(this, EventArgs.Empty);
     }
 
     protected override void OnDragEnter(DragEventArgs e)
     {
         base.OnDragEnter(e);
-        e.Effect = ContainsPngFiles(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Effect = ContainsKeyboardFiles(e.Data) || ContainsPngFiles(e.Data)
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
     }
 
     protected override void OnDragDrop(DragEventArgs e)
     {
         base.OnDragDrop(e);
         if (_document is null || e.Data?.GetData(DataFormats.FileDrop) is not string[] files) return;
+        string? keyboardFile = files.FirstOrDefault(IsKeyboardFile);
+        if (keyboardFile is not null)
+        {
+            KeyboardFileDropped?.Invoke(keyboardFile);
+            return;
+        }
         string[] pngs = files.Where(IsPngFile).ToArray();
         if (pngs.Length == 0) return;
         PointF drop = ClientToTexture(PointToClient(new Point(e.X, e.Y)));
@@ -455,6 +666,8 @@ internal sealed class KeyboardCanvas : Control
         _dragOperation = operation;
         _dragStartTexture = point;
         _dragStartRectangle = rectangle;
+        _dragChanged = false;
+        _dragStartDocument = _multiSelection.Count > 1 && _document is not null ? _document.Clone() : null;
         _dragStartKey = SelectedKey?.Clone();
         GetControlOffsets(SelectedControl, out _dragStartControlX, out _dragStartControlY);
         GetTopElementOffsets(SelectedTopElement, out _dragStartTopX, out _dragStartTopY);
@@ -471,6 +684,11 @@ internal sealed class KeyboardCanvas : Control
     private void ApplyDrag(PointF point, float dx, float dy)
     {
         if (_document is null || _renderer is null) return;
+        if (_multiSelection.Count > 1 && _dragOperation == CanvasDragOperation.Move && _dragStartDocument is not null)
+        {
+            MoveMultiSelection(dx, dy);
+            return;
+        }
         if (_dragOperation == CanvasDragOperation.Rotate)
         {
             PointF center = Center(_dragStartRectangle);
@@ -544,14 +762,256 @@ internal sealed class KeyboardCanvas : Control
             ResizeControlGroup(resized);
         else if (_selectionKind is CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlDownArrow)
             ResizeControlArrow(resized, _selectionKind == CanvasSelectionKind.ControlUpArrow);
+        else if (SelectedTopElement is KeyboardTopElement topElement)
+            ResizeTopElement(topElement, resized);
         else if (_selectionKind == CanvasSelectionKind.KeyContent && SelectedKey is KeyboardKey visualKey
             && IsResizableKeyContent(visualKey) && _dragStartKey is not null)
             ResizeVisualKeyContent(visualKey, resized);
     }
 
+    private void BeginMarquee(PointF point, bool additive)
+    {
+        _marqueeSelecting = true;
+        _marqueeStartTexture = point;
+        _marqueeCurrentTexture = point;
+        _marqueeBaseSelection = additive ? new HashSet<CanvasSelectionState>(_multiSelection) : [];
+        if (additive && _marqueeBaseSelection.Count == 0 && _selectionKind != CanvasSelectionKind.None)
+            _marqueeBaseSelection.Add(CanonicalSelection(CaptureSelection()));
+        if (!additive)
+            _multiSelection.Clear();
+        Capture = true;
+        Cursor = Cursors.Cross;
+        Invalidate();
+    }
+
+    private void UpdateMarqueeSelection()
+    {
+        RectangleF marquee = RectangleFromPoints(_marqueeStartTexture, _marqueeCurrentTexture);
+        _multiSelection.Clear();
+        _multiSelection.UnionWith(_marqueeBaseSelection);
+        _multiSelection.UnionWith(MarqueeSelections(marquee));
+    }
+
+    private void EndMarquee()
+    {
+        _marqueeSelecting = false;
+        Capture = false;
+        Cursor = Cursors.Default;
+        if (_multiSelection.Count == 0)
+        {
+            _selectionKind = CanvasSelectionKind.None;
+            if (_renderer is not null)
+                _renderer.SelectedKeyId = -1;
+        }
+        else if (_multiSelection.Count == 1)
+        {
+            CanvasSelectionState only = _multiSelection.First();
+            _multiSelection.Clear();
+            ApplyPrimarySelection(only, preserveMultiSelection: false);
+        }
+        else
+        {
+            ApplyPrimarySelection(_multiSelection.First(), preserveMultiSelection: true);
+        }
+        _marqueeBaseSelection.Clear();
+        RefreshPreview();
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private IEnumerable<CanvasSelectionState> MarqueeSelections(RectangleF marquee)
+    {
+        if (_document is null || _renderer is null || marquee.Width < 1f || marquee.Height < 1f)
+            yield break;
+
+        foreach (KeyboardKey key in _document.Keys)
+        {
+            CanvasSelectionKind kind = _document.KeyPlatesEnabled
+                ? CanvasSelectionKind.KeyPlate : CanvasSelectionKind.KeyContent;
+            if (!_document.KeyPlatesEnabled && !_renderer.HasVisibleKeyContent(_document, key))
+                continue;
+            RectangleF target = kind == CanvasSelectionKind.KeyPlate
+                ? _renderer.KeyRectangle(_document, key) : _renderer.KeyContentRectangle(_document, key);
+            if (MarqueeSelects(marquee, target, requireContainment: false))
+                yield return SelectionForKey(kind, key.Id);
+        }
+
+        foreach (KeyboardSprite sprite in _document.Sprites)
+        {
+            if (sprite.Opacity <= 0 || string.IsNullOrWhiteSpace(sprite.SourcePath) || !File.Exists(sprite.SourcePath))
+                continue;
+            RectangleF target = SpriteRectangle(sprite);
+            if (MarqueeSelects(marquee, target, requireContainment: false))
+                yield return SelectionForSprite(sprite.Id);
+        }
+
+        foreach (KeyboardTopElement element in Enum.GetValues<KeyboardTopElement>())
+        {
+            RectangleF target = TopSelectionRectangle(element);
+            if (!target.IsEmpty && MarqueeSelects(marquee, target, requireContainment: false))
+                yield return SelectionForTopElement(element);
+        }
+
+        foreach (KeyboardRuntimeControl control in Enum.GetValues<KeyboardRuntimeControl>())
+        {
+            RectangleF target = _renderer.RuntimeControlRectangle(_document, control);
+            if (MarqueeSelects(marquee, target, requireContainment: false))
+                yield return SelectionForControl(control);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_document.BackgroundImagePath) && File.Exists(_document.BackgroundImagePath)
+            && _document.BackgroundOpacity > 0
+            && MarqueeSelects(marquee, BackgroundRectangle(), requireContainment: true))
+            yield return new CanvasSelectionState(CanvasSelectionKind.Background, -1, null,
+                KeyboardRuntimeControl.Size, KeyboardControlPart.Group);
+    }
+
+    internal static bool MarqueeSelects(RectangleF marquee, RectangleF target, bool requireContainment)
+    {
+        if (marquee.IsEmpty || target.IsEmpty)
+            return false;
+        if (requireContainment)
+            return marquee.Left <= target.Left && marquee.Top <= target.Top
+                && marquee.Right >= target.Right && marquee.Bottom >= target.Bottom;
+        RectangleF overlap = RectangleF.Intersect(marquee, target);
+        return overlap.Width > 0f && overlap.Height > 0f;
+    }
+
+    internal static RectangleF RectangleFromPoints(PointF first, PointF second)
+    {
+        float left = Math.Min(first.X, second.X);
+        float top = Math.Min(first.Y, second.Y);
+        return new RectangleF(left, top, Math.Abs(second.X - first.X), Math.Abs(second.Y - first.Y));
+    }
+
+    private CanvasSelectionState? MultiSelectionHitTest(PointF point)
+    {
+        foreach (CanvasSelectionState state in _multiSelection.Reverse())
+            if (SelectionRectangle(state) is RectangleF rectangle && rectangle.Contains(point))
+                return state;
+        return null;
+    }
+
+    private void ApplyPrimarySelection(CanvasSelectionState state, bool preserveMultiSelection)
+    {
+        if (!preserveMultiSelection)
+            _multiSelection.Clear();
+        _selectionKind = state.Kind;
+        if (state.Kind is CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate)
+            _selectedKeyId = state.KeyId;
+        if (state.Kind == CanvasSelectionKind.Sprite)
+            _selectedSpriteId = state.SpriteId;
+        if (IsControlSelection(state.Kind))
+        {
+            SelectedControl = state.Control;
+            SelectedControlPart = state.ControlPart;
+        }
+        if (_renderer is not null)
+            _renderer.SelectedKeyId = preserveMultiSelection && _multiSelection.Count > 1
+                ? -1 : state.Kind is CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate
+                ? state.KeyId : -1;
+    }
+
+    private void MoveMultiSelection(float dx, float dy)
+    {
+        if (_document is null || _renderer is null || _dragStartDocument is null)
+            return;
+        int pitch = _renderer.KeySize(_document) + KeyboardRenderer.Padding;
+        foreach (CanvasSelectionState state in _multiSelection)
+        {
+            switch (state.Kind)
+            {
+                case CanvasSelectionKind.KeyPlate:
+                {
+                    KeyboardKey? current = _document.Keys.FirstOrDefault(key => key.Id == state.KeyId);
+                    KeyboardKey? start = _dragStartDocument.Keys.FirstOrDefault(key => key.Id == state.KeyId);
+                    if (current is null || start is null) break;
+                    current.X = start.X + dx / pitch;
+                    current.Y = start.Y + dy / pitch;
+                    if (SnapToTenth)
+                    {
+                        current.X = MathF.Round(current.X * 10f) / 10f;
+                        current.Y = MathF.Round(current.Y * 10f) / 10f;
+                    }
+                    break;
+                }
+                case CanvasSelectionKind.KeyContent:
+                {
+                    KeyboardKey? current = _document.Keys.FirstOrDefault(key => key.Id == state.KeyId);
+                    KeyboardKey? start = _dragStartDocument.Keys.FirstOrDefault(key => key.Id == state.KeyId);
+                    if (current is null || start is null) break;
+                    current.LabelOffsetX = RoundPixel(start.LabelOffsetX + dx);
+                    current.LabelOffsetY = RoundPixel(start.LabelOffsetY + dy);
+                    break;
+                }
+                case CanvasSelectionKind.Sprite when state.SpriteId is Guid spriteId:
+                {
+                    KeyboardSprite? current = _document.Sprites.FirstOrDefault(sprite => sprite.Id == spriteId);
+                    KeyboardSprite? start = _dragStartDocument.Sprites.FirstOrDefault(sprite => sprite.Id == spriteId);
+                    if (current is null || start is null) break;
+                    current.X = MathF.Round(start.X + dx);
+                    current.Y = MathF.Round(start.Y + dy);
+                    break;
+                }
+                case CanvasSelectionKind.Background:
+                    _document.BackgroundX = MathF.Round(_dragStartDocument.BackgroundX + dx);
+                    _document.BackgroundY = MathF.Round(_dragStartDocument.BackgroundY + dy);
+                    break;
+                case CanvasSelectionKind.Control:
+                    GetControlOffsets(_dragStartDocument, state.Control, out float controlX, out float controlY);
+                    SetControlOffsets(state.Control, MathF.Round(controlX + dx), MathF.Round(controlY + dy));
+                    break;
+                case CanvasSelectionKind.TopTextBar:
+                case CanvasSelectionKind.TopMode:
+                case CanvasSelectionKind.TopLock:
+                    KeyboardTopElement element = TopElementForKind(state.Kind);
+                    GetTopElementOffsets(_dragStartDocument, element, out float topX, out float topY);
+                    SetTopElementOffsets(element, MathF.Round(topX + dx), MathF.Round(topY + dy));
+                    break;
+            }
+        }
+    }
+
+    private static CanvasSelectionState SelectionForKey(CanvasSelectionKind kind, int id)
+        => new(kind, id, null, KeyboardRuntimeControl.Size, KeyboardControlPart.Group);
+    private static CanvasSelectionState SelectionForSprite(Guid id)
+        => new(CanvasSelectionKind.Sprite, -1, id, KeyboardRuntimeControl.Size, KeyboardControlPart.Group);
+    private static CanvasSelectionState SelectionForControl(KeyboardRuntimeControl control)
+        => new(CanvasSelectionKind.Control, -1, null, control, KeyboardControlPart.Group);
+    private static CanvasSelectionState SelectionForTopElement(KeyboardTopElement element)
+        => new(CanvasKindForTopElement(element), -1, null, KeyboardRuntimeControl.Size, KeyboardControlPart.Group);
+    private CanvasSelectionState CanonicalSelection(CanvasSelectionState state) => state.Kind switch
+    {
+        CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate => SelectionForKey(
+            _document?.KeyPlatesEnabled == true ? CanvasSelectionKind.KeyPlate : CanvasSelectionKind.KeyContent,
+            state.KeyId),
+        CanvasSelectionKind.Sprite when state.SpriteId is Guid spriteId => SelectionForSprite(spriteId),
+        CanvasSelectionKind.Control or CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlLabel
+            or CanvasSelectionKind.ControlValue or CanvasSelectionKind.ControlDownArrow
+            => SelectionForControl(state.Control),
+        CanvasSelectionKind.TopTextBar => SelectionForTopElement(KeyboardTopElement.TextBar),
+        CanvasSelectionKind.TopMode => SelectionForTopElement(KeyboardTopElement.Mode),
+        CanvasSelectionKind.TopLock => SelectionForTopElement(KeyboardTopElement.Lock),
+        CanvasSelectionKind.Background => new CanvasSelectionState(CanvasSelectionKind.Background, -1, null,
+            KeyboardRuntimeControl.Size, KeyboardControlPart.Group),
+        _ => new CanvasSelectionState(CanvasSelectionKind.None, -1, null,
+            KeyboardRuntimeControl.Size, KeyboardControlPart.Group)
+    };
+
+    private RectangleF TopSelectionRectangle(KeyboardTopElement element)
+    {
+        if (_document is null || _renderer is null)
+            return RectangleF.Empty;
+        bool plateVisible = element == KeyboardTopElement.TextBar
+            ? _document.InputBarPlateEnabled : _document.TopButtonPlatesEnabled;
+        return plateVisible
+            ? _renderer.TopElementRectangle(_document, element)
+            : _renderer.TopElementContentRectangle(_document, element);
+    }
+
     private bool SelectAt(PointF point, bool preferSelectedArtwork)
     {
         if (_document is null || _renderer is null) return false;
+        _multiSelection.Clear();
         if (preferSelectedArtwork && _selectionKind == CanvasSelectionKind.Sprite
             && SelectionRectangle() is RectangleF selectedSprite && selectedSprite.Contains(point))
             return true;
@@ -567,7 +1027,7 @@ internal sealed class KeyboardCanvas : Control
         }
         foreach (KeyboardTopElement element in Enum.GetValues<KeyboardTopElement>().Reverse())
         {
-            if (_renderer.TopElementRectangle(_document, element).Contains(point))
+            if (IsPointOnTopElement(element, point))
             {
                 SetSelection(CanvasKindForTopElement(element));
                 return true;
@@ -588,7 +1048,9 @@ internal sealed class KeyboardCanvas : Control
         }
         KeyboardKey? content = _document.Keys.AsEnumerable().Reverse().FirstOrDefault(key => _renderer.IsPointOnKeyContent(_document, key, point));
         if (content is not null) { SetSelection(CanvasSelectionKind.KeyContent, content); return true; }
-        KeyboardKey? plate = _document.Keys.AsEnumerable().Reverse().FirstOrDefault(key => _renderer.KeyRectangle(_document, key).Contains(point));
+        KeyboardKey? plate = _document.KeyPlatesEnabled
+            ? _document.Keys.AsEnumerable().Reverse().FirstOrDefault(key => _renderer.KeyRectangle(_document, key).Contains(point))
+            : null;
         if (plate is not null) { SetSelection(CanvasSelectionKind.KeyPlate, plate); return true; }
         KeyboardSprite? sprite = _document.Sprites.AsEnumerable().Reverse().FirstOrDefault(item => SpriteRectangle(item).Contains(point));
         if (sprite is not null) { SelectedSpriteId = sprite.Id; return true; }
@@ -601,7 +1063,7 @@ internal sealed class KeyboardCanvas : Control
     {
         if (_document is null || _renderer is null) return CanvasSelectionKind.None;
         foreach (KeyboardTopElement element in Enum.GetValues<KeyboardTopElement>())
-            if (_renderer.TopElementRectangle(_document, element).Contains(point)) return CanvasKindForTopElement(element);
+            if (IsPointOnTopElement(element, point)) return CanvasKindForTopElement(element);
         foreach (KeyboardRuntimeControl control in Enum.GetValues<KeyboardRuntimeControl>())
         {
             if (_renderer.RuntimeControlPartRectangle(_document, control, KeyboardControlPart.UpArrow).Contains(point)) return CanvasSelectionKind.ControlUpArrow;
@@ -610,13 +1072,27 @@ internal sealed class KeyboardCanvas : Control
             if (_renderer.IsPointOnRuntimeControlText(_document, control, false, point)) return CanvasSelectionKind.ControlValue;
             if (_renderer.RuntimeControlRectangle(_document, control).Contains(point)) return CanvasSelectionKind.Control;
         }
-        if (_document.Keys.Any(key => _renderer.KeyRectangle(_document, key).Contains(point))) return CanvasSelectionKind.KeyPlate;
+        if (_document.Keys.Any(key => _renderer.IsPointOnKeyContent(_document, key, point))) return CanvasSelectionKind.KeyContent;
+        if (_document.KeyPlatesEnabled && _document.Keys.Any(key => _renderer.KeyRectangle(_document, key).Contains(point))) return CanvasSelectionKind.KeyPlate;
         if (_document.Sprites.Any(sprite => SpriteRectangle(sprite).Contains(point))) return CanvasSelectionKind.Sprite;
         return !string.IsNullOrWhiteSpace(_document.BackgroundImagePath) && BackgroundRectangle().Contains(point) ? CanvasSelectionKind.Background : CanvasSelectionKind.None;
     }
 
+    private bool IsPointOnTopElement(KeyboardTopElement element, PointF point)
+    {
+        if (_document is null || _renderer is null)
+            return false;
+        bool plateVisible = element == KeyboardTopElement.TextBar
+            ? _document.InputBarPlateEnabled
+            : _document.TopButtonPlatesEnabled;
+        return plateVisible
+            ? _renderer.TopElementRectangle(_document, element).Contains(point)
+            : _renderer.IsPointOnTopElementContent(_document, element, point);
+    }
+
     private void SetSelection(CanvasSelectionKind kind, KeyboardKey? key = null)
     {
+        _multiSelection.Clear();
         bool changed = _selectionKind != kind;
         _selectionKind = kind;
         if (key is not null)
@@ -661,10 +1137,13 @@ internal sealed class KeyboardCanvas : Control
         };
     }
 
-    private bool CanResizeSelection() => _selectionKind is CanvasSelectionKind.KeyPlate or CanvasSelectionKind.Sprite or CanvasSelectionKind.Background
-        or CanvasSelectionKind.Control or CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlDownArrow
-        || (_selectionKind == CanvasSelectionKind.KeyContent && IsResizableKeyContent(SelectedKey));
-    private bool CanRotateSelection() => _selectionKind is CanvasSelectionKind.Sprite or CanvasSelectionKind.Background;
+    private bool CanResizeSelection() => _multiSelection.Count == 0
+        && (_selectionKind is CanvasSelectionKind.KeyPlate or CanvasSelectionKind.Sprite or CanvasSelectionKind.Background
+            or CanvasSelectionKind.Control or CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlDownArrow
+            || (SelectedTopElement is KeyboardTopElement topElement && TopElementPlateVisible(topElement))
+            || (_selectionKind == CanvasSelectionKind.KeyContent && IsResizableKeyContent(SelectedKey)));
+    private bool CanRotateSelection() => _multiSelection.Count == 0
+        && _selectionKind is CanvasSelectionKind.Sprite or CanvasSelectionKind.Background;
     private static Cursor CursorFor(CanvasDragOperation operation) => operation switch
     {
         CanvasDragOperation.ResizeLeft or CanvasDragOperation.ResizeRight => Cursors.SizeWE,
@@ -679,7 +1158,7 @@ internal sealed class KeyboardCanvas : Control
     {
         if (_document is null || _renderer is null || _dragStartKey is null) return;
         int pitch = _renderer.KeySize(_document) + KeyboardRenderer.Padding;
-        key.X = Math.Max(0, _dragStartKey.X + dx / pitch); key.Y = Math.Max(0, _dragStartKey.Y + dy / pitch);
+        key.X = _dragStartKey.X + dx / pitch; key.Y = _dragStartKey.Y + dy / pitch;
         if (SnapToTenth) { key.X = MathF.Round(key.X * 10f) / 10f; key.Y = MathF.Round(key.Y * 10f) / 10f; }
     }
 
@@ -688,8 +1167,8 @@ internal sealed class KeyboardCanvas : Control
         if (_document is null || _renderer is null || _dragStartKey is null) return;
         int size = _renderer.KeySize(_document), pitch = size + KeyboardRenderer.Padding;
         RectangleF precise = ResizeRectangle(_dragStartRectangle, dx, dy, _dragOperation, size * 0.25f, size * 0.25f);
-        key.X = Math.Max(0, _dragStartKey.X + (precise.Left - _dragStartRectangle.Left) / pitch);
-        key.Y = Math.Max(0, _dragStartKey.Y + (precise.Top - _dragStartRectangle.Top) / pitch);
+        key.X = _dragStartKey.X + (precise.Left - _dragStartRectangle.Left) / pitch;
+        key.Y = _dragStartKey.Y + (precise.Top - _dragStartRectangle.Top) / pitch;
         key.Width = Math.Max(0.25f, precise.Width / size);
         key.Height = Math.Max(0.25f, precise.Height / size);
         key.SpansToRight = false;
@@ -727,6 +1206,17 @@ internal sealed class KeyboardCanvas : Control
             design.DownOffsetX = rectangle.Left + rectangle.Width / 2f - (group.Left + group.Width / 2f);
             design.DownOffsetY = rectangle.Bottom - group.Bottom;
         }
+    }
+
+    private void ResizeTopElement(KeyboardTopElement element, RectangleF rectangle)
+    {
+        if (_document is null)
+            return;
+        SetTopElementSize(element,
+            Math.Max(8, rectangle.Width), Math.Max(8, rectangle.Height));
+        SetTopElementOffsets(element,
+            _dragStartTopX + rectangle.Left - _dragStartRectangle.Left,
+            _dragStartTopY + rectangle.Top - _dragStartRectangle.Top);
     }
 
     private void ResizeVisualKeyContent(KeyboardKey key, RectangleF rectangle)
@@ -927,18 +1417,27 @@ internal sealed class KeyboardCanvas : Control
     }
 
     private static bool ContainsPngFiles(IDataObject? data) => data?.GetData(DataFormats.FileDrop) is string[] files && files.Any(IsPngFile);
+    private static bool ContainsKeyboardFiles(IDataObject? data) => data?.GetData(DataFormats.FileDrop) is string[] files && files.Any(IsKeyboardFile);
+    private static bool IsKeyboardFile(string file) => File.Exists(file)
+        && (Path.GetExtension(file).Equals(KeyboardPackage.Extension, StringComparison.OrdinalIgnoreCase)
+            || Path.GetExtension(file).Equals(".kb", StringComparison.OrdinalIgnoreCase));
     private static bool IsPngFile(string file) => Path.GetExtension(file).Equals(".png", StringComparison.OrdinalIgnoreCase) && File.Exists(file);
     private static RectangleF SpriteRectangle(KeyboardSprite sprite) => new(sprite.X, sprite.Y, Math.Max(1, sprite.Width), Math.Max(1, sprite.Height));
     private RectangleF BackgroundRectangle() => _document is null ? RectangleF.Empty : new(_document.BackgroundX, _document.BackgroundY, Math.Max(1, _document.BackgroundWidth), Math.Max(1, _document.BackgroundHeight));
 
     private void GetControlOffsets(KeyboardRuntimeControl control, out float x, out float y)
     {
-        x = y = 0; if (_document is null) return;
+        if (_document is null) { x = y = 0; return; }
+        GetControlOffsets(_document, control, out x, out y);
+    }
+    private static void GetControlOffsets(KeyboardDocument document, KeyboardRuntimeControl control, out float x, out float y)
+    {
+        x = y = 0;
         switch (control)
         {
-            case KeyboardRuntimeControl.Size: x = _document.SizeControlOffsetX; y = _document.SizeControlOffsetY; break;
-            case KeyboardRuntimeControl.Opacity: x = _document.OpacityControlOffsetX; y = _document.OpacityControlOffsetY; break;
-            case KeyboardRuntimeControl.Tilt: x = _document.TiltControlOffsetX; y = _document.TiltControlOffsetY; break;
+            case KeyboardRuntimeControl.Size: x = document.SizeControlOffsetX; y = document.SizeControlOffsetY; break;
+            case KeyboardRuntimeControl.Opacity: x = document.OpacityControlOffsetX; y = document.OpacityControlOffsetY; break;
+            case KeyboardRuntimeControl.Tilt: x = document.TiltControlOffsetX; y = document.TiltControlOffsetY; break;
         }
     }
     private void SetControlOffsets(KeyboardRuntimeControl control, float x, float y)
@@ -953,13 +1452,17 @@ internal sealed class KeyboardCanvas : Control
     }
     private void GetTopElementOffsets(KeyboardTopElement? element, out float x, out float y)
     {
+        if (_document is null || element is null) { x = y = 0; return; }
+        GetTopElementOffsets(_document, element.Value, out x, out y);
+    }
+    private static void GetTopElementOffsets(KeyboardDocument document, KeyboardTopElement element, out float x, out float y)
+    {
         x = y = 0;
-        if (_document is null || element is null) return;
-        switch (element.Value)
+        switch (element)
         {
-            case KeyboardTopElement.TextBar: x = _document.TextBarOffsetX; y = _document.TextBarOffsetY; break;
-            case KeyboardTopElement.Mode: x = _document.ModeButtonOffsetX; y = _document.ModeButtonOffsetY; break;
-            case KeyboardTopElement.Lock: x = _document.LockButtonOffsetX; y = _document.LockButtonOffsetY; break;
+            case KeyboardTopElement.TextBar: x = document.TextBarOffsetX; y = document.TextBarOffsetY; break;
+            case KeyboardTopElement.Mode: x = document.ModeButtonOffsetX; y = document.ModeButtonOffsetY; break;
+            case KeyboardTopElement.Lock: x = document.LockButtonOffsetX; y = document.LockButtonOffsetY; break;
         }
     }
     private void SetTopElementOffsets(KeyboardTopElement? element, float x, float y)
@@ -973,13 +1476,56 @@ internal sealed class KeyboardCanvas : Control
         }
     }
 
-    private RectangleF PreviewBounds()
+    private void SetTopElementSize(KeyboardTopElement element, float width, float height)
+    {
+        if (_document is null) return;
+        switch (element)
+        {
+            case KeyboardTopElement.TextBar: _document.TextBarWidth = width; _document.TextBarHeight = height; break;
+            case KeyboardTopElement.Mode: _document.ModeButtonWidth = width; _document.ModeButtonHeight = height; break;
+            case KeyboardTopElement.Lock: _document.LockButtonWidth = width; _document.LockButtonHeight = height; break;
+        }
+    }
+
+    private void SetTopElementFontScale(KeyboardTopElement element, float scale)
+    {
+        if (_document is null) return;
+        switch (element)
+        {
+            case KeyboardTopElement.TextBar: _document.TextBarFontScale = scale; break;
+            case KeyboardTopElement.Mode: _document.ModeButtonFontScale = scale; break;
+            case KeyboardTopElement.Lock: _document.LockButtonFontScale = scale; break;
+        }
+    }
+
+    private bool TopElementPlateVisible(KeyboardTopElement element)
+        => _document is not null && (element == KeyboardTopElement.TextBar
+            ? _document.InputBarPlateEnabled : _document.TopButtonPlatesEnabled);
+
+    private RectangleF FittedPreviewBounds()
     {
         const float ratio = KeyboardRenderer.TextureWidth / (float)KeyboardRenderer.TextureHeight;
         float availableWidth = Math.Max(1, ClientSize.Width - 40), availableHeight = Math.Max(1, ClientSize.Height - 40);
         float width = availableWidth, height = width / ratio;
         if (height > availableHeight) { height = availableHeight; width = height * ratio; }
         return new((ClientSize.Width - width) / 2f, (ClientSize.Height - height) / 2f, width, height);
+    }
+    private RectangleF PreviewBounds()
+    {
+        RectangleF fitted = FittedPreviewBounds();
+        float width = fitted.Width * _viewZoom;
+        float height = fitted.Height * _viewZoom;
+        return new((ClientSize.Width - width) / 2f + _viewOffset.X,
+            (ClientSize.Height - height) / 2f + _viewOffset.Y, width, height);
+    }
+    private PointF ClampViewOffset(PointF offset, float zoom)
+    {
+        RectangleF fitted = FittedPreviewBounds();
+        float width = fitted.Width * zoom;
+        float height = fitted.Height * zoom;
+        float maxX = width <= ClientSize.Width ? 0f : (width - ClientSize.Width) / 2f + 20f;
+        float maxY = height <= ClientSize.Height ? 0f : (height - ClientSize.Height) / 2f + 20f;
+        return new(Math.Clamp(offset.X, -maxX, maxX), Math.Clamp(offset.Y, -maxY, maxY));
     }
     private PointF ClientToTexture(Point point)
     {
@@ -1013,6 +1559,12 @@ internal sealed class KeyboardCanvas : Control
         KeyboardTopElement.TextBar => CanvasSelectionKind.TopTextBar,
         KeyboardTopElement.Mode => CanvasSelectionKind.TopMode,
         _ => CanvasSelectionKind.TopLock
+    };
+    private static KeyboardTopElement TopElementForKind(CanvasSelectionKind kind) => kind switch
+    {
+        CanvasSelectionKind.TopTextBar => KeyboardTopElement.TextBar,
+        CanvasSelectionKind.TopMode => KeyboardTopElement.Mode,
+        _ => KeyboardTopElement.Lock
     };
 }
 

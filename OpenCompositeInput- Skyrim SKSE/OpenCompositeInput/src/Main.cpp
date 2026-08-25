@@ -99,7 +99,7 @@ namespace RE { class GASGlobalContext; } // Forward decl needed by GFxMovieRoot.
 #pragma pack(push, 1)
 struct OCMenuTransform {
 	static constexpr uint32_t MAGIC = 0x54434D4F; // 'OCMT'
-	static constexpr uint32_t VERSION = 5;
+	static constexpr uint32_t VERSION = 6;
 
 	uint32_t magic;           // Must be MAGIC
 	uint32_t version;         // Protocol version
@@ -154,10 +154,13 @@ struct OCMenuTransform {
 	float    roomHmdPos[3];
 	float    roomHmdQuat[4];
 
-	// v4: Skyrim's native MapMenu pointer already resolves mountains and
-	// floating icons. Export its real endpoint so OCU does not flatten the map.
+	// v6: Skyrim's native MapMenu pointer already resolves mountains and
+	// floating icons. Export only its authoritative beam length. OCU applies the
+	// length to its current OpenXR controller ray, avoiding any Skyrim/OpenXR
+	// endpoint-frame conversion and any mutation of UIPointerGeo.
 	uint8_t  mapPointerValid;
-	float    mapPointerHitPos[3]; // RoomNode-local OpenXR axes, meters
+	float    mapPointerDistanceMeters;
+	float    mapPointerReserved[2];
 
 	// v5: physical OpenXR hand that owns the published trigger edge.
 	// 0 = left, 1 = right, 0xFF = unavailable/legacy runtime.
@@ -1262,6 +1265,13 @@ namespace
 	constexpr float kSkyrimUnitsPerMeter = 69.99125f;
 
 	std::atomic<bool> g_laserPumpRunning{ false };
+	// The scheduler runs independently from Skyrim's main thread. Never allow it
+	// to queue another copy of a game-thread job while the previous copy is still
+	// waiting or executing. A blocked Scaleform/menu frame otherwise accumulates
+	// hundreds of stale pumps, producing the reported multi-second menu stalls.
+	std::atomic<bool> g_laserPumpTaskPending{ false };
+	std::atomic<bool> g_consolePickTaskPending{ false };
+	std::atomic<bool> g_renderTargetRefreshTaskPending{ false };
 
 	// Skyrim (X right, Y forward, Z up) -> OpenXR floor space (X right, Y up, Z back)
 	inline void MapSkyrimToXr(const RE::NiPoint3& s, float out[3])
@@ -1340,6 +1350,78 @@ namespace
 			current = current->parent;
 		}
 		return current == ancestor;
+	}
+
+	// Read-only MapMenu depth bridge. Skyrim scales UIPointerGeo from
+	// UIPointerNode to the terrain/icon hit, so the geometry bound center is the
+	// beam midpoint. Exporting only that distance lets OCU render a thick owned
+	// beam on its live controller ray without retaining or modifying any Skyrim
+	// scene object, render buffer, shader material, or Scaleform movie.
+	bool ExportNativeMapPointerDistance(bool logDiagnostics)
+	{
+		g_pTransform->mapPointerValid = 0;
+		g_pTransform->mapPointerDistanceMeters = 0.0f;
+
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		auto* vrData = player ? player->GetVRNodeData() : nullptr;
+		auto* roomNode = vrData ? vrData->RoomNode.get() : nullptr;
+		auto* pointerNode = vrData ? vrData->UIPointerNode.get() : nullptr;
+		auto* pointerGeo = vrData ? vrData->UIPointerGeo.get() : nullptr;
+		if (!roomNode || !pointerNode || !pointerGeo) {
+			if (logDiagnostics) {
+				SKSE::log::info(
+				    "LASER MapMenu native distance pending room={} pointerNode={} pointerGeo={}",
+				    roomNode != nullptr, pointerNode != nullptr, pointerGeo != nullptr);
+			}
+			return false;
+		}
+
+		const auto& pointerBound = pointerGeo->GetModelData().modelBound;
+		RE::NiPoint3 originLocal{};
+		RE::NiPoint3 middleLocal{};
+		RE::NiTransform pointerToRoom;
+		RE::NiTransform pointerGeoToRoom;
+		const bool coherent =
+		    BuildLocalToAncestor(pointerNode, roomNode, pointerToRoom) &&
+		    BuildLocalToAncestor(pointerGeo, roomNode, pointerGeoToRoom);
+		if (coherent) {
+			originLocal = pointerToRoom.translate;
+			middleLocal = pointerGeoToRoom * pointerBound.center;
+		} else {
+			const auto& roomWorld = roomNode->world;
+			const float roomScale = roomWorld.scale;
+			if (!std::isfinite(roomScale) || fabsf(roomScale) < 1.0e-4f)
+				return false;
+			auto worldToRoomPoint = [&](const RE::NiPoint3& worldPoint) {
+				RE::NiPoint3 local = TransposeMul(
+				    roomWorld.rotate, worldPoint - roomWorld.translate);
+				local /= roomScale;
+				return local;
+			};
+			originLocal = worldToRoomPoint(pointerNode->world.translate);
+			middleLocal = worldToRoomPoint(pointerGeo->world * pointerBound.center);
+		}
+
+		const RE::NiPoint3 halfBeam = middleLocal - originLocal;
+		const float beamLengthSkyrim = 2.0f * sqrtf(
+		    halfBeam.x * halfBeam.x + halfBeam.y * halfBeam.y + halfBeam.z * halfBeam.z);
+		const float beamLengthMeters = beamLengthSkyrim / kSkyrimUnitsPerMeter;
+		if (!std::isfinite(beamLengthMeters) ||
+		    beamLengthMeters <= 0.03f || beamLengthMeters >= 12.0f) {
+			if (logDiagnostics) {
+				SKSE::log::info("LASER MapMenu native distance rejected source={} length={}m",
+				    coherent ? "local-chain" : "world-fallback", beamLengthMeters);
+			}
+			return false;
+		}
+
+		g_pTransform->mapPointerDistanceMeters = beamLengthMeters;
+		g_pTransform->mapPointerValid = 1;
+		if (logDiagnostics) {
+			SKSE::log::info("LASER MapMenu native distance source={} length={:.3f}m",
+			    coherent ? "local-chain" : "world-fallback", beamLengthMeters);
+		}
+		return true;
 	}
 
 	// Dialogue is loaded from skyVR_dialogue.nif rather than the normal
@@ -1614,11 +1696,11 @@ namespace
 			}
 		}
 
-		// The native map shaft stays in Skyrim's scene graph and is recolored by
-		// LaserCursorPumpOnce. UIPointerGeo is not consistently parented beneath
-		// RoomNode, so exporting a reconstructed endpoint can put an OpenXR visual
-		// on the wrong axis. Keep the legacy field explicitly invalid.
+		// Flat-menu plane export never publishes MapMenu depth. The dedicated
+		// read-only safe path handles every MapMenu and exports a scalar distance
+		// rather than retaining geometry or reconstructing an endpoint.
 		g_pTransform->mapPointerValid = 0;
+		g_pTransform->mapPointerDistanceMeters = 0.0f;
 
 		// Plane extents from the node's bounding sphere. The plane geometry
 		// ('In World UI Quad Geometry') is a 16:9 quad (verified live: local
@@ -4255,6 +4337,7 @@ namespace
 
 		// State that persists across pump ticks (game thread only)
 		static uint32_t s_lastFrameSeq = 0;
+		static uint32_t s_lastPumpedMenuGeneration = 0xFFFFFFFFu;
 		static uint32_t s_lastPressSeq = 0;
 		static uint32_t s_lastReleaseSeq = 0;
 		static bool     s_mouseHeld = false;
@@ -4333,6 +4416,20 @@ namespace
 		static float    s_candidateQuat[4] = { 0, 0, 0, 1 };
 		static float    s_candidateWidth = 0.0f, s_candidateHeight = 0.0f;
 
+		// A scheduler wake is not a rendered frame. Do the expensive scene/menu
+		// work at most once per submitted frame, plus once for each menu-lifecycle
+		// generation so close/transition cleanup cannot be skipped. This is the
+		// second half of the backlog fix: even after the pending task completes, a
+		// stalled renderer cannot repeatedly run Scaleform probes for the same frame.
+		const uint32_t pumpFrameSeq = g_pTransform->laserFrameSeq;
+		const uint32_t pumpMenuGeneration = g_menuPlaneGeneration;
+		if (pumpFrameSeq == s_lastFrameSeq &&
+		    pumpMenuGeneration == s_lastPumpedMenuGeneration) {
+			return;
+		}
+		s_lastFrameSeq = pumpFrameSeq;
+		s_lastPumpedMenuGeneration = pumpMenuGeneration;
+
 		auto releasePressedMovie = [&](const char* reason) {
 			// A gesture owns one exact Scaleform movie for its entire lifetime.
 			// Never inject a coordinate-less/global mouse-up after the menu stack
@@ -4388,6 +4485,46 @@ namespace
 		bool dialogueOpen = strcmp(g_pTransform->menuName, "Dialogue Menu") == 0;
 		bool journalOpen = strcmp(g_pTransform->menuName, "Journal Menu") == 0;
 		bool raceMenuOpen = strcmp(g_pTransform->menuName, "RaceSex Menu") == 0;
+		// MapMenu is entirely Skyrim-owned. OCU does not inspect its native pointer,
+		// scene graph, input handlers, or Scaleform movie, and publishes no custom
+		// map laser. This preserves the original Skyrim VR map laser unchanged.
+		static bool s_loggedNativeMapBypass = false;
+		if (mapOpen && !s_loggedNativeMapBypass) {
+			s_loggedNativeMapBypass = true;
+			SKSE::log::info(
+			    "LASER MapMenu native bypass: OCU map geometry, Scaleform, input, depth bridge, and compositor laser disabled");
+		}
+		if (mapOpen) {
+			g_pTransform->updateCounter++;
+			g_pTransform->uiPlaneValid = 0;
+			g_pTransform->mapPointerValid = 0;
+			g_pTransform->mapPointerDistanceMeters = 0.0f;
+			g_pTransform->updateCounter++;
+
+			// Drop only OCU-owned state. Never call a movie during MapMenu entry or
+			// teardown; Skyrim owns every map click and controller edge.
+			s_pressedMovie = nullptr;
+			s_mouseHeld = false;
+			s_pressedMovieUsesNotifyMouse = false;
+			s_pressedMovieUsesSculpt = false;
+			s_pressedMoviePendingStats = false;
+			s_raceDragSlider.SetUndefined();
+			s_raceSliderDragging = false;
+			s_verticalDragScrollBar.SetUndefined();
+			s_verticalScrollBarDragging = false;
+			s_raceSculptDisplay.SetUndefined();
+			s_raceSculptForeground.SetUndefined();
+			s_raceHoveredButton.SetUndefined();
+			s_clickArmed = false;
+			s_lastPressSeq = g_pTransform->laserPressSeq;
+			s_lastReleaseSeq = g_pTransform->laserReleaseSeq;
+			s_wasActive = false;
+			s_planePublished = false;
+			s_planeStableFrames = 0;
+			s_gfxMousePrimed = false;
+			s_laserOwnsFocus = false;
+			return;
+		}
 		if (!raceMenuOpen)
 			s_raceHoveredButton.SetUndefined();
 		// Special geometry and special input must key off the same advertised top
@@ -4809,8 +4946,10 @@ namespace
 			    triggerHeld ? "blue" : "warm-white", nativePainted,
 			    companionsPainted, s_mapBeamCompanions.size());
 		};
-		updateMapPointerCompanion(menuActive && mapOpen && !statsOpen,
-		    g_pTransform->laserTriggerHeld != 0);
+		// The legacy widened Skyrim mesh path is intentionally never activated.
+		// Calling it inactive preserves defensive cleanup without touching a live
+		// MapMenu object in a new session.
+		updateMapPointerCompanion(false, false);
 
 		// Stats/Sovngarde forbids Scaleform calls. Retain the exact old movie
 		// through that interval, then clear its held state on the first safe tick.
@@ -5005,11 +5144,7 @@ namespace
 		if (s_diagLogsLeft > 0)
 			s_diagLogsLeft--;
 
-		// ---- Closed-loop cursor drive (once per rendered frame) ----
-		uint32_t frameSeq = g_pTransform->laserFrameSeq;
-		if (frameSeq == s_lastFrameSeq)
-			return;
-		s_lastFrameSeq = frameSeq;
+		// ---- Cursor drive (already gated to one pump per rendered frame) ----
 
 		const bool bookMode = bookOpen;
 		if (bookMode) {
@@ -6198,22 +6333,42 @@ namespace
 			int rtRefreshTick = 0;
 			int consolePickTick = 0;
 			while (g_laserPumpRunning.load()) {
-				if (g_pTransform && g_pTransform->active)
-					SKSE::GetTaskInterface()->AddTask(LaserCursorPumpOnce);
+				if (g_pTransform && g_pTransform->active &&
+				    !g_laserPumpTaskPending.exchange(true, std::memory_order_acq_rel)) {
+					SKSE::GetTaskInterface()->AddTask([]() {
+						LaserCursorPumpOnce();
+						g_laserPumpTaskPending.store(false, std::memory_order_release);
+					});
+				}
 				// Match the live controller ray while console is open. When closed,
 				// retain a cheap ~10Hz cleanup tick to restore native pointer state.
 				if (g_consoleOpen.load(std::memory_order_acquire)) {
 					consolePickTick = 0;
-					SKSE::GetTaskInterface()->AddTask(ConsoleWorldPickOnce);
+					if (!g_consolePickTaskPending.exchange(true, std::memory_order_acq_rel)) {
+						SKSE::GetTaskInterface()->AddTask([]() {
+							ConsoleWorldPickOnce();
+							g_consolePickTaskPending.store(false, std::memory_order_release);
+						});
+					}
 				} else if (++consolePickTick >= 12) {
 					consolePickTick = 0;
-					SKSE::GetTaskInterface()->AddTask(ConsoleWorldPickOnce);
+					if (!g_consolePickTaskPending.exchange(true, std::memory_order_acq_rel)) {
+						SKSE::GetTaskInterface()->AddTask([]() {
+							ConsoleWorldPickOnce();
+							g_consolePickTaskPending.store(false, std::memory_order_release);
+						});
+					}
 				}
 				// ~1/sec: re-capture game render targets in case a render-scale
 				// mod (Community Shaders VR etc.) recreated them
 				if (++rtRefreshTick >= 125) {
 					rtRefreshTick = 0;
-					SKSE::GetTaskInterface()->AddTask(RefreshBridgeRenderTargets);
+					if (!g_renderTargetRefreshTaskPending.exchange(true, std::memory_order_acq_rel)) {
+						SKSE::GetTaskInterface()->AddTask([]() {
+							RefreshBridgeRenderTargets();
+							g_renderTargetRefreshTaskPending.store(false, std::memory_order_release);
+						});
+					}
 				}
 				std::this_thread::sleep_for(std::chrono::milliseconds(8));
 			}

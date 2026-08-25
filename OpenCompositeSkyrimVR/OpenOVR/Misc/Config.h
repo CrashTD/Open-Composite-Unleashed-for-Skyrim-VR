@@ -245,7 +245,7 @@ public:
 	inline bool VrsAnyEnabled() const { return vrsEnabled || vrsEyeTracked; }
 	inline float VrsInnerRadius() const { return vrsInnerRadius; }
 	inline float VrsMidRadius() const { return vrsMidRadius; }
-	inline float VrsOuterRadius() const { return vrsOuterRadius; }
+	inline bool VrsCompatibilityMode() const { return vrsCompatibilityMode; }
 	inline bool VrsFavorHorizontal() const { return vrsFavorHorizontal; }
 
 	// ASW tuning variables — public for hot-reload from ini file watcher
@@ -463,7 +463,8 @@ private:
 	bool vrsEyeTracked = true; // Auto gaze only; no implicit fixed fallback
 	float vrsInnerRadius = 0.60f;
 	float vrsMidRadius = 0.80f;
-	float vrsOuterRadius = 1.00f;
+	bool vrsCompatibilityMode = true; // cap coarse shading at 2x1/1x2 for Skyrim shader safety
+	float vrsOuterRadius = 1.00f; // legacy no-op; retained only to parse older INIs quietly
 	bool vrsFavorHorizontal = true;
 
 	// DLSS 4 Super Resolution (NVIDIA only, native DX11 NGX)

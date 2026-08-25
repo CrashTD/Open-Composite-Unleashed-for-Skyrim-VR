@@ -1,6 +1,44 @@
 # Changelog
 
-## Unreleased
+## v4.2.7 - 25 Aug 2026
+
+Changes since the Nexus build uploaded 22 Aug 2026 at 3:17 PM.
+
+- Moved high-frequency DLSS, FSR3, motion-vector, and live-gaze telemetry behind the explicit `logLevel=debug` setting. Normal logging retains startup state, failures, first-frame confirmation, and slow-frame warnings without continuously writing render-path diagnostics.
+- Cleaned the packaged `opencomposite.ini` so new installs receive the standard keyboard size, opacity, position, laser-adjustment, and VRIK preset defaults instead of development-machine values.
+- Removed duplicate Keyboard Design entries caused by older managed copies sharing a bundled design name. The current stock design now wins and appears once under its clean name, including `Pug Dragon Keyboard`.
+- Fixed authored settings arrows being visually covered but laser-blocked by invisible keyboard regions. Arrow hit testing now follows the renderer's topmost order, correcting the Dwemer opacity-up triangle that previously responded only when aimed just above it.
+
+- Matched the Configurator's Open Keyboard Studio action to the exact positive-button green used elsewhere and added a one-second diagonal sword-shine sweep every five seconds.
+- Removed pointer-drag stalls by coalescing full 1024x560 preview rendering and deferring inspector-panel rebuilds until the drag is released.
+- Added visible-item marquee selection from empty canvas space, additive Ctrl/Shift marquee selection, per-item/group outlines, and group movement.
+- Hidden plates are excluded from marquee selection. Full-canvas backgrounds are selected only when completely enclosed so they do not capture every box.
+- Renamed the misleading Grid Width section to Grid Column Count and documents that fewer columns produce larger keys.
+- Removed the zero-position clamp from typing-key numeric fields, pointer movement, multi-selection movement, and edge resizing. Negative grid X/Y positions now work end to end.
+- Preview/input bar, PC/VR Mode, and Lock now have independent plate width, plate height, and font scale. Visible plates resize with canvas handles, the mouse wheel scales their font, and native OCU rendering plus laser hit testing use the authored rectangles.
+- Fixed Base Theme showing the raw `KeyboardTheme` record instead of readable theme names. Added an explicit explanation that custom colors/artwork override most theme visuals while fallback styling and geometry remain.
+- Moved Undo and Redo from the top action row to a dedicated lower-right strip beneath the keyboard preview; the live history count remains in the bottom status bar.
+- Added cursor-anchored 100%-500% canvas zoom: when text is selected the wheel resizes that font anywhere on the canvas; selecting a non-text element makes the wheel zoom the full keyboard, and middle-drag pans for pixel-level work.
+- Fixed Use custom keyboard colors replacing stock-template colors with hidden green defaults. Its first enable now seeds editable colors, outline behavior, roundness, and effects from the currently visible Base Theme; later off/on toggles restore the user's custom values.
+- Replaced the stock Dwemer Keyboard Design with the latest `Dwemer.ocukb` layout under the same Dwemer name. The design now uses OCU's bundled Dwemer Base Theme background and loose layout data, so the Nexus package contains no nested archive.
+- Added Pug Dragon as a second bundled artwork-backed Keyboard Design in both Studio and Configurator while leaving Parchment first and permanently default.
+- Suppressed managed-library duplicates when a saved/imported layout is byte-identical to a bundled stock design.
+- Save now disables once the current project is clean and refuses a redundant second write; Save As remains available for intentionally creating another copy.
+- A selected font now owns the mouse wheel anywhere on the preview instead of requiring the pointer to remain over its painted glyphs.
+- Unlocked procedural color, strength, radius, and breathing controls for the built-in side-control triangles as well as replacement arrow PNGs; the effect is serialized and rendered by native OCU.
+- Replaced the pill-button look inside square inspector tabs with proper rounded-top tab shapes.
+- Replaced the legacy Dwemer Base Theme artwork itself with the new authored Dwemer background, pre-rendered through Studio's exact 1024x560 background transform for both the Studio preview and OCU's embedded runtime resource.
+
+## v4.2.6 - 22 Aug 2026
+
+Changes since Nexus v4.2.5, uploaded 16 Aug 2026 at 3:11 AM.
+
+### Community Shaders / CSX Compatibility
+
+- Removed OCU's MapMenu integration completely. OCU no longer renders a map beam or dot, reads native pointer depth, exports map geometry, calls MapMenu Scaleform, or masks map input. Skyrim VR's original map laser and controls remain fully native.
+- Both controller lasers now remain visible at matching full strength in flat menus, including MCM and RaceMenu. Skyrim's single menu cursor follows the last laser meaningfully moved on the menu quad; clicking also transfers ownership immediately. A motion dead zone prevents tracking jitter from making stationary hands fight, and ownership stays locked through slider, scrollbar, and RaceMenu sculpt drags until the original hand releases.
+- Fixed a delayed MapMenu/fast-travel crash that produced the same poisoned `MapZoomHandler`/`MapLookHandler`/`MapMoveHandler`/`MapClickHandler` pointer signature both with and without Community Shaders.
+- Added single-flight guards to OCU's game-thread laser, console-pick, and render-target refresh jobs, and limited expensive menu work to one pass per submitted frame or menu transition. A blocked menu frame can no longer accumulate or repeatedly execute hundreds of stale pumps and then run at one frame every 5–10 seconds.
 
 ### Movable Keyboard Top Bar
 
@@ -15,6 +53,11 @@
 
 ### Keyboard Arrow-Key Editing
 
+- Reworked Keyboard Studio's Key page around a physical-key capture button. Click Assigned key and press a real key; Studio translates normal and Shift output through the active Windows keyboard layout instead of exposing raw OCU escape fields.
+- Corrected the bundled number row to use `Shift+3 = #` instead of the British pound sign, and changed the grave key's shifted symbol to `~`.
+- Renamed label placement to Font X/Y and Font size/scale, replaced the ambiguous Layout block with a documented Grid Width/Columns control, removed the duplicate inspector Undo/Redo buttons, and removed the exposed Stretch-to-right checkbox. Editing an old stretched key's width now converts it to an explicit width without jumping.
+- Renamed Appearance's Key Shape section to Interaction / Selection. Hidden key or top-control plates are now click-through in Studio instead of leaving large invisible draggable regions; visible glyphs remain directly selectable and native in-game assignments remain intact.
+- Matched Studio to the Configurator's exact dark-green palette, glowing anti-aliased pill buttons, green checkboxes, Segoe UI typography, and selected-tab treatment. The inspector now opens wide enough to show Key, Appearance, Artwork, and Controls without a tab-scroll arrow.
 - Fixed the keyboard's Up, Down, Left, and Right key triangles so each one uses its own authored content offset and scale in both Studio and the VR keyboard.
 - Arrow-key content can now be dragged, mouse-wheel scaled, or resized with handles instead of filling the entire key plate.
 - Fixed translucent plate outlines and glows bleeding through the entire key fill. Fill now paints only the interior, outline is a true border ring, and glow is confined to rings outside the plate in both Studio and VR.
@@ -30,6 +73,9 @@
 
 ### Eye-Tracked Foveated Rendering
 
+- Added Skyrim Compatibility as the default pattern whenever VRS is active; it does not enable VRS or Fixed by itself. Eye Tracking AUTO defaults on and activates eye-tracked VRS only while a valid gaze stream exists. Fixed defaults off. Compatibility caps peripheral coarse shading at half-rate (2x1/1x2) to avoid the severe flat-color terrain and foliage failures caused by 2x2 derivative/mip behavior; 2x2 remains available through the opt-in performance presets.
+- Removed the non-functional Outer Radius control. Older `vrsOuterRadius` entries are still accepted silently and are removed the next time the Configurator saves.
+- Fixed choosing a foveated-rendering preset immediately changing the preset display back to Custom while its values were being applied.
 - Hardened the standard `XR_EXT_eye_gaze_interaction` path for PSVR2Toolkit, Quest Pro, and other OpenXR runtimes/headsets.
 - Valid gaze poses are now accepted when a conforming runtime reports sample time `0` (timestamp unavailable); freshness limits still reject stale or implausibly future timestamped samples.
 - Added rate-limited gaze-state diagnostics plus live direction/per-eye UV diagnostics so hardware tests can prove that the VRS fovea is following the user's eyes.

@@ -158,9 +158,10 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 	    offeredFormats.c_str(), LaserFormatName(laserColorFormat), static_cast<int>(laserColorFormat),
 	    LaserFormatName(debugQuadFormat), static_cast<int>(debugQuadFormat));
 
-	// Create one copy of each color state. Both hand composition layers can
-	// legally reference the same released swapchain image in one frame.
-	for (int clicked = 0; clicked < 2; clicked++) {
+	// Create active-idle, active-clicked, and matching standby color states. Both hand
+	// composition layers can legally reference the same released swapchain image
+	// in one frame, so the standby state adds no per-frame texture work.
+	for (int state = 0; state < 3; state++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		sci.format = static_cast<int64_t>(laserColorFormat);
@@ -171,19 +172,19 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		sci.arraySize = 1;
 		sci.mipCount = 1;
 
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &beamChain[clicked]));
+		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &beamChain[state]));
 
 		uint32_t imgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[clicked], 0, &imgCount, nullptr));
+		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[state], 0, &imgCount, nullptr));
 		std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[clicked], imgCount, &imgCount,
+		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[state], imgCount, &imgCount,
 		    (XrSwapchainImageBaseHeader*)imgs.data()));
 
 		std::vector<uint32_t> colorPixels;
-		uint8_t r = clicked ? 55 : 255;
-		uint8_t g = clicked ? 145 : 240;
-		uint8_t b = clicked ? 255 : 220;
-		uint8_t a = clicked ? 220 : 200;
+		uint8_t r = state == 1 ? 55 : 255;
+		uint8_t g = state == 1 ? 145 : 240;
+		uint8_t b = state == 1 ? 255 : 220;
+		uint8_t a = state == 1 ? 220 : 200;
 		if (IsBgraFormat(laserColorFormat))
 			std::swap(r, b);
 		beamtex::Fill(colorPixels, r, g, b, a);
@@ -203,13 +204,13 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 
 		XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
 		uint32_t idx = 0;
-		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(beamChain[clicked], &acq, &idx));
+		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(beamChain[state], &acq, &idx));
 		XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
 		wait.timeout = 500000000;
-		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(beamChain[clicked], &wait));
+		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(beamChain[state], &wait));
 		ctx->CopyResource(imgs[idx].texture, tex);
 		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(beamChain[clicked], &rel));
+		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(beamChain[state], &rel));
 	}
 
 	for (int i = 0; i < 2; i++) {
@@ -224,8 +225,8 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		beamLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	// Create one matching idle/clicked dot texture shared by both hands.
-	for (int clicked = 0; clicked < 2; clicked++) {
+	// Create matching active-idle, active-clicked, and standby dot textures.
+	for (int state = 0; state < 3; state++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		sci.format = static_cast<int64_t>(laserColorFormat);
@@ -236,18 +237,19 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		sci.arraySize = 1;
 		sci.mipCount = 1;
 
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &dotChain[clicked]));
+		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &dotChain[state]));
 
 		uint32_t imgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[clicked], 0, &imgCount, nullptr));
+		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[state], 0, &imgCount, nullptr));
 		std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[clicked], imgCount, &imgCount,
+		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[state], imgCount, &imgCount,
 		    (XrSwapchainImageBaseHeader*)imgs.data()));
 
-		uint8_t cr = clicked ? 55 : 255;
-		uint8_t cg = clicked ? 145 : 240;
-		uint8_t cb = clicked ? 255 : 220;
-		uint32_t packed = PackColor(laserColorFormat, cr, cg, cb, 255);
+		uint8_t cr = state == 1 ? 55 : 255;
+		uint8_t cg = state == 1 ? 145 : 240;
+		uint8_t cb = state == 1 ? 255 : 220;
+		uint8_t ca = 255;
+		uint32_t packed = PackColor(laserColorFormat, cr, cg, cb, ca);
 		uint32_t dotPixels[64];
 		for (int py = 0; py < 8; py++) {
 			for (int px = 0; px < 8; px++) {
@@ -271,13 +273,13 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 
 		XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
 		uint32_t idx = 0;
-		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(dotChain[clicked], &acq, &idx));
+		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(dotChain[state], &acq, &idx));
 		XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
 		wait.timeout = 500000000;
-		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(dotChain[clicked], &wait));
+		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(dotChain[state], &wait));
 		ctx->CopyResource(imgs[idx].texture, tex);
 		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(dotChain[clicked], &rel));
+		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(dotChain[state], &rel));
 	}
 
 	for (int i = 0; i < 2; i++) {
@@ -292,12 +294,12 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		dotLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	OOVR_LOG("Menu laser swapchains: 4 shared beam/dot textures; calibration grid is lazy");
+	OOVR_LOG("Menu laser swapchains: 6 shared active/clicked/standby beam/dot textures; calibration grid is lazy");
 }
 
 VRMenuLaser::~VRMenuLaser()
 {
-	for (int state = 0; state < 2; state++) {
+	for (int state = 0; state < 3; state++) {
 		if (beamChain[state] != XR_NULL_HANDLE)
 			xrDestroySwapchain(beamChain[state]);
 		if (dotChain[state] != XR_NULL_HANDLE)
@@ -669,7 +671,10 @@ void VRMenuLaser::UpdateBeam(int side, const XrVector3f& origin, const XrVector3
 	};
 
 	beamLayer[side].pose.position = mid;
-	beamLayer[side].size.width = 0.003f; // 3mm — texture fades it to a point at the tip
+	// MapMenu is farther away and visually busier than a flat UI panel. Its
+	// compositor-owned compatibility beam replaces the old five-copy Skyrim
+	// mesh treatment with one clean 6mm layer.
+	beamLayer[side].size.width = mapVisualMode ? 0.006f : 0.003f;
 	beamLayer[side].size.height = beamLen;
 	beamLayer[side].pose.orientation = BeamOrientation(dir, mid, headPos);
 }
@@ -822,26 +827,23 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 		lastRayDir[side] = rayDir;
 
 		// Flat menus intersect the exported Scaleform quad. MapMenu instead uses
-		// Skyrim's native depth-resolved endpoint, which already follows terrain
-		// relief and floating icons.
+		// Skyrim's native depth-resolved distance, which already follows terrain
+		// relief and floating icons, on this live OpenXR controller ray.
 		float u = 0.0f, v = 0.0f, t = -1.0f;
 		bool hit = false;
 		bool visualSurfaceHit = false;
 		XrVector3f hitPoint = {};
 		if (mapVisualMode) {
-			if (mapVisualHitValid) {
-				XrVector3f toHit = {
-					mapVisualHitPoint.x - rayOrigin.x,
-					mapVisualHitPoint.y - rayOrigin.y,
-					mapVisualHitPoint.z - rayOrigin.z
+			if (mapVisualDistanceValid && std::isfinite(mapVisualDistanceMeters) &&
+			    mapVisualDistanceMeters > 0.03f && mapVisualDistanceMeters < 12.0f) {
+				t = mapVisualDistanceMeters;
+				hitPoint = {
+					rayOrigin.x + t * rayDir.x,
+					rayOrigin.y + t * rayDir.y,
+					rayOrigin.z + t * rayDir.z
 				};
-				t = sqrtf(toHit.x * toHit.x + toHit.y * toHit.y + toHit.z * toHit.z);
-				if (std::isfinite(t) && t > 0.02f && t < 12.0f) {
-					rayDir = { toHit.x / t, toHit.y / t, toHit.z / t };
-					hitPoint = mapVisualHitPoint;
-					hit = true;
-					visualSurfaceHit = true;
-				}
+				hit = true;
+				visualSurfaceHit = true;
 			}
 		} else {
 			hit = RayIntersectQuad(rayOrigin, rayDir, u, v, t);
@@ -875,14 +877,14 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 			}
 		}
 
-		// Flat menus use OCU's shaft. MapMenu keeps Skyrim's native depth-aware
-		// shaft and OCU submits only its endpoint dot. Reconstructing that shaft in
-		// OpenXR space is not reliable: Skyrim's UIPointerGeo can live outside the
-		// RoomNode chain and produced a vertical beam on real map scenes.
+		// Flat menus use OCU's shaft. MapMenu uses the same owned shaft only while
+		// Skyrim has published a valid depth-resolved distance. Because its direction
+		// remains the live OpenXR controller ray, no RoomNode endpoint conversion can
+		// produce the old vertical beam.
 		// Hidden hands still track hits/trigger above so they can claim the
 		// pointer, but draw nothing.
 		if (renderHand[side]) {
-			if (!mapVisualMode) {
+			if (!mapVisualMode || visualSurfaceHit) {
 				float beamLen = visualSurfaceHit ? t : DEFAULT_BEAM;
 				UpdateBeam(side, rayOrigin, rayDir, beamLen, headPos);
 				activeLayers.push_back((XrCompositionLayerBaseHeader*)&beamLayer[side]);
@@ -928,7 +930,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 
 		// Composition layers are submitted after Update returns, so switching the
 		// selected pre-baked swapchain here affects this same frame.
-		int colorState = triggerState[side] ? 1 : 0;
+		int colorState = side == activeHand ? (triggerState[side] ? 1 : 0) : 2;
 		beamLayer[side].subImage.swapchain = beamChain[colorState];
 		dotLayer[side].subImage.swapchain = dotChain[colorState];
 	}

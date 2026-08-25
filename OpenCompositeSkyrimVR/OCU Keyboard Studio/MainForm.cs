@@ -9,50 +9,50 @@ internal sealed record KeyboardDesignChoice(string Name, string Path, bool Built
 
 internal sealed class MainForm : Form
 {
-    private static readonly Color Surface = Color.FromArgb(14, 17, 22);
-    private static readonly Color SurfaceRaised = Color.FromArgb(22, 26, 33);
-    private static readonly Color Edge = Color.FromArgb(48, 56, 68);
-    private static readonly Color Accent = Color.FromArgb(62, 190, 143);
-    private static readonly Color AccentBright = Color.FromArgb(132, 242, 158);
-    private static readonly Color TextPrimary = Color.FromArgb(237, 240, 245);
-    private static readonly Color TextMuted = Color.FromArgb(155, 165, 177);
+    private static readonly Color Surface = StudioTheme.Window;
+    private static readonly Color SurfaceRaised = StudioTheme.Surface;
+    private static readonly Color Edge = StudioTheme.Border;
+    private static readonly Color Accent = StudioTheme.KeyGlow;
+    private static readonly Color AccentBright = StudioTheme.KeyGlowBright;
+    private static readonly Color TextPrimary = StudioTheme.TextPrimary;
+    private static readonly Color TextMuted = StudioTheme.TextMuted;
 
     private readonly KeyboardCanvas _canvas = new() { Dock = DockStyle.Fill };
-    private readonly TabControl _inspectorTabs = new();
+    private readonly ModernTabControl _inspectorTabs = new();
     private readonly ComboBox _themeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _fontCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _designCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly ComboBox _stateCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly CheckBox _pressedCheck = new() { Text = "Pressed", AutoSize = true };
-    private readonly CheckBox _snapCheck = new() { Text = "Snap", AutoSize = true, Checked = true };
+    private readonly ModernCheckBox _pressedCheck = new() { Text = "Pressed", AutoSize = true };
+    private readonly ModernCheckBox _snapCheck = new() { Text = "Snap", AutoSize = true, Checked = true };
     private readonly Label _statusLabel = new() { AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
     private readonly Label _historyLabel = new() { AutoSize = false, Dock = DockStyle.Right, Width = 190, TextAlign = ContentAlignment.MiddleRight };
     private readonly Label _selectedLabel = new() { AutoSize = true };
     private readonly TextBox _baseLabel = new();
     private readonly TextBox _shiftLabel = new();
-    private readonly TextBox _codeLabel = new() { ReadOnly = true };
-    private readonly TextBox _normalCode = new();
-    private readonly TextBox _shiftCode = new();
-    private readonly NumericUpDown _x = NumberBox(0, 30, 2, 0.05m);
-    private readonly NumericUpDown _y = NumberBox(0, 20, 2, 0.05m);
+    private readonly ModernPillButton _assignedKeyButton = new() { Text = "Select a key first", AutoSize = false, Height = 34 };
+    private readonly NumericUpDown _x = NumberBox(-100, 100, 2, 0.05m);
+    private readonly NumericUpDown _y = NumberBox(-100, 100, 2, 0.05m);
     private readonly NumericUpDown _width = NumberBox(0.25m, 30, 2, 0.05m);
     private readonly NumericUpDown _height = NumberBox(0.25m, 20, 2, 0.05m);
     private readonly NumericUpDown _offsetX = NumberBox(-250, 250, 1, 1);
     private readonly NumericUpDown _offsetY = NumberBox(-250, 250, 1, 1);
     private readonly NumericUpDown _scale = NumberBox(0.25m, 3, 2, 0.05m);
     private readonly NumericUpDown _layoutWidth = NumberBox(5, 30, 0, 1);
-    private readonly CheckBox _spansRight = new() { Text = "Stretch to right edge", AutoSize = true };
     private readonly Label _topElementLabel = new() { AutoSize = true };
     private readonly NumericUpDown _topElementX = NumberBox(-1024, 1024, 0, 1);
     private readonly NumericUpDown _topElementY = NumberBox(-560, 560, 0, 1);
-    private readonly CheckBox _customStyle = new() { Text = "Use custom keyboard colors", AutoSize = true };
-    private readonly CheckBox _keyPlatesEnabled = new() { Text = "Show key plates", AutoSize = true };
-    private readonly CheckBox _topButtonPlatesEnabled = new() { Text = "Show PC/VR Mode + Lock plates", AutoSize = true };
-    private readonly CheckBox _inputBarPlateEnabled = new() { Text = "Show input bar plate", AutoSize = true };
-    private readonly CheckBox _parchmentRibbonEnabled = new() { Text = "Show Parchment spacebar ribbon", AutoSize = true };
-    private readonly CheckBox _glowEnabled = new() { Text = "Plate outline glow", AutoSize = true };
-    private readonly CheckBox _hoverEnabled = new() { Text = "Hover effect", AutoSize = true };
-    private readonly CheckBox _outlineEnabled = new() { Text = "Font outline", AutoSize = true };
+    private readonly NumericUpDown _topElementWidth = NumberBox(8, 2048, 0, 1);
+    private readonly NumericUpDown _topElementHeight = NumberBox(8, 1120, 0, 1);
+    private readonly NumericUpDown _topElementFontScale = NumberBox(0.2m, 3, 2, 0.05m);
+    private readonly ModernCheckBox _customStyle = new() { Text = "Use custom keyboard colors", AutoSize = true };
+    private readonly ModernCheckBox _keyPlatesEnabled = new() { Text = "Show key plates", AutoSize = true };
+    private readonly ModernCheckBox _topButtonPlatesEnabled = new() { Text = "Show PC/VR Mode + Lock plates", AutoSize = true };
+    private readonly ModernCheckBox _inputBarPlateEnabled = new() { Text = "Show input bar plate", AutoSize = true };
+    private readonly ModernCheckBox _parchmentRibbonEnabled = new() { Text = "Show Parchment spacebar ribbon", AutoSize = true };
+    private readonly ModernCheckBox _glowEnabled = new() { Text = "Plate outline glow", AutoSize = true };
+    private readonly ModernCheckBox _hoverEnabled = new() { Text = "Hover effect", AutoSize = true };
+    private readonly ModernCheckBox _outlineEnabled = new() { Text = "Font outline", AutoSize = true };
     private readonly Button _fontColor = SwatchButton();
     private readonly Button _fontOutlineColor = SwatchButton();
     private readonly Button _fontGlowColor = SwatchButton();
@@ -65,14 +65,14 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _hoverStrength = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _keyRoundness = NumberBox(0, 24, 0, 1);
     private readonly NumericUpDown _plateOutlineWidth = NumberBox(0, 8, 0, 1);
-    private readonly CheckBox _keyBreathe = new() { Text = "Breathing plate glow", AutoSize = true };
+    private readonly ModernCheckBox _keyBreathe = new() { Text = "Breathing plate glow", AutoSize = true };
     private readonly NumericUpDown _keyBreatheMin = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _keyBreathePeriod = NumberBox(0.5m, 10, 2, 0.25m);
     private readonly NumericUpDown _keyBreathePhase = NumberBox(0, 360, 0, 15);
-    private readonly CheckBox _fontGlowEnabled = new() { Text = "Font glow", AutoSize = true };
+    private readonly ModernCheckBox _fontGlowEnabled = new() { Text = "Font glow", AutoSize = true };
     private readonly NumericUpDown _fontGlowStrength = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _fontGlowRadius = NumberBox(1, 8, 0, 1);
-    private readonly CheckBox _fontBreathe = new() { Text = "Breathing font glow", AutoSize = true };
+    private readonly ModernCheckBox _fontBreathe = new() { Text = "Breathing font glow", AutoSize = true };
     private readonly NumericUpDown _fontBreatheMin = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _fontBreathePeriod = NumberBox(0.5m, 10, 2, 0.25m);
     private readonly NumericUpDown _fontBreathePhase = NumberBox(0, 360, 0, 15);
@@ -94,11 +94,11 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _overlayOpacity = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _spriteFade = NumberBox(0, 300, 0, 2);
     private readonly NumericUpDown _spriteRotation = NumberBox(-360, 360, 0, 5);
-    private readonly CheckBox _spriteGlow = new() { Text = "Procedural glow", AutoSize = true };
+    private readonly ModernCheckBox _spriteGlow = new() { Text = "Procedural glow", AutoSize = true };
     private readonly Button _spriteGlowColor = SwatchButton();
     private readonly NumericUpDown _spriteGlowStrength = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _spriteGlowRadius = NumberBox(1, 48, 0, 1);
-    private readonly CheckBox _spriteBreathe = new() { Text = "Breathing glow", AutoSize = true };
+    private readonly ModernCheckBox _spriteBreathe = new() { Text = "Breathing glow", AutoSize = true };
     private readonly NumericUpDown _spriteBreatheMin = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _spriteBreathePeriod = NumberBox(0.5m, 10, 2, 0.25m);
     private readonly NumericUpDown _spriteBreathePhase = NumberBox(0, 360, 0, 15);
@@ -115,7 +115,11 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _controlPartScale = NumberBox(0.2m, 3, 2, 0.05m);
     private readonly Label _controlArrowName = new() { AutoSize = true, MaximumSize = new Size(280, 0) };
     private readonly NumericUpDown _controlArrowRotation = NumberBox(-360, 360, 0, 5);
-    private readonly CheckBox _controlArrowBreathe = new() { Text = "Breathing opacity", AutoSize = true };
+    private readonly ModernCheckBox _controlArrowGlow = new() { Text = "Procedural arrow glow", AutoSize = true };
+    private readonly Button _controlArrowGlowColor = SwatchButton();
+    private readonly NumericUpDown _controlArrowGlowStrength = NumberBox(0, 100, 0, 5);
+    private readonly NumericUpDown _controlArrowGlowRadius = NumberBox(1, 48, 0, 1);
+    private readonly ModernCheckBox _controlArrowBreathe = new() { Text = "Breathing arrow glow", AutoSize = true };
     private readonly NumericUpDown _controlArrowBreatheMin = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _controlArrowBreathePeriod = NumberBox(0.5m, 10, 2, 0.25m);
     private readonly NumericUpDown _controlArrowBreathePhase = NumberBox(0, 360, 0, 15);
@@ -123,8 +127,11 @@ internal sealed class MainForm : Form
     private readonly Stack<KeyboardDocument> _redo = [];
     private readonly List<FontChoice> _fonts = [];
     private readonly List<KeyboardDesignChoice> _designs = [];
+    private readonly ToolTip _toolTip = new();
     private Button _undoButton = null!;
     private Button _redoButton = null!;
+    private Button _saveButton = null!;
+    private Button _installButton = null!;
 
     private KeyboardDocument _document = new();
     private KeyboardRenderer? _renderer;
@@ -132,16 +139,19 @@ internal sealed class MainForm : Form
     private bool _updatingEditor;
     private bool _updatingDesignLibrary;
     private string _assetsDirectory = "";
-    private readonly string? _hostOcuRoot;
+    private string? _hostOcuRoot;
+    private string? _currentPackagePath;
+    private bool _capturingAssignedKey;
 
     private static string DesignLibraryDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "OpenCompositeUnleashed", "KeyboardStudio", "Designs");
     private static string DesignRegistryPath => Path.Combine(DesignLibraryDirectory, "design-library.txt");
 
-    public MainForm()
+    public MainForm(string? requestedOcuRoot = null, string? keyboardFile = null)
     {
-        _hostOcuRoot = FindOcuRootFromStudioDirectory(AppContext.BaseDirectory);
+        _hostOcuRoot = ResolveSelectedOcuRoot(requestedOcuRoot)
+            ?? FindOcuRootFromStudioDirectory(AppContext.BaseDirectory);
         Text = "OCU Keyboard Studio";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1180, 720);
@@ -150,6 +160,7 @@ internal sealed class MainForm : Form
         ForeColor = TextPrimary;
         Font = new Font("Segoe UI", 9.5f);
         AutoScaleMode = AutoScaleMode.Dpi;
+        StudioTheme.EnableDarkWindowChrome(this);
 
         Controls.Add(BuildMainLayout());
         Controls.Add(BuildToolbar());
@@ -157,14 +168,21 @@ internal sealed class MainForm : Form
 
         DiscoverAssets();
         WireEvents();
+        _toolTip.SetToolTip(_canvas,
+            "When text is selected, the mouse wheel resizes that font anywhere on the canvas. Select a plate, artwork, background, or empty canvas to wheel-zoom the keyboard. Middle-drag pans while zoomed.");
         LoadDefaultLayout();
+        if (!string.IsNullOrWhiteSpace(keyboardFile))
+            LoadKeyboardFile(keyboardFile);
         UpdateTitle();
     }
 
     private Control BuildToolbar()
     {
-        _undoButton = ActionButton("Undo", (_, _) => Undo(), compact: true);
-        _redoButton = ActionButton("Redo", (_, _) => Redo(), compact: true);
+        EnsureHistoryButtons();
+        _saveButton = ActionButton("Save", (_, _) => SaveLayout(false));
+        _installButton = ActionButton("Install for Next Launch", (_, _) => InstallToOcu());
+        _toolTip.SetToolTip(_installButton,
+            "Writes this keyboard into the OCU installation that opened Studio. Restart Skyrim VR to load it.");
         var toolbar = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -185,14 +203,12 @@ internal sealed class MainForm : Form
             Margin = Padding.Empty
         };
         actions.Controls.AddRange([
-            ActionButton("Open .kb", (_, _) => OpenLayout()),
-            ActionButton("Save", (_, _) => SaveLayout(false)),
+            ActionButton("Open / Import", (_, _) => OpenLayout()),
+            _saveButton,
             ActionButton("Save As", (_, _) => SaveLayout(true)),
-            _undoButton,
-            _redoButton,
             ActionButton("Export PNG", (_, _) => ExportPng()),
-            ActionButton("Export Mod", (_, _) => ExportMo2Mod()),
-            ActionButton("Apply to Game", (_, _) => InstallToOcu())
+            ActionButton("Export MO2 Mod", (_, _) => ExportMo2Mod()),
+            _installButton
         ]);
 
         var design = new FlowLayoutPanel
@@ -201,10 +217,14 @@ internal sealed class MainForm : Form
             WrapContents = false,
             Margin = Padding.Empty
         };
+        Label baseThemeCaption = Caption("Base Theme");
+        const string baseThemeHelp = "The built-in visual foundation: fallback background/colors, plate treatment, Parchment ribbon eligibility, and theme-specific top-button offsets. A custom background and custom colors override most of its visible appearance.";
+        _toolTip.SetToolTip(baseThemeCaption, baseThemeHelp);
+        _toolTip.SetToolTip(_themeCombo, baseThemeHelp);
         design.Controls.AddRange([
             Caption("Keyboard Design"), _designCombo,
             Spacer(12),
-            Caption("Base Theme"), _themeCombo,
+            baseThemeCaption, _themeCombo,
             Caption("Font"), _fontCombo, ActionButton("Add TTF", (_, _) => ImportFont(), compact: true),
             Caption("State"), _stateCombo,
             _pressedCheck,
@@ -228,6 +248,7 @@ internal sealed class MainForm : Form
 
     private Control BuildMainLayout()
     {
+        EnsureHistoryButtons();
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
@@ -236,23 +257,56 @@ internal sealed class MainForm : Form
             SplitterWidth = 6,
             BackColor = Edge,
             Panel1MinSize = 700,
-            Panel2MinSize = 310,
-            SplitterDistance = 1160
+            Panel2MinSize = 440,
+            SplitterDistance = 1045
         };
         split.Panel1.BackColor = Color.FromArgb(9, 11, 15);
         split.Panel1.Padding = new Padding(12);
-        split.Panel1.Controls.Add(_canvas);
+        var canvasLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            ColumnCount = 1,
+            RowCount = 2
+        };
+        canvasLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        canvasLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        canvasLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        var historyButtons = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Padding(0, 5, 4, 3),
+            BackColor = Color.FromArgb(9, 11, 15),
+            ColumnCount = 3,
+            RowCount = 1
+        };
+        historyButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        historyButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        historyButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        _undoButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _redoButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        historyButtons.Controls.Add(_undoButton, 1, 0);
+        historyButtons.Controls.Add(_redoButton, 2, 0);
+        canvasLayout.Controls.Add(_canvas, 0, 0);
+        canvasLayout.Controls.Add(historyButtons, 0, 1);
+        split.Panel1.Controls.Add(canvasLayout);
         split.Panel2.BackColor = Surface;
         split.Panel2.Padding = new Padding(12);
         split.Panel2.Controls.Add(BuildInspector());
         return split;
     }
 
+    private void EnsureHistoryButtons()
+    {
+        _undoButton ??= ActionButton("Undo", (_, _) => Undo(), compact: true);
+        _redoButton ??= ActionButton("Redo", (_, _) => Redo(), compact: true);
+    }
+
     private Control BuildInspector()
     {
         _inspectorTabs.Dock = DockStyle.Fill;
-        _inspectorTabs.Appearance = TabAppearance.Normal;
-        _inspectorTabs.Padding = new Point(14, 6);
         TabPage keyPage = InspectorPage("Key");
         TabPage appearancePage = InspectorPage("Appearance");
         TabPage artworkPage = InspectorPage("Artwork");
@@ -276,7 +330,7 @@ internal sealed class MainForm : Form
             Padding = new Padding(2),
             BackColor = Surface
         };
-        inspector.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        inspector.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
         inspector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         AddSection(inspector, "DIRECT EDITING");
@@ -284,19 +338,17 @@ internal sealed class MainForm : Form
 
         AddSection(inspector, "SELECTED KEY");
         AddWide(inspector, _selectedLabel);
-        AddRow(inspector, "Key code", _codeLabel);
-        AddRow(inspector, "Output normal", _normalCode);
-        AddRow(inspector, "Output shift", _shiftCode);
-        AddRow(inspector, "Normal label", _baseLabel);
-        AddRow(inspector, "Shift label", _shiftLabel);
+        AddRow(inspector, "Assigned key", _assignedKeyButton);
+        AddHint(inspector, "Click Assigned key, then press the real key on your physical keyboard. Studio translates its normal and Shift values using your Windows keyboard layout.");
+        AddRow(inspector, "Key text", _baseLabel);
+        AddRow(inspector, "Shift text", _shiftLabel);
         AddRow(inspector, "Key X", _x);
         AddRow(inspector, "Key Y", _y);
         AddRow(inspector, "Key width", _width);
         AddRow(inspector, "Key height", _height);
-        AddRow(inspector, "Label X px", _offsetX);
-        AddRow(inspector, "Label Y px", _offsetY);
-        AddRow(inspector, "Label scale", _scale);
-        AddWide(inspector, _spansRight);
+        AddRow(inspector, "Font X px", _offsetX);
+        AddRow(inspector, "Font Y px", _offsetY);
+        AddRow(inspector, "Font size / scale", _scale);
 
         var keyActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
         keyActions.Controls.Add(ActionButton("Duplicate", (_, _) => DuplicateKey(), compact: true));
@@ -307,15 +359,14 @@ internal sealed class MainForm : Form
         AddWide(inspector, _topElementLabel);
         AddRow(inspector, "Offset X", _topElementX);
         AddRow(inspector, "Offset Y", _topElementY);
-        AddHint(inspector, "These offsets move both the rendered element and its in-game laser hit area.");
+        AddRow(inspector, "Plate width px", _topElementWidth);
+        AddRow(inspector, "Plate height px", _topElementHeight);
+        AddRow(inspector, "Font size / scale", _topElementFontScale);
+        AddHint(inspector, "Drag visible plate edges to resize. The mouse wheel changes its font size. Saved geometry also moves and resizes the in-game laser hit area.");
 
-        AddSection(inspector, "LAYOUT");
-        AddRow(inspector, "Grid width", _layoutWidth);
-        var history = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
-        history.Controls.Add(ActionButton("Undo", (_, _) => Undo(), compact: true));
-        history.Controls.Add(ActionButton("Redo", (_, _) => Redo(), compact: true));
-        AddWide(inspector, history);
-        AddHint(inspector, "Outputs accept a literal character or OCU escapes such as \\n, \\b, \\e, \\f1, \\C, and \\P. Save As makes a custom .kb. Install activates its layout, theme, and font.");
+        AddSection(inspector, "GRID COLUMN COUNT");
+        AddRow(inspector, "Columns across", _layoutWidth);
+        AddHint(inspector, "This controls density, not pixel width: 14 columns makes larger keys than 15 because the same 784 px area is divided into fewer cells.");
 
         return inspector;
     }
@@ -323,7 +374,7 @@ internal sealed class MainForm : Form
     private Control BuildAppearanceInspector()
     {
         var inspector = InspectorTable();
-        AddSection(inspector, "KEY SHAPE");
+        AddSection(inspector, "INTERACTION / SELECTION");
         StyleCheck(_keyPlatesEnabled);
         StyleCheck(_topButtonPlatesEnabled);
         StyleCheck(_inputBarPlateEnabled);
@@ -332,7 +383,7 @@ internal sealed class MainForm : Form
         AddWide(inspector, _topButtonPlatesEnabled);
         AddWide(inspector, _inputBarPlateEnabled);
         AddWide(inspector, _parchmentRibbonEnabled);
-        AddHint(inspector, "These are independent. Turning ordinary key plates off does not remove the interactive Mode, Lock, or input-bar hit areas; their own switches hide only the visual plates.");
+        AddHint(inspector, "Visible plates can be selected anywhere inside their shape. Hidden plates are click-through in Studio; select their visible text or artwork instead. Hiding a plate changes the look, not the key assigned to that location in game.");
 
         AddSection(inspector, "CUSTOM COLORS");
         StyleCheck(_customStyle);
@@ -402,7 +453,7 @@ internal sealed class MainForm : Form
         overlayActions.Controls.Add(ActionButton("Add Parchment Ribbon", (_, _) => AddParchmentRibbon(), compact: true));
         overlayActions.Controls.Add(ActionButton("Remove", (_, _) => ClearOverlay(), compact: true));
         AddWide(inspector, overlayActions);
-        _spriteList.BackColor = SurfaceRaised;
+        _spriteList.BackColor = StudioTheme.Input;
         _spriteList.ForeColor = TextPrimary;
         _spriteList.BorderStyle = BorderStyle.FixedSingle;
         AddWide(inspector, _spriteList);
@@ -461,12 +512,17 @@ internal sealed class MainForm : Form
         _controlArrowName.ForeColor = TextMuted;
         AddWide(inspector, _controlArrowName);
         AddRow(inspector, "Rotation deg", _controlArrowRotation);
+        StyleCheck(_controlArrowGlow);
+        AddWide(inspector, _controlArrowGlow);
+        AddRow(inspector, "Glow color", _controlArrowGlowColor);
+        AddRow(inspector, "Glow strength", _controlArrowGlowStrength);
+        AddRow(inspector, "Glow radius px", _controlArrowGlowRadius);
         StyleCheck(_controlArrowBreathe);
         AddWide(inspector, _controlArrowBreathe);
         AddRow(inspector, "Breathe min %", _controlArrowBreatheMin);
         AddRow(inspector, "Period seconds", _controlArrowBreathePeriod);
         AddRow(inspector, "Phase degrees", _controlArrowBreathePhase);
-        AddHint(inspector, "Click empty space inside a settings control to select its outer box; drag its handles to widen or resize the group. Click directly on an arrow, label glyph, or value glyph to select and move that child alone. Arrow children have their own resize handles; mouse wheel scales selected text. Down reuses Up rotated 180 degrees.");
+        AddHint(inspector, "Click empty space inside a settings control to select its outer box; drag its handles to widen or resize the group. Click directly on an arrow, label glyph, or value glyph to select and move that child alone. Arrow children have their own resize handles. Procedural glow and breathing work with both the built-in triangles and replacement PNGs. Down reuses Up rotated 180 degrees.");
         return inspector;
     }
 
@@ -541,6 +597,7 @@ internal sealed class MainForm : Form
 
     private void LoadDefaultLayout()
     {
+        _currentPackagePath = null;
         string path = Path.Combine(_assetsDirectory, "en_gb.kb");
         if (!File.Exists(path))
             throw new FileNotFoundException("The bundled en_gb.kb layout is missing.", path);
@@ -555,20 +612,27 @@ internal sealed class MainForm : Form
     {
         _canvas.SelectionChanged += (_, _) =>
         {
-            _inspectorTabs.SelectedIndex = _canvas.SelectionKind switch
+            if (!_canvas.HasMultipleSelection)
+                _inspectorTabs.SelectedIndex = _canvas.SelectionKind switch
+                {
+                    CanvasSelectionKind.Sprite or CanvasSelectionKind.Background => 2,
+                    CanvasSelectionKind.Control or CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlLabel
+                        or CanvasSelectionKind.ControlValue or CanvasSelectionKind.ControlDownArrow => 3,
+                    CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate => 0,
+                    CanvasSelectionKind.TopTextBar or CanvasSelectionKind.TopMode or CanvasSelectionKind.TopLock => 0,
+                    _ => _inspectorTabs.SelectedIndex
+                };
+            if (_canvas.HasMultipleSelection)
             {
-                CanvasSelectionKind.Sprite or CanvasSelectionKind.Background => 2,
-                CanvasSelectionKind.Control or CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlLabel
-                    or CanvasSelectionKind.ControlValue or CanvasSelectionKind.ControlDownArrow => 3,
-                CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate => 0,
-                CanvasSelectionKind.TopTextBar or CanvasSelectionKind.TopMode or CanvasSelectionKind.TopLock => 0,
-                _ => _inspectorTabs.SelectedIndex
-            };
+                SetStatus($"{_canvas.SelectionCount} visible items selected. Drag any outlined item to move the group; Ctrl/Shift-drag adds more.");
+            }
             PopulateInspector();
             PopulateArtworkInspector();
             PopulateControlsInspector();
         };
         _canvas.EditStarted += (_, _) => _pendingCanvasUndo ??= _document.Clone();
+        _canvas.ViewZoomChanged += (_, _) => SetStatus(
+            $"Canvas zoom: {_canvas.ViewZoomPercent}%. Scroll over selected text to resize it; scroll elsewhere to zoom. Middle-drag pans.");
         _canvas.DocumentChanged += (_, _) =>
         {
             PopulateInspector();
@@ -597,6 +661,11 @@ internal sealed class MainForm : Form
         };
         _canvas.ChooseControlArrowRequested += (_, _) => ChooseControlArrow();
         _canvas.UseBuiltInControlArrowRequested += (_, _) => ClearControlArrow();
+        _canvas.KeyboardFileDropped += path =>
+        {
+            if (ConfirmDiscard())
+                LoadKeyboardFile(path);
+        };
 
         _designCombo.SelectedIndexChanged += (_, _) =>
         {
@@ -613,10 +682,11 @@ internal sealed class MainForm : Form
             }
             try
             {
+                _currentPackagePath = null;
                 SetDocument(KeyboardDocument.Load(choice.Path), clearHistory: true);
                 RefreshDesignChoices(choice.Path);
                 SetStatus(_hostOcuRoot is null
-                    ? $"Loaded keyboard design: {choice.Name}. Apply to Game when you want to activate it."
+                    ? $"Loaded keyboard design: {choice.Name}. Install for Next Launch when you want to activate it."
                     : $"Loaded keyboard design: {choice.Name}. Save applies it directly to {_hostOcuRoot}.");
             }
             catch (Exception exception)
@@ -639,8 +709,10 @@ internal sealed class MainForm : Form
                     PushUndo();
                     _document.BaseTheme = configName;
                     MarkChanged();
-                    SetStatus($"Design theme changed to {theme.Name}.");
                 }
+                SetStatus(_document.CustomStyleEnabled || !string.IsNullOrWhiteSpace(_document.BackgroundImagePath)
+                    ? $"Base Theme: {theme.Name}. Custom colors/artwork override most theme visuals; its fallback styling and geometry remain."
+                    : $"Base Theme: {theme.Name}. This supplies the keyboard's built-in background, colors, plate treatment, and offsets.");
             }
             _canvas.RefreshPreview();
             PopulateAppearanceInspector();
@@ -666,9 +738,9 @@ internal sealed class MainForm : Form
                         _document.CustomFontTexturePath = texture;
                         MarkChanged();
                     }
+                    SetStatus($"Design font: {_fontCombo.SelectedItem}. Shared exports carry this exact selection.");
                 }
                 _canvas.RefreshPreview();
-                SetStatus($"Design font: {_fontCombo.SelectedItem}. Shared exports carry this exact selection.");
             }
             catch (Exception exception)
             {
@@ -690,7 +762,7 @@ internal sealed class MainForm : Form
             _canvas.RefreshPreview();
         };
         _snapCheck.CheckedChanged += (_, _) => _canvas.SnapToTenth = _snapCheck.Checked;
-        _customStyle.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.CustomStyleEnabled = _customStyle.Checked);
+        _customStyle.CheckedChanged += (_, _) => ToggleCustomStyle();
         _keyPlatesEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.KeyPlatesEnabled = _keyPlatesEnabled.Checked);
         _topButtonPlatesEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.TopButtonPlatesEnabled = _topButtonPlatesEnabled.Checked);
         _inputBarPlateEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.InputBarPlateEnabled = _inputBarPlateEnabled.Checked);
@@ -794,6 +866,10 @@ internal sealed class MainForm : Form
             else if (part == KeyboardControlPart.Value) design.ValueScale = (float)_controlPartScale.Value;
         });
         _controlArrowRotation.ValueChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowRotation = (float)_controlArrowRotation.Value);
+        _controlArrowGlow.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowGlowEnabled = _controlArrowGlow.Checked);
+        _controlArrowGlowColor.Click += (_, _) => ChooseControlArrowGlowColor();
+        _controlArrowGlowStrength.ValueChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowGlowStrength = (int)_controlArrowGlowStrength.Value);
+        _controlArrowGlowRadius.ValueChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowGlowRadius = (int)_controlArrowGlowRadius.Value);
         _controlArrowBreathe.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowBreatheEnabled = _controlArrowBreathe.Checked);
         _controlArrowBreatheMin.ValueChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowBreatheMinPercent = (int)_controlArrowBreatheMin.Value);
         _controlArrowBreathePeriod.ValueChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowBreathePeriodSeconds = (float)_controlArrowBreathePeriod.Value);
@@ -803,18 +879,31 @@ internal sealed class MainForm : Form
         _shiftLabel.TextChanged += (_, _) => ApplyInspectorChange(key => key.ShiftLabel = _shiftLabel.Text);
         _baseLabel.Leave += (_, _) => AuditSelectedCustomFont(showMessage: true);
         _shiftLabel.Leave += (_, _) => AuditSelectedCustomFont(showMessage: true);
-        _normalCode.Leave += (_, _) => ApplyOutputCode(_normalCode, shifted: false);
-        _shiftCode.Leave += (_, _) => ApplyOutputCode(_shiftCode, shifted: true);
+        _assignedKeyButton.Click += (_, _) => BeginAssignedKeyCapture();
+        _assignedKeyButton.LostFocus += (_, _) =>
+        {
+            if (!_capturingAssignedKey)
+                return;
+            _capturingAssignedKey = false;
+            PopulateInspector();
+            SetStatus("Physical-key capture cancelled.");
+        };
         _x.ValueChanged += (_, _) => ApplyInspectorChange(key => key.X = (float)_x.Value);
         _y.ValueChanged += (_, _) => ApplyInspectorChange(key => key.Y = (float)_y.Value);
-        _width.ValueChanged += (_, _) => ApplyInspectorChange(key => key.Width = (float)_width.Value);
+        _width.ValueChanged += (_, _) => ApplyInspectorChange(key =>
+        {
+            key.Width = (float)_width.Value;
+            key.SpansToRight = false;
+        });
         _height.ValueChanged += (_, _) => ApplyInspectorChange(key => key.Height = (float)_height.Value);
         _offsetX.ValueChanged += (_, _) => ApplyInspectorChange(key => key.LabelOffsetX = (float)_offsetX.Value);
         _offsetY.ValueChanged += (_, _) => ApplyInspectorChange(key => key.LabelOffsetY = (float)_offsetY.Value);
         _scale.ValueChanged += (_, _) => ApplyInspectorChange(key => key.LabelScale = (float)_scale.Value);
-        _spansRight.CheckedChanged += (_, _) => ApplyInspectorChange(key => key.SpansToRight = _spansRight.Checked);
         _topElementX.ValueChanged += (_, _) => ApplyTopElementChange((float)_topElementX.Value, (float)_topElementY.Value);
         _topElementY.ValueChanged += (_, _) => ApplyTopElementChange((float)_topElementX.Value, (float)_topElementY.Value);
+        _topElementWidth.ValueChanged += (_, _) => ApplyTopElementDesignChange();
+        _topElementHeight.ValueChanged += (_, _) => ApplyTopElementDesignChange();
+        _topElementFontScale.ValueChanged += (_, _) => ApplyTopElementDesignChange();
         _layoutWidth.ValueChanged += (_, _) =>
         {
             if (_updatingEditor)
@@ -850,6 +939,28 @@ internal sealed class MainForm : Form
         PopulateControlsInspector();
     }
 
+    private void ToggleCustomStyle()
+    {
+        if (_updatingEditor)
+            return;
+        PushUndo();
+        if (_customStyle.Checked && _themeCombo.SelectedItem is KeyboardTheme theme)
+        {
+            bool seeded = !_document.CustomStyleInitialized;
+            _document.EnableCustomStyleFromTheme(theme);
+            SetStatus(seeded
+                ? $"Custom colors enabled from the visible {theme.Name} template. Nothing was replaced; choose any swatch to change only that color."
+                : "Custom colors enabled with your previous color settings restored.");
+        }
+        else
+        {
+            _document.CustomStyleEnabled = false;
+            SetStatus("Custom colors disabled. The selected Base Theme colors are visible again.");
+        }
+        MarkChanged();
+        PopulateAppearanceInspector();
+    }
+
     private void ApplyTopElementChange(float x, float y)
     {
         if (_updatingEditor || _canvas.SelectedTopElement is not KeyboardTopElement element)
@@ -860,6 +971,30 @@ internal sealed class MainForm : Form
             case KeyboardTopElement.TextBar: _document.TextBarOffsetX = x; _document.TextBarOffsetY = y; break;
             case KeyboardTopElement.Mode: _document.ModeButtonOffsetX = x; _document.ModeButtonOffsetY = y; break;
             case KeyboardTopElement.Lock: _document.LockButtonOffsetX = x; _document.LockButtonOffsetY = y; break;
+        }
+        MarkChanged();
+        PopulateInspector();
+    }
+
+    private void ApplyTopElementDesignChange()
+    {
+        if (_updatingEditor || _canvas.SelectedTopElement is not KeyboardTopElement element)
+            return;
+        PushUndo();
+        float width = (float)_topElementWidth.Value;
+        float height = (float)_topElementHeight.Value;
+        float scale = (float)_topElementFontScale.Value;
+        switch (element)
+        {
+            case KeyboardTopElement.TextBar:
+                _document.TextBarWidth = width; _document.TextBarHeight = height;
+                _document.TextBarFontScale = scale; break;
+            case KeyboardTopElement.Mode:
+                _document.ModeButtonWidth = width; _document.ModeButtonHeight = height;
+                _document.ModeButtonFontScale = scale; break;
+            case KeyboardTopElement.Lock:
+                _document.LockButtonWidth = width; _document.LockButtonHeight = height;
+                _document.LockButtonFontScale = scale; break;
         }
         MarkChanged();
         PopulateInspector();
@@ -917,6 +1052,7 @@ internal sealed class MainForm : Form
             return;
         PushUndo();
         _document.CustomStyleEnabled = true;
+        _document.CustomStyleInitialized = true;
         apply(dialog.SelectedColor);
         MarkChanged();
         PopulateAppearanceInspector();
@@ -936,30 +1072,89 @@ internal sealed class MainForm : Form
         PopulateArtworkInspector();
     }
 
-    private void ApplyOutputCode(TextBox textBox, bool shifted)
+    private void ChooseControlArrowGlowColor()
     {
-        if (_updatingEditor || _canvas.SelectedKey is not KeyboardKey key)
+        using var dialog = new ColorWheelDialog("Control triangle glow color", _document.ControlArrowGlowColor);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
-        try
-        {
-            char value = KeyboardDocument.DecodeCharacter(textBox.Text.Trim());
-            char current = shifted ? key.ShiftCharacter : key.Character;
-            if (value == current)
-                return;
-            PushUndo();
-            if (shifted)
-                key.ShiftCharacter = value;
-            else
-                key.Character = value;
-            MarkChanged();
-            PopulateInspector();
-        }
-        catch (Exception exception)
-        {
-            MessageBox.Show(this, exception.Message, "Invalid key output", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            PopulateInspector();
-        }
+        PushUndo();
+        _document.ControlArrowGlowEnabled = true;
+        _document.ControlArrowGlowColor = dialog.SelectedColor;
+        MarkChanged();
+        PopulateControlsInspector();
     }
+
+    private void BeginAssignedKeyCapture()
+    {
+        if (_canvas.SelectedKey is not KeyboardKey)
+        {
+            SetStatus("Select a keyboard key before assigning a physical key.");
+            return;
+        }
+        _capturingAssignedKey = true;
+        _assignedKeyButton.Text = "Press a physical key...";
+        _assignedKeyButton.Focus();
+        SetStatus("Press the physical key to assign. Normal and Shift output will be translated automatically.");
+    }
+
+    private void CaptureAssignedKey(Keys keyCode)
+    {
+        if (_canvas.SelectedKey is not KeyboardKey key)
+        {
+            _capturingAssignedKey = false;
+            PopulateInspector();
+            return;
+        }
+
+        if (!PhysicalKeyboardTranslator.TryTranslate(keyCode, out PhysicalKeyAssignment assignment))
+        {
+            System.Media.SystemSounds.Beep.Play();
+            _assignedKeyButton.Text = "Unsupported - press another key";
+            SetStatus($"{keyCode} is not an OCU keyboard output. Press a letter, number, symbol, arrow, function key, or supported control key.");
+            return;
+        }
+
+        _capturingAssignedKey = false;
+        if (key.Character == assignment.Normal && key.ShiftCharacter == assignment.Shifted)
+        {
+            PopulateInspector();
+            SetStatus($"{DescribeAssignment(assignment.Normal, assignment.Shifted)} was already assigned.");
+            return;
+        }
+
+        PushUndo();
+        key.Character = assignment.Normal;
+        key.ShiftCharacter = assignment.Shifted;
+        key.Label = DefaultKeyText(assignment.Normal);
+        key.ShiftLabel = DefaultKeyText(assignment.Shifted);
+        MarkChanged();
+        PopulateInspector();
+        AuditSelectedCustomFont(showMessage: true);
+        SetStatus($"Assigned {DescribeAssignment(assignment.Normal, assignment.Shifted)} using the active Windows keyboard layout.");
+    }
+
+    private static string DescribeAssignment(char normal, char shifted)
+        => normal == shifted
+            ? DisplayKeyName(normal)
+            : $"{DisplayKeyName(normal)} / Shift + {DisplayKeyName(shifted)}";
+
+    private static string DefaultKeyText(char key) => key switch
+    {
+        '\t' => "tab",
+        '\n' => "Enter",
+        '\b' => "back",
+        ' ' => "",
+        '\x01' => "shift",
+        '\x02' => "caps",
+        '\x03' => "Done",
+        '\x04' or '\x05' or '\x06' or '\x07' => "",
+        '\x0E' => "ESC",
+        '\x1D' => "End",
+        '\x1E' => "Ctrl",
+        '\x1F' => "PrtSc",
+        >= '\x10' and <= '\x1B' => $"F{key - '\x10' + 1}",
+        _ => key.ToString()
+    };
 
     private void MarkChanged()
     {
@@ -1121,31 +1316,35 @@ internal sealed class MainForm : Form
         {
             _layoutWidth.Value = ClampDecimal(_document.Width, _layoutWidth);
             PopulateTopElementInspectorFields();
-            bool enabled = _canvas.SelectionKind is CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate
+            bool enabled = !_canvas.HasMultipleSelection
+                && _canvas.SelectionKind is CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate
                 && _canvas.SelectedKey is KeyboardKey;
-            foreach (Control control in new Control[] { _normalCode, _shiftCode, _baseLabel, _shiftLabel, _x, _y, _width, _height, _offsetX, _offsetY, _scale, _spansRight })
+            foreach (Control control in new Control[] { _assignedKeyButton, _baseLabel, _shiftLabel, _x, _y, _width, _height, _offsetX, _offsetY, _scale })
                 control.Enabled = enabled;
 
             if (!enabled || _canvas.SelectedKey is not KeyboardKey key)
             {
-                _selectedLabel.Text = "No key selected";
-                _codeLabel.Text = "";
+                _selectedLabel.Text = _canvas.HasMultipleSelection
+                    ? $"{_canvas.SelectionCount} visible items selected"
+                    : "No key selected";
+                _assignedKeyButton.Text = _canvas.HasMultipleSelection ? "Group selection" : "Select a key first";
                 return;
             }
             _selectedLabel.Text = $"Key #{key.Id} — {DisplayKeyName(key.Character)}";
-            _codeLabel.Text = $"{KeyboardDocument.EncodeCharacter(key.Character)} / {KeyboardDocument.EncodeCharacter(key.ShiftCharacter)}";
-            _normalCode.Text = KeyboardDocument.EncodeCharacter(key.Character);
-            _shiftCode.Text = KeyboardDocument.EncodeCharacter(key.ShiftCharacter);
+            if (!_capturingAssignedKey)
+                _assignedKeyButton.Text = DescribeAssignment(key.Character, key.ShiftCharacter);
             _baseLabel.Text = key.Label;
             _shiftLabel.Text = key.ShiftLabel;
             _x.Value = ClampDecimal((decimal)key.X, _x);
             _y.Value = ClampDecimal((decimal)key.Y, _y);
-            _width.Value = ClampDecimal((decimal)key.Width, _width);
+            float displayedWidth = key.SpansToRight && _renderer is not null
+                ? _renderer.KeyRectangle(_document, key).Width / Math.Max(1, _renderer.KeySize(_document))
+                : key.Width;
+            _width.Value = ClampDecimal((decimal)displayedWidth, _width);
             _height.Value = ClampDecimal((decimal)key.Height, _height);
             _offsetX.Value = ClampDecimal((decimal)key.LabelOffsetX, _offsetX);
             _offsetY.Value = ClampDecimal((decimal)key.LabelOffsetY, _offsetY);
             _scale.Value = ClampDecimal((decimal)key.LabelScale, _scale);
-            _spansRight.Checked = key.SpansToRight;
         }
         finally
         {
@@ -1155,7 +1354,7 @@ internal sealed class MainForm : Form
 
     private void PopulateTopElementInspectorFields()
     {
-        KeyboardTopElement? topElement = _canvas.SelectedTopElement;
+        KeyboardTopElement? topElement = _canvas.HasMultipleSelection ? null : _canvas.SelectedTopElement;
         _topElementLabel.Text = topElement switch
         {
             KeyboardTopElement.TextBar => "Text bar",
@@ -1172,8 +1371,20 @@ internal sealed class MainForm : Form
         };
         _topElementX.Value = ClampDecimal((decimal)topX, _topElementX);
         _topElementY.Value = ClampDecimal((decimal)topY, _topElementY);
-        _topElementX.Enabled = topElement is not null;
-        _topElementY.Enabled = topElement is not null;
+        float topWidth = topElement is KeyboardTopElement selected && _renderer is not null
+            ? _renderer.TopElementWidth(_document, selected) : 8;
+        float topHeight = topElement is KeyboardTopElement selectedHeight && _renderer is not null
+            ? _renderer.TopElementHeight(_document, selectedHeight) : 8;
+        float topFontScale = topElement is KeyboardTopElement selectedScale && _renderer is not null
+            ? _renderer.TopElementFontScale(_document, selectedScale) : 1;
+        _topElementWidth.Value = ClampDecimal((decimal)topWidth, _topElementWidth);
+        _topElementHeight.Value = ClampDecimal((decimal)topHeight, _topElementHeight);
+        _topElementFontScale.Value = ClampDecimal((decimal)topFontScale, _topElementFontScale);
+        foreach (Control control in new Control[]
+        {
+            _topElementX, _topElementY, _topElementWidth, _topElementHeight, _topElementFontScale
+        })
+            control.Enabled = topElement is not null;
     }
 
     private void PopulateAppearanceInspector()
@@ -1260,12 +1471,12 @@ internal sealed class MainForm : Form
                 _backgroundOpacity, _backgroundFade, _backgroundRotation, _backgroundRoundness
             })
                 control.Enabled = hasBackground;
-            Guid? selectedId = _canvas.SelectedSpriteId;
+            Guid? selectedId = _canvas.HasMultipleSelection ? null : _canvas.SelectedSpriteId;
             _spriteList.BeginUpdate();
             _spriteList.Items.Clear();
             _spriteList.Items.AddRange(_document.Sprites.Cast<object>().ToArray());
             int selectedIndex = selectedId is Guid id ? _document.Sprites.FindIndex(sprite => sprite.Id == id) : -1;
-            if (selectedIndex < 0 && _document.Sprites.Count > 0)
+            if (!_canvas.HasMultipleSelection && selectedIndex < 0 && _document.Sprites.Count > 0)
                 selectedIndex = 0;
             _spriteList.SelectedIndex = selectedIndex;
             _spriteList.EndUpdate();
@@ -1356,14 +1567,20 @@ internal sealed class MainForm : Form
                 ? "Built-in triangle"
                 : Path.GetFileName(_document.ControlArrowImagePath);
             _controlArrowRotation.Value = ClampDecimal((decimal)_document.ControlArrowRotation, _controlArrowRotation);
+            _controlArrowGlow.Checked = _document.ControlArrowGlowEnabled;
+            SetSwatch(_controlArrowGlowColor, _document.ControlArrowGlowColor);
+            _controlArrowGlowStrength.Value = ClampDecimal(_document.ControlArrowGlowStrength, _controlArrowGlowStrength);
+            _controlArrowGlowRadius.Value = ClampDecimal(_document.ControlArrowGlowRadius, _controlArrowGlowRadius);
             _controlArrowBreathe.Checked = _document.ControlArrowBreatheEnabled;
             _controlArrowBreatheMin.Value = ClampDecimal(_document.ControlArrowBreatheMinPercent, _controlArrowBreatheMin);
             _controlArrowBreathePeriod.Value = ClampDecimal((decimal)_document.ControlArrowBreathePeriodSeconds, _controlArrowBreathePeriod);
             _controlArrowBreathePhase.Value = ClampDecimal((decimal)_document.ControlArrowBreathePhaseDegrees, _controlArrowBreathePhase);
-            bool customArrow = !string.IsNullOrWhiteSpace(_document.ControlArrowImagePath);
-            _controlArrowBreathe.Enabled = customArrow;
+            _controlArrowGlowColor.Enabled = _document.ControlArrowGlowEnabled;
+            _controlArrowGlowStrength.Enabled = _document.ControlArrowGlowEnabled;
+            _controlArrowGlowRadius.Enabled = _document.ControlArrowGlowEnabled;
+            _controlArrowBreathe.Enabled = _document.ControlArrowGlowEnabled;
             foreach (Control control in new Control[] { _controlArrowBreatheMin, _controlArrowBreathePeriod, _controlArrowBreathePhase })
-                control.Enabled = customArrow && _document.ControlArrowBreatheEnabled;
+                control.Enabled = _document.ControlArrowGlowEnabled && _document.ControlArrowBreatheEnabled;
         }
         finally
         {
@@ -1377,59 +1594,93 @@ internal sealed class MainForm : Form
             return;
         using var dialog = new OpenFileDialog
         {
-            Title = "Open OCU keyboard layout",
-            Filter = "OCU keyboard layout (*.kb)|*.kb|All files (*.*)|*.*",
-            InitialDirectory = Path.GetDirectoryName(_document.SourcePath) ?? _assetsDirectory
+            Title = "Open or import an OCU keyboard",
+            Filter = "OCU keyboard package or layout (*.ocukb;*.kb)|*.ocukb;*.kb|OCU keyboard package (*.ocukb)|*.ocukb|Legacy keyboard layout (*.kb)|*.kb",
+            InitialDirectory = Path.GetDirectoryName(_currentPackagePath ?? _document.SourcePath) ?? _assetsDirectory
         };
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
+        LoadKeyboardFile(dialog.FileName);
+    }
+
+    private void LoadKeyboardFile(string path)
+    {
         try
         {
-            SetDocument(KeyboardDocument.Load(dialog.FileName), clearHistory: true);
-            string registeredPath = RegisterDesign(dialog.FileName);
-            RefreshDesignChoices(registeredPath);
-            SetStatus($"Loaded and registered keyboard design: {dialog.FileName}");
+            string fullPath = Path.GetFullPath(path);
+            if (Path.GetExtension(fullPath).Equals(KeyboardPackage.Extension, StringComparison.OrdinalIgnoreCase))
+            {
+                KeyboardPackageImportResult imported = KeyboardPackage.Import(fullPath, DesignLibraryDirectory);
+                _currentPackagePath = fullPath;
+                SetDocument(KeyboardDocument.Load(imported.LayoutPath), clearHistory: true);
+                string registeredPath = RegisterDesign(imported.LayoutPath);
+                RefreshDesignChoices(registeredPath);
+                SetStatus($"Imported {imported.DisplayName}: {imported.ArtworkCount} artwork file(s)" +
+                    (imported.HasCustomFont ? " plus its custom font." : "."));
+                MessageBox.Show(this,
+                    $"{imported.DisplayName} imported successfully.\n\n" +
+                    $"Artwork files: {imported.ArtworkCount}\n" +
+                    $"Custom font: {(imported.HasCustomFont ? "included" : "not used")}\n\n" +
+                    "The design is now in Keyboard Design. Use Install for Next Launch to activate it.",
+                    "OCU keyboard imported", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!Path.GetExtension(fullPath).Equals(".kb", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Choose an .ocukb package or a legacy .kb layout.");
+            _currentPackagePath = null;
+            SetDocument(KeyboardDocument.Load(fullPath), clearHistory: true);
+            string legacyRegisteredPath = RegisterDesign(fullPath);
+            RefreshDesignChoices(legacyRegisteredPath);
+            SetStatus($"Loaded legacy .kb layout: {fullPath}. Keep its PNG files beside it.");
         }
         catch (Exception exception)
         {
-            ShowError("Layout load failed", exception);
+            ShowError("Keyboard import failed", exception);
         }
     }
 
     private bool SaveLayout(bool saveAs)
     {
-        string? path = _document.SourcePath;
-        bool bundled = path is not null && Path.GetFullPath(path).StartsWith(Path.GetFullPath(_assetsDirectory), StringComparison.OrdinalIgnoreCase);
-        if (!saveAs && (path is null || bundled) && _hostOcuRoot is not null)
+        if (!saveAs && !_document.IsDirty)
         {
-            path = Path.Combine(_hostOcuRoot, "OCUKeyboard.kb");
-            bundled = false;
+            SetStatus("No unsaved changes. Use Save As to create another copy.");
+            return true;
         }
-        if (saveAs || path is null || bundled)
+
+        string? packagePath = saveAs ? null : _currentPackagePath;
+        if (packagePath is null)
         {
             using var dialog = new SaveFileDialog
             {
-                Title = "Save custom OCU keyboard",
-                Filter = "OCU keyboard layout (*.kb)|*.kb",
-                FileName = path is null || bundled ? "My-OCU-Keyboard.kb" : Path.GetFileName(path),
-                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)
+                Title = "Save portable OCU keyboard project",
+                Filter = "OCU keyboard package (*.ocukb)|*.ocukb",
+                DefaultExt = "ocukb",
+                AddExtension = true,
+                FileName = $"{SuggestedPackageName()}.ocukb",
+                InitialDirectory = Path.GetDirectoryName(_currentPackagePath)
+                    ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)
             };
             if (dialog.ShowDialog(this) != DialogResult.OK)
                 return false;
-            path = dialog.FileName;
+            packagePath = dialog.FileName;
         }
 
         try
         {
-            _document.Save(path);
-            CopyArtworkBesideLayout(Path.GetDirectoryName(path) ?? "");
-            string registeredPath = RegisterDesign(path);
+            packagePath = Path.GetFullPath(packagePath);
+            string displayName = Path.GetFileNameWithoutExtension(packagePath);
+            KeyboardPackage.Export(packagePath, _document, displayName);
+            KeyboardPackageImportResult imported = KeyboardPackage.Import(packagePath, DesignLibraryDirectory);
+            _currentPackagePath = packagePath;
+            SetDocument(KeyboardDocument.Load(imported.LayoutPath), clearHistory: false);
+            string registeredPath = RegisterDesign(imported.LayoutPath);
             RefreshDesignChoices(registeredPath);
             string? installedTarget = _hostOcuRoot is null ? null : InstallDocumentToRoot(_hostOcuRoot);
             UpdateTitle();
             SetStatus(installedTarget is null
-                ? $"Saved {path}. It is now available in Keyboard Design."
-                : $"Saved and applied to this OCU: {installedTarget}. Restart Skyrim VR to load it.");
+                ? $"Saved portable keyboard project: {packagePath}"
+                : $"Saved {packagePath} and applied it to this OCU. Restart Skyrim VR to load it.");
             return true;
         }
         catch (Exception exception)
@@ -1437,6 +1688,14 @@ internal sealed class MainForm : Form
             ShowError("Layout save failed", exception);
             return false;
         }
+    }
+
+    private string SuggestedPackageName()
+    {
+        string? sourceName = Path.GetFileNameWithoutExtension(_currentPackagePath ?? _document.SourcePath);
+        return string.IsNullOrWhiteSpace(sourceName) || sourceName.Equals("en_gb", StringComparison.OrdinalIgnoreCase)
+            ? "My OCU Keyboard"
+            : sourceName;
     }
 
     private void ExportPng()
@@ -1601,7 +1860,6 @@ internal sealed class MainForm : Form
         _document.ControlArrowImagePath = null;
         _document.ControlArrowFileName = null;
         _document.ControlArrowRotation = 0;
-        _document.ControlArrowBreatheEnabled = false;
         MarkChanged();
         PopulateControlsInspector();
     }
@@ -1656,16 +1914,27 @@ internal sealed class MainForm : Form
                     "Wrong folder", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+            _hostOcuRoot = root;
         }
 
         try
         {
+            string serialized = _document.Serialize();
+            string expectedTarget = Path.Combine(root, "OCUKeyboard.kb");
+            bool changed = !File.Exists(expectedTarget)
+                || !string.Equals(File.ReadAllText(expectedTarget), serialized, StringComparison.Ordinal);
             string target = InstallDocumentToRoot(root);
             UpdateTitle();
-            SetStatus($"Applied {target}. OCU will load it the next time Skyrim VR starts.");
+            SetStatus($"Installed {target}. Restart Skyrim VR to load it.");
             MessageBox.Show(this,
-                $"Custom keyboard applied to the OCU this Studio came from:\n{root}\n\nRestart Skyrim VR to load it.",
-                "Applied to game", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                $"Keyboard installed successfully.\n\n" +
+                $"Layout:\n{target}\n\n" +
+                $"OCU installation:\n{root}\n\n" +
+                (changed
+                    ? "The installed layout was updated.\n\n"
+                    : "That exact layout was already installed, so no file-content change was needed.\n\n") +
+                "This is not a live reload. Restart Skyrim VR to see it in game.",
+                "Keyboard installed for next launch", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {
@@ -1676,10 +1945,30 @@ internal sealed class MainForm : Form
     private string InstallDocumentToRoot(string root)
     {
         string target = Path.Combine(root, "OCUKeyboard.kb");
-        File.WriteAllText(target, _document.Serialize(), new System.Text.UTF8Encoding(false));
+        string serialized = _document.Serialize();
+        File.WriteAllText(target, serialized, new System.Text.UTF8Encoding(false));
         CopyArtworkBesideLayout(root);
         SetIniValue(Path.Combine(root, "opencomposite.ini"), "keyboard", "layout", "auto");
+        SetIniValue(Path.Combine(root, "opencomposite.ini"), "keyboard", "design", CurrentInstalledDesignId());
+        if (!File.Exists(target)
+            || !string.Equals(File.ReadAllText(target), serialized, StringComparison.Ordinal))
+            throw new IOException($"OCU Keyboard Studio could not verify the installed layout at {target}.");
         return target;
+    }
+
+    private string CurrentInstalledDesignId()
+    {
+        string? sourcePath = _document.SourcePath;
+        if (!string.IsNullOrWhiteSpace(sourcePath))
+        {
+            string sourceName = Path.GetFileNameWithoutExtension(sourcePath);
+            bool bundledParchment = sourceName.Equals("en_gb", StringComparison.OrdinalIgnoreCase)
+                && Path.GetFullPath(sourcePath).StartsWith(
+                    Path.GetFullPath(_assetsDirectory), StringComparison.OrdinalIgnoreCase);
+            if (!bundledParchment && !string.IsNullOrWhiteSpace(sourceName))
+                return sourceName;
+        }
+        return "keyboard-studio";
     }
 
     internal static string? FindOcuRootFromStudioDirectory(string studioDirectory)
@@ -1697,8 +1986,10 @@ internal sealed class MainForm : Form
         return null;
     }
 
-    private static string? ResolveSelectedOcuRoot(string selectedFolder)
+    internal static string? ResolveSelectedOcuRoot(string? selectedFolder)
     {
+        if (string.IsNullOrWhiteSpace(selectedFolder))
+            return null;
         string direct = Path.Combine(selectedFolder, "openvr_api.dll");
         if (File.Exists(direct))
             return Path.GetFullPath(selectedFolder);
@@ -1713,12 +2004,24 @@ internal sealed class MainForm : Form
         {
             string? preferred = NormalizeExistingPath(preferredPath ?? _document.SourcePath);
             var choices = new List<KeyboardDesignChoice>();
-            foreach (string path in Directory.EnumerateFiles(_assetsDirectory, "*.kb").OrderBy(Path.GetFileName))
+            IEnumerable<string> builtInLayouts = Directory.EnumerateFiles(_assetsDirectory, "*.kb");
+            string stockDesignDirectory = Path.Combine(_assetsDirectory, "Stock Designs");
+            if (Directory.Exists(stockDesignDirectory))
+                builtInLayouts = builtInLayouts.Concat(
+                    Directory.EnumerateFiles(stockDesignDirectory, "*.kb", SearchOption.AllDirectories));
+            foreach (string path in builtInLayouts.OrderBy(Path.GetFileName))
             {
                 string stem = Path.GetFileNameWithoutExtension(path);
                 string name = stem.Equals("en_gb", StringComparison.OrdinalIgnoreCase)
                     ? "Parchment" : FriendlyDesignName(stem);
                 choices.Add(new KeyboardDesignChoice(name, Path.GetFullPath(path), BuiltIn: true));
+            }
+            if (preferred is not null)
+            {
+                KeyboardDesignChoice? matchingBuiltIn = choices.FirstOrDefault(choice =>
+                    choice.BuiltIn && KeyboardLayoutFilesEquivalent(choice.Path, preferred));
+                if (matchingBuiltIn is not null)
+                    preferred = matchingBuiltIn.Path;
             }
 
             var registered = new List<string>();
@@ -1743,10 +2046,16 @@ internal sealed class MainForm : Form
             {
                 if (choices.Any(choice => choice.Path.Equals(path, StringComparison.OrdinalIgnoreCase)))
                     continue;
+                if (choices.Any(choice => choice.BuiltIn && KeyboardLayoutFilesEquivalent(choice.Path, path)))
+                    continue;
                 string stem = Path.GetFileNameWithoutExtension(path);
                 string name = FriendlyDesignName(stem);
+                // Bundled designs are authoritative. Older managed copies can have
+                // different serialized bytes while still representing the same named
+                // design; showing both produced entries such as
+                // "Pug Dragon Keyboard — PugDragonKeyboard-...".
                 if (choices.Any(choice => choice.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-                    name += $" — {Path.GetFileName(Path.GetDirectoryName(path))}";
+                    continue;
                 choices.Add(new KeyboardDesignChoice(name, path, BuiltIn: false));
             }
 
@@ -1820,9 +2129,22 @@ internal sealed class MainForm : Form
         }
     }
 
+    private static bool KeyboardLayoutFilesEquivalent(string left, string right)
+    {
+        try
+        {
+            return File.ReadAllText(left).Equals(File.ReadAllText(right), StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static string FriendlyDesignName(string stem)
     {
-        string value = stem.Replace('_', ' ').Replace('-', ' ').Trim();
+        string value = System.Text.RegularExpressions.Regex.Replace(
+            stem.Replace('_', ' ').Replace('-', ' '), "(?<=[a-z0-9])(?=[A-Z])", " ").Trim();
         return string.IsNullOrWhiteSpace(value) ? "Unnamed Keyboard" : value;
     }
 
@@ -1932,8 +2254,27 @@ internal sealed class MainForm : Form
             e.Cancel = true;
     }
 
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (_capturingAssignedKey)
+        {
+            Keys keyCode = keyData & Keys.KeyCode;
+            if (keyCode != Keys.None)
+                CaptureAssignedKey(keyCode);
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
     private void OnShortcutKeyDown(object? sender, KeyEventArgs e)
     {
+        if (_capturingAssignedKey)
+        {
+            CaptureAssignedKey(e.KeyCode);
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+            return;
+        }
         if (e.Control && e.KeyCode == Keys.S) { SaveLayout(e.Shift); e.SuppressKeyPress = true; }
         else if (e.Control && e.KeyCode == Keys.O) { OpenLayout(); e.SuppressKeyPress = true; }
         else if (e.Control && e.KeyCode == Keys.Z) { Undo(); e.SuppressKeyPress = true; }
@@ -2086,7 +2427,14 @@ internal sealed class MainForm : Form
 
     private void UpdateTitle()
     {
-        string name = Path.GetFileName(_document.SourcePath) ?? "Untitled";
+        string name = Path.GetFileName(_currentPackagePath ?? _document.SourcePath) ?? "Untitled";
+        if (_saveButton is not null)
+        {
+            _saveButton.Enabled = _document.IsDirty;
+            _toolTip.SetToolTip(_saveButton, _document.IsDirty
+                ? "Save changes to this keyboard project."
+                : "Nothing changed. Use Save As to create another copy.");
+        }
         Text = $"{(_document.IsDirty ? "● " : "")}OCU Keyboard Studio — {name}";
     }
 
@@ -2136,7 +2484,7 @@ internal sealed class MainForm : Form
             Increment = increment,
             Width = 150,
             BorderStyle = BorderStyle.FixedSingle,
-            BackColor = SurfaceRaised,
+            BackColor = StudioTheme.Input,
             ForeColor = TextPrimary
         };
 
@@ -2144,20 +2492,19 @@ internal sealed class MainForm : Form
 
     private static Button ActionButton(string text, EventHandler action, bool compact = false)
     {
-        var button = new Button
+        var button = new ModernPillButton
         {
             Text = text,
             AutoSize = true,
             Height = compact ? 30 : 34,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(28, 56, 48),
             ForeColor = TextPrimary,
             Padding = compact ? new Padding(7, 1, 7, 1) : new Padding(10, 2, 10, 2),
             Margin = new Padding(3, 1, 3, 1),
-            Cursor = Cursors.Hand
+            Cursor = Cursors.Hand,
+            Destructive = text.Contains("Delete", StringComparison.OrdinalIgnoreCase)
+                || text.Equals("Remove", StringComparison.OrdinalIgnoreCase)
+                || text.Equals("Clear", StringComparison.OrdinalIgnoreCase)
         };
-        button.FlatAppearance.BorderColor = Accent;
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(38, 83, 67);
         button.Click += action;
         return button;
     }
@@ -2203,7 +2550,7 @@ internal sealed class MainForm : Form
             Padding = new Padding(2),
             BackColor = Surface
         };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         return table;
     }
@@ -2220,7 +2567,7 @@ internal sealed class MainForm : Form
 
     private static void StyleCombo(ComboBox combo)
     {
-        combo.BackColor = Surface;
+        combo.BackColor = StudioTheme.Input;
         combo.ForeColor = TextPrimary;
         combo.FlatStyle = FlatStyle.Flat;
         combo.Height = 32;
@@ -2253,7 +2600,7 @@ internal sealed class MainForm : Form
         {
             Text = text,
             AutoSize = true,
-            MaximumSize = new Size(285, 0),
+            MaximumSize = new Size(390, 0),
             ForeColor = TextMuted,
             Margin = new Padding(0, 7, 0, 3)
         };
@@ -2267,7 +2614,8 @@ internal sealed class MainForm : Form
         var label = new Label { Text = caption, AutoSize = true, ForeColor = TextMuted, Anchor = AnchorStyles.Left, Margin = new Padding(0, 8, 5, 4) };
         control.Dock = DockStyle.Fill;
         control.Margin = new Padding(0, 3, 0, 3);
-        control.BackColor = SurfaceRaised;
+        if (control is TextBox or NumericUpDown or ComboBox or ListBox)
+            control.BackColor = StudioTheme.Input;
         control.ForeColor = TextPrimary;
         table.Controls.Add(label, 0, row);
         table.Controls.Add(control, 1, row);

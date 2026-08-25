@@ -467,6 +467,23 @@ KeyboardLayout::KeyboardLayout(std::vector<char> data)
 			}
 			continue;
 		}
+		if (op == L"top_design") {
+			wstring element = pullstring(line);
+			wstring widthToken = pullstring(line);
+			wstring heightToken = pullstring(line);
+			wstring scaleToken = pullstring(line);
+			if (widthToken.empty() || heightToken.empty() || scaleToken.empty())
+				OOVR_ABORT("Keyboard layout: top_design requires an element, width, height and font scale");
+			TopElementDesign* design = nullptr;
+			if (element == L"textbar") design = &textBarDesign;
+			else if (element == L"mode") design = &modeButtonDesign;
+			else if (element == L"lock") design = &lockButtonDesign;
+			else OOVR_ABORT("Keyboard layout: unknown top_design target");
+			design->width = std::max(0.0f, std::stof(widthToken));
+			design->height = std::max(0.0f, std::stof(heightToken));
+			design->fontScale = std::clamp(std::stof(scaleToken), 0.0f, 3.0f);
+			continue;
+		}
 		if (op == L"control_box") {
 			wstring control = pullstring(line);
 			ControlDesign* design = nullptr;
@@ -545,9 +562,32 @@ KeyboardLayout::KeyboardLayout(std::vector<char> data)
 			wstring breathePhase = pullstring(line);
 			controlArrowRotation = rotation.empty() ? 0.0f : std::stof(rotation);
 			controlArrowBreatheEnabled = !breathe.empty() && parseBoolToken(breathe);
+			controlArrowGlowEnabled = controlArrowBreatheEnabled;
 			controlArrowBreatheMinPercent = breatheMinimum.empty() ? 35 : std::clamp(std::stoi(breatheMinimum), 0, 100);
 			controlArrowBreathePeriodSeconds = breathePeriod.empty() ? 2.0f : std::clamp(std::stof(breathePeriod), 0.5f, 10.0f);
 			controlArrowBreathePhaseDegrees = breathePhase.empty() ? 0.0f : std::stof(breathePhase);
+			continue;
+		}
+		if (op == L"control_arrow_effect") {
+			wstring glowEnabled = pullstring(line);
+			wstring glowColor = pullstring(line);
+			wstring glowStrength = pullstring(line);
+			wstring glowRadius = pullstring(line);
+			wstring breathe = pullstring(line);
+			wstring breatheMinimum = pullstring(line);
+			wstring breathePeriod = pullstring(line);
+			wstring breathePhase = pullstring(line);
+			if (glowEnabled.empty() || glowColor.empty() || glowStrength.empty() || glowRadius.empty()
+			    || breathe.empty() || breatheMinimum.empty() || breathePeriod.empty() || breathePhase.empty())
+				OOVR_ABORT("Keyboard layout: control_arrow_effect requires 8 values");
+			controlArrowGlowEnabled = parseBoolToken(glowEnabled);
+			parseColorToken(glowColor, controlArrowGlowColor);
+			controlArrowGlowStrength = std::clamp(std::stoi(glowStrength), 0, 100);
+			controlArrowGlowRadius = std::clamp(std::stoi(glowRadius), 1, 48);
+			controlArrowBreatheEnabled = parseBoolToken(breathe);
+			controlArrowBreatheMinPercent = std::clamp(std::stoi(breatheMinimum), 0, 100);
+			controlArrowBreathePeriodSeconds = std::clamp(std::stof(breathePeriod), 0.5f, 10.0f);
+			controlArrowBreathePhaseDegrees = std::stof(breathePhase);
 			continue;
 		}
 		if (op == L"overlay") {

@@ -108,12 +108,12 @@ namespace OpenCompositeConfigurator
         private CheckBox _chkVrsEyeTracked = null!;
         private NumericUpDown _nudVrsInnerRadius = null!;
         private NumericUpDown _nudVrsMidRadius = null!;
-        private NumericUpDown _nudVrsOuterRadius = null!;
+        private CheckBox _chkVrsCompatibilityMode = null!;
         private CheckBox _chkVrsFavorHorizontal = null!;
         private Label _lblVrsInnerRadius = null!;
         private Label _lblVrsMidRadius = null!;
-        private Label _lblVrsOuterRadius = null!;
         private ComboBox _cboVrsPreset = null!;
+        private bool _updatingVrsPreset;
         private Label _lblFsrStatus = null!;
         private Label _lblVideoStatus = null!;
 
@@ -241,6 +241,7 @@ namespace OpenCompositeConfigurator
         // Bottom buttons
         private Button _btnSave = null!;
         private Button _btnReload = null!;
+        private ModernPillButton _btnKeyboardStudio = null!;
 
         // Unsaved-changes indicator: breathing overlay banner + on-close save prompt
         private GlowingBannerLabel _lblUnsavedBanner = null!;
@@ -249,6 +250,7 @@ namespace OpenCompositeConfigurator
         private float _saveShinePosition;
         private System.Windows.Forms.Timer _activeGlowTimer = null!;
         private double _activeGlowPhase = -Math.PI / 2.0;
+        private long _keyboardStudioShineEpoch;
         private bool _dirty = false;
         private readonly HashSet<Control> _dirtyTrackedControls = new();
         private readonly HashSet<Control> _independentlySavedControls = new();
@@ -474,6 +476,7 @@ namespace OpenCompositeConfigurator
             // the sole operation that writes it to the live controlmap.
             TrackIndependentDirtyControl(_cmbBindingPreset);
             CaptureSavedState();
+            _keyboardStudioShineEpoch = Environment.TickCount64;
             _activeGlowTimer.Start();
             Activated += (_, _) => RefreshKeyboardDesignChoices();
         }
@@ -1172,12 +1175,13 @@ namespace OpenCompositeConfigurator
             };
             container.Controls.Add(_cmbKeyboardDesign);
 
-            var btnKeyboardStudio = MakeButton("Open Keyboard Studio", rx + 328, ry, 172, 30);
-            btnKeyboardStudio.BackColor = Color.FromArgb(28, 86, 67);
-            btnKeyboardStudio.ForeColor = Color.White;
-            btnKeyboardStudio.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-            btnKeyboardStudio.Click += (_, _) => LaunchKeyboardStudio();
-            container.Controls.Add(btnKeyboardStudio);
+            _btnKeyboardStudio = (ModernPillButton)MakeButton("Open Keyboard Studio", rx + 328, ry, 172, 30);
+            _btnKeyboardStudio.BackColor = ModernUiTheme.Accent;
+            _btnKeyboardStudio.ForeColor = Color.White;
+            _btnKeyboardStudio.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            _btnKeyboardStudio.VisualRole = ModernButtonRole.Positive;
+            _btnKeyboardStudio.Click += (_, _) => LaunchKeyboardStudio();
+            container.Controls.Add(_btnKeyboardStudio);
             ry += 34;
 
             _chkSoundsEnabled = MakeCheckBox("Keyboard feedback", rx, ry + 4);
@@ -5764,7 +5768,7 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(btnVrsAdv);
             y += 26;
 
-            var lblVrsInfo = MakeLabel("Requires NVIDIA RTX or GTX 16xx. Eye Tracking and Fixed are separate choices. CSX and game menus remain full-rate.", leftMargin + 20, y, rightEdge - leftMargin - 20);
+            var lblVrsInfo = MakeLabel("NVIDIA RTX/GTX 16xx. Compatibility avoids 2x2 terrain artifacts. CSX and menus stay full-rate.", leftMargin + 20, y, rightEdge - leftMargin - 20);
             lblVrsInfo.ForeColor = Color.White;
             lblVrsInfo.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
             container.Controls.Add(lblVrsInfo);
@@ -5797,7 +5801,8 @@ namespace OpenCompositeConfigurator
                 _cboVrsPreset.Enabled = en;
                 _nudVrsInnerRadius.Enabled = en;
                 _nudVrsMidRadius.Enabled = en;
-                _nudVrsOuterRadius.Enabled = en;
+                _chkVrsCompatibilityMode.AutoCheck = en;
+                _chkVrsCompatibilityMode.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
                 // Don't use .Enabled on CheckBox — WinForms renders disabled text black on dark backgrounds
                 _chkVrsFavorHorizontal.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
                 _chkVrsFavorHorizontal.AutoCheck = en;
@@ -5809,7 +5814,8 @@ namespace OpenCompositeConfigurator
                 _cboVrsPreset.Enabled = en;
                 _nudVrsInnerRadius.Enabled = en;
                 _nudVrsMidRadius.Enabled = en;
-                _nudVrsOuterRadius.Enabled = en;
+                _chkVrsCompatibilityMode.AutoCheck = en;
+                _chkVrsCompatibilityMode.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
                 _chkVrsFavorHorizontal.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
                 _chkVrsFavorHorizontal.AutoCheck = en;
                 CheckPotatoMode();
@@ -5831,25 +5837,50 @@ namespace OpenCompositeConfigurator
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
             };
-            _cboVrsPreset.Items.AddRange(new[] { "Conservative", "Balanced", "Aggressive", "Custom" });
+            _cboVrsPreset.Items.AddRange(new[] { "Compatibility", "Conservative", "Balanced", "Aggressive", "Custom" });
             _cboVrsPreset.SelectedIndex = 0;
             _cboVrsPreset.SelectedIndexChanged += (s, e) =>
             {
-                switch (_cboVrsPreset.SelectedIndex)
+                if (_updatingVrsPreset)
+                    return;
+
+                _updatingVrsPreset = true;
+                try
                 {
-                    case 0: // Conservative (pancake-lens friendly)
-                        _nudVrsInnerRadius.Value = 0.70m; _nudVrsMidRadius.Value = 0.85m; _nudVrsOuterRadius.Value = 1.00m; break;
-                    case 1: // Balanced
-                        _nudVrsInnerRadius.Value = 0.60m; _nudVrsMidRadius.Value = 0.80m; _nudVrsOuterRadius.Value = 1.00m; break;
-                    case 2: // Aggressive
-                        _nudVrsInnerRadius.Value = 0.50m; _nudVrsMidRadius.Value = 0.70m; _nudVrsOuterRadius.Value = 0.90m; break;
-                    case 3: // Custom — don't change values
-                        break;
+                    switch (_cboVrsPreset.SelectedIndex)
+                    {
+                        case 0: // Skyrim compatibility: never use 2x2
+                            _chkVrsCompatibilityMode.Checked = true;
+                            _nudVrsInnerRadius.Value = 0.70m;
+                            _nudVrsMidRadius.Value = 0.85m;
+                            break;
+                        case 1: // Conservative performance
+                            _chkVrsCompatibilityMode.Checked = false;
+                            _nudVrsInnerRadius.Value = 0.70m;
+                            _nudVrsMidRadius.Value = 0.85m;
+                            break;
+                        case 2: // Balanced performance
+                            _chkVrsCompatibilityMode.Checked = false;
+                            _nudVrsInnerRadius.Value = 0.60m;
+                            _nudVrsMidRadius.Value = 0.80m;
+                            break;
+                        case 3: // Aggressive performance
+                            _chkVrsCompatibilityMode.Checked = false;
+                            _nudVrsInnerRadius.Value = 0.50m;
+                            _nudVrsMidRadius.Value = 0.70m;
+                            break;
+                        case 4: // Custom — don't change values
+                            break;
+                    }
+                }
+                finally
+                {
+                    _updatingVrsPreset = false;
                 }
             };
             container.Controls.Add(_cboVrsPreset);
 
-            var lblPresetHint = MakeLabel("Conservative is recommended for pancake lenses.", leftMargin + 212, y + 3, rightEdge - leftMargin - 212);
+            var lblPresetHint = MakeLabel("Compatibility is recommended for Skyrim terrain and foliage.", leftMargin + 212, y + 3, rightEdge - leftMargin - 212);
             lblPresetHint.ForeColor = Color.FromArgb(110, 110, 110);
             lblPresetHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
             container.Controls.Add(lblPresetHint);
@@ -5894,7 +5925,11 @@ namespace OpenCompositeConfigurator
                     DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.10m, Maximum = 1.00m, Value = 0.60m,
                     BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
                 };
-                _nudVrsInnerRadius.ValueChanged += (s, e) => { if (_cboVrsPreset.SelectedIndex != 3) _cboVrsPreset.SelectedIndex = 3; };
+                _nudVrsInnerRadius.ValueChanged += (s, e) =>
+                {
+                    if (!_updatingVrsPreset && _cboVrsPreset.SelectedIndex != 4)
+                        _cboVrsPreset.SelectedIndex = 4;
+                };
                 vrsAdv.Controls.Add(_nudVrsInnerRadius);
                 var lblInnerHint = MakeLabel("1x1", 125, ap + 3, 30);
                 lblInnerHint.ForeColor = Color.FromArgb(110, 110, 110);
@@ -5909,30 +5944,30 @@ namespace OpenCompositeConfigurator
                     DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.10m, Maximum = 1.50m, Value = 0.80m,
                     BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
                 };
-                _nudVrsMidRadius.ValueChanged += (s, e) => { if (_cboVrsPreset.SelectedIndex != 3) _cboVrsPreset.SelectedIndex = 3; };
+                _nudVrsMidRadius.ValueChanged += (s, e) =>
+                {
+                    if (!_updatingVrsPreset && _cboVrsPreset.SelectedIndex != 4)
+                        _cboVrsPreset.SelectedIndex = 4;
+                };
                 vrsAdv.Controls.Add(_nudVrsMidRadius);
                 var lblMidHint = MakeLabel("2x1", 265, ap + 3, 30);
                 lblMidHint.ForeColor = Color.FromArgb(110, 110, 110);
                 lblMidHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
                 vrsAdv.Controls.Add(lblMidHint);
 
-                _lblVrsOuterRadius = MakeLabel("Outer:", 310, ap + 3, 42);
-                vrsAdv.Controls.Add(_lblVrsOuterRadius);
-                _nudVrsOuterRadius = new NumericUpDown
+                _chkVrsCompatibilityMode = MakeCheckBox("Compatibility (max 2x1)", 310, ap);
+                _chkVrsCompatibilityMode.Checked = true;
+                _chkVrsCompatibilityMode.ForeColor = Color.FromArgb(90, 90, 90);
+                _chkVrsCompatibilityMode.AutoCheck = false;
+                _chkVrsCompatibilityMode.CheckedChanged += (s, e) =>
                 {
-                    Location = new Point(352, ap), Width = 60,
-                    DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.10m, Maximum = 1.50m, Value = 1.00m,
-                    BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
+                    if (!_updatingVrsPreset && _cboVrsPreset.SelectedIndex != 4)
+                        _cboVrsPreset.SelectedIndex = 4;
                 };
-                _nudVrsOuterRadius.ValueChanged += (s, e) => { if (_cboVrsPreset.SelectedIndex != 3) _cboVrsPreset.SelectedIndex = 3; };
-                vrsAdv.Controls.Add(_nudVrsOuterRadius);
-                var lblOuterHint = MakeLabel("2x2", 415, ap + 3, 30);
-                lblOuterHint.ForeColor = Color.FromArgb(110, 110, 110);
-                lblOuterHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-                vrsAdv.Controls.Add(lblOuterHint);
+                vrsAdv.Controls.Add(_chkVrsCompatibilityMode);
 
                 // Favor Horizontal — far right on same row
-                _chkVrsFavorHorizontal = MakeCheckBox("Favor Horizontal", 480, ap);
+                _chkVrsFavorHorizontal = MakeCheckBox("Favor Horizontal", 500, ap);
                 _chkVrsFavorHorizontal.Checked = true;
                 _chkVrsFavorHorizontal.ForeColor = Color.FromArgb(90, 90, 90);
                 _chkVrsFavorHorizontal.AutoCheck = false;
@@ -5970,11 +6005,12 @@ namespace OpenCompositeConfigurator
 
         private int DetectVrsPreset()
         {
-            decimal ir = _nudVrsInnerRadius.Value, mr = _nudVrsMidRadius.Value, or2 = _nudVrsOuterRadius.Value;
-            if (ir == 0.70m && mr == 0.85m && or2 == 1.00m) return 0; // Conservative
-            if (ir == 0.60m && mr == 0.80m && or2 == 1.00m) return 1; // Balanced
-            if (ir == 0.50m && mr == 0.70m && or2 == 0.90m) return 2; // Aggressive
-            return 3; // Custom
+            decimal ir = _nudVrsInnerRadius.Value, mr = _nudVrsMidRadius.Value;
+            if (_chkVrsCompatibilityMode.Checked && ir == 0.70m && mr == 0.85m) return 0;
+            if (!_chkVrsCompatibilityMode.Checked && ir == 0.70m && mr == 0.85m) return 1;
+            if (!_chkVrsCompatibilityMode.Checked && ir == 0.60m && mr == 0.80m) return 2;
+            if (!_chkVrsCompatibilityMode.Checked && ir == 0.50m && mr == 0.70m) return 3;
+            return 4; // Custom
         }
 
         private void UpdateFsrStatus()
@@ -6177,14 +6213,33 @@ namespace OpenCompositeConfigurator
 
             try
             {
-                var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(studioPath) { UseShellExecute = true });
+                var startInfo = new System.Diagnostics.ProcessStartInfo(studioPath)
+                {
+                    UseShellExecute = true
+                };
+                string ocuRoot = GetInstalledRootDir();
+                if (!string.IsNullOrWhiteSpace(ocuRoot))
+                {
+                    startInfo.ArgumentList.Add("--ocu-root");
+                    startInfo.ArgumentList.Add(ocuRoot);
+                }
+                var process = System.Diagnostics.Process.Start(startInfo);
                 if (process is not null)
                 {
                     process.EnableRaisingEvents = true;
                     process.Exited += (_, _) =>
                     {
                         if (!IsDisposed && IsHandleCreated)
-                            BeginInvoke((Action)(() => RefreshKeyboardDesignChoices()));
+                            BeginInvoke((Action)(() =>
+                            {
+                                RefreshKeyboardDesignChoices(ReadInstalledKeyboardDesignPreference());
+                                string runtimeStatus = RuntimeInstaller.RunKeyboardDeploymentCheck(this, GetConfiguratorDir());
+                                if (!string.IsNullOrWhiteSpace(runtimeStatus))
+                                {
+                                    _lblStatus.Text = runtimeStatus;
+                                    _lblVideoStatus.Text = runtimeStatus;
+                                }
+                            }));
                     };
                 }
             }
@@ -6192,6 +6247,33 @@ namespace OpenCompositeConfigurator
             {
                 MessageBox.Show(this, $"Could not open OCU Keyboard Studio:\n\n{ex.Message}",
                     "Keyboard Studio", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private string? ReadInstalledKeyboardDesignPreference()
+        {
+            string iniPath = GetOpenCompositeIniLoadPath();
+            if (string.IsNullOrWhiteSpace(iniPath) || !File.Exists(iniPath))
+                return null;
+
+            try
+            {
+                var installedIni = new IniFile();
+                installedIni.Load(iniPath);
+                string layout = installedIni.Get("keyboard", "layout", "auto").Trim();
+                if (layout.Equals("embedded", StringComparison.OrdinalIgnoreCase))
+                    return "parchment";
+
+                string design = installedIni.Get("keyboard", "design", "").Trim();
+                if (!string.IsNullOrWhiteSpace(design))
+                    return design;
+                return File.Exists(Path.Combine(GetInstalledRootDir(), "OCUKeyboard.kb"))
+                    ? "installed"
+                    : null;
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -6223,6 +6305,11 @@ namespace OpenCompositeConfigurator
                 var paths = new List<string>();
                 try
                 {
+                    string stockDesignDirectory = Path.Combine(
+                        AppContext.BaseDirectory, "OCU Keyboard Studio", "Assets", "Stock Designs");
+                    if (Directory.Exists(stockDesignDirectory))
+                        paths.AddRange(Directory.EnumerateFiles(
+                            stockDesignDirectory, "*.kb", SearchOption.AllDirectories));
                     if (File.Exists(KeyboardDesignRegistryPath))
                         paths.AddRange(File.ReadAllLines(KeyboardDesignRegistryPath));
                     if (Directory.Exists(KeyboardDesignLibraryDirectory))
@@ -6242,9 +6329,15 @@ namespace OpenCompositeConfigurator
                     .OrderBy(Path.GetFileNameWithoutExtension))
                 {
                     string id = Path.GetFileNameWithoutExtension(path);
+                    if (designs.Any(item => item.SourcePath is not null
+                        && KeyboardLayoutFilesEquivalent(item.SourcePath, path)))
+                        continue;
                     string name = FriendlyKeyboardDesignName(id);
+                    // Keep a single clean entry when an older managed-library copy has
+                    // the same friendly name as the bundled replacement. Stock paths
+                    // are enumerated first, so the current bundled design wins.
                     if (designs.Any(item => item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-                        name += $" — {Path.GetFileName(Path.GetDirectoryName(path))}";
+                        continue;
                     designs.Add(new KeyboardDesignOption(id, name, path, IsParchment: false));
                 }
 
@@ -6372,9 +6465,22 @@ namespace OpenCompositeConfigurator
             }
         }
 
+        private static bool KeyboardLayoutFilesEquivalent(string left, string right)
+        {
+            try
+            {
+                return File.ReadAllText(left).Equals(File.ReadAllText(right), StringComparison.Ordinal);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static string FriendlyKeyboardDesignName(string value)
         {
-            string name = value.Replace('_', ' ').Replace('-', ' ').Trim();
+            string name = System.Text.RegularExpressions.Regex.Replace(
+                value.Replace('_', ' ').Replace('-', ' '), "(?<=[a-z0-9])(?=[A-Z])", " ").Trim();
             return string.IsNullOrWhiteSpace(name) ? "Unnamed Keyboard" : name;
         }
 
@@ -7166,6 +7272,16 @@ namespace OpenCompositeConfigurator
             }
 
             UpdateCheckedControlGlow(this, intensity);
+
+            // One quick diagonal sword-shine every five seconds. Keeping the
+            // inactive part of the cycle at -1 avoids painting any overlay.
+            const long shinePeriodMs = 5_000;
+            const long shineDurationMs = 1_000;
+            long elapsed = Math.Max(0, Environment.TickCount64 - _keyboardStudioShineEpoch);
+            long cycle = elapsed % shinePeriodMs;
+            _btnKeyboardStudio.ShinePosition = cycle >= shinePeriodMs - shineDurationMs
+                ? (cycle - (shinePeriodMs - shineDurationMs)) / (float)shineDurationMs
+                : -1f;
         }
 
         private static void UpdateCheckedControlGlow(Control root, float intensity)
@@ -7605,15 +7721,15 @@ namespace OpenCompositeConfigurator
                 _nudVrsInnerRadius.Value = (decimal)Math.Clamp(vrsIR, 0.10f, 1.00f);
             if (float.TryParse(_ini.Get("", "vrsMidRadius", "0.80"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float vrsMR))
                 _nudVrsMidRadius.Value = (decimal)Math.Clamp(vrsMR, 0.10f, 1.50f);
-            if (float.TryParse(_ini.Get("", "vrsOuterRadius", "1.00"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float vrsOR))
-                _nudVrsOuterRadius.Value = (decimal)Math.Clamp(vrsOR, 0.10f, 1.50f);
+            _chkVrsCompatibilityMode.Checked = ParseBool(_ini.Get("", "vrsCompatibilityMode", "true"));
             _chkVrsFavorHorizontal.Checked = ParseBool(_ini.Get("", "vrsFavorHorizontal", "true"));
             {
                 bool en = _chkVrsFixedEnabled.Checked || _chkVrsEyeTracked.Checked;
                 _cboVrsPreset.Enabled = en;
                 _nudVrsInnerRadius.Enabled = en;
                 _nudVrsMidRadius.Enabled = en;
-                _nudVrsOuterRadius.Enabled = en;
+                _chkVrsCompatibilityMode.AutoCheck = en;
+                _chkVrsCompatibilityMode.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
                 _chkVrsFavorHorizontal.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
                 _chkVrsFavorHorizontal.AutoCheck = en;
             }
@@ -7844,7 +7960,8 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "vrsEyeTracked", _chkVrsEyeTracked.Checked ? "true" : "false");
             _ini.Set("", "vrsInnerRadius", _nudVrsInnerRadius.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "vrsMidRadius", _nudVrsMidRadius.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
-            _ini.Set("", "vrsOuterRadius", _nudVrsOuterRadius.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            _ini.Set("", "vrsCompatibilityMode", _chkVrsCompatibilityMode.Checked ? "true" : "false");
+            _ini.Remove("", "vrsOuterRadius");
             _ini.Set("", "vrsFavorHorizontal", _chkVrsFavorHorizontal.Checked ? "true" : "false");
 
             WriteCombosToIni();

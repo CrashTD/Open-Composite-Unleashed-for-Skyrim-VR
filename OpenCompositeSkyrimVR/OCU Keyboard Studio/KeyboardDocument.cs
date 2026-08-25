@@ -106,6 +106,7 @@ internal sealed class KeyboardDocument
     public string? CustomFontMetadataPath { get; set; }
     public string? CustomFontTexturePath { get; set; }
     public bool CustomStyleEnabled { get; set; }
+    public bool CustomStyleInitialized { get; set; }
     public bool KeyPlatesEnabled { get; set; } = true;
     public bool TopButtonPlatesEnabled { get; set; } = true;
     public bool InputBarPlateEnabled { get; set; } = true;
@@ -157,6 +158,10 @@ internal sealed class KeyboardDocument
     public string? ControlArrowImagePath { get; set; }
     public string? ControlArrowFileName { get; set; }
     public float ControlArrowRotation { get; set; }
+    public bool ControlArrowGlowEnabled { get; set; }
+    public Color ControlArrowGlowColor { get; set; } = Color.FromArgb(255, 132, 242, 158);
+    public int ControlArrowGlowStrength { get; set; } = 55;
+    public int ControlArrowGlowRadius { get; set; } = 6;
     public bool ControlArrowBreatheEnabled { get; set; }
     public int ControlArrowBreatheMinPercent { get; set; } = 35;
     public float ControlArrowBreathePeriodSeconds { get; set; } = 2f;
@@ -180,10 +185,19 @@ internal sealed class KeyboardDocument
     public float TiltControlOffsetY { get; set; }
     public float TextBarOffsetX { get; set; }
     public float TextBarOffsetY { get; set; }
+    public float TextBarWidth { get; set; }
+    public float TextBarHeight { get; set; }
+    public float TextBarFontScale { get; set; }
     public float ModeButtonOffsetX { get; set; }
     public float ModeButtonOffsetY { get; set; }
+    public float ModeButtonWidth { get; set; }
+    public float ModeButtonHeight { get; set; }
+    public float ModeButtonFontScale { get; set; }
     public float LockButtonOffsetX { get; set; }
     public float LockButtonOffsetY { get; set; }
+    public float LockButtonWidth { get; set; }
+    public float LockButtonHeight { get; set; }
+    public float LockButtonFontScale { get; set; }
     public KeyboardControlDesign SizeControlDesign { get; set; } = new();
     public KeyboardControlDesign OpacityControlDesign { get; set; } = new();
     public KeyboardControlDesign TiltControlDesign { get; set; } = new();
@@ -200,6 +214,7 @@ internal sealed class KeyboardDocument
             CustomFontMetadataPath = CustomFontMetadataPath,
             CustomFontTexturePath = CustomFontTexturePath,
             CustomStyleEnabled = CustomStyleEnabled,
+            CustomStyleInitialized = CustomStyleInitialized,
             KeyPlatesEnabled = KeyPlatesEnabled,
             TopButtonPlatesEnabled = TopButtonPlatesEnabled,
             InputBarPlateEnabled = InputBarPlateEnabled,
@@ -247,6 +262,10 @@ internal sealed class KeyboardDocument
             ControlArrowImagePath = ControlArrowImagePath,
             ControlArrowFileName = ControlArrowFileName,
             ControlArrowRotation = ControlArrowRotation,
+            ControlArrowGlowEnabled = ControlArrowGlowEnabled,
+            ControlArrowGlowColor = ControlArrowGlowColor,
+            ControlArrowGlowStrength = ControlArrowGlowStrength,
+            ControlArrowGlowRadius = ControlArrowGlowRadius,
             ControlArrowBreatheEnabled = ControlArrowBreatheEnabled,
             ControlArrowBreatheMinPercent = ControlArrowBreatheMinPercent,
             ControlArrowBreathePeriodSeconds = ControlArrowBreathePeriodSeconds,
@@ -266,10 +285,19 @@ internal sealed class KeyboardDocument
             TiltControlOffsetY = TiltControlOffsetY,
             TextBarOffsetX = TextBarOffsetX,
             TextBarOffsetY = TextBarOffsetY,
+            TextBarWidth = TextBarWidth,
+            TextBarHeight = TextBarHeight,
+            TextBarFontScale = TextBarFontScale,
             ModeButtonOffsetX = ModeButtonOffsetX,
             ModeButtonOffsetY = ModeButtonOffsetY,
+            ModeButtonWidth = ModeButtonWidth,
+            ModeButtonHeight = ModeButtonHeight,
+            ModeButtonFontScale = ModeButtonFontScale,
             LockButtonOffsetX = LockButtonOffsetX,
             LockButtonOffsetY = LockButtonOffsetY,
+            LockButtonWidth = LockButtonWidth,
+            LockButtonHeight = LockButtonHeight,
+            LockButtonFontScale = LockButtonFontScale,
             SizeControlDesign = SizeControlDesign.Clone(),
             OpacityControlDesign = OpacityControlDesign.Clone(),
             TiltControlDesign = TiltControlDesign.Clone()
@@ -286,6 +314,7 @@ internal sealed class KeyboardDocument
     public bool IsEquivalentForHistory(KeyboardDocument other)
     {
         if (!string.Equals(Serialize(), other.Serialize(), StringComparison.Ordinal)
+            || CustomStyleInitialized != other.CustomStyleInitialized
             || !string.Equals(CustomFontMetadataPath, other.CustomFontMetadataPath, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(CustomFontTexturePath, other.CustomFontTexturePath, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(BackgroundImagePath, other.BackgroundImagePath, StringComparison.OrdinalIgnoreCase)
@@ -310,8 +339,35 @@ internal sealed class KeyboardDocument
     public bool HasBreathingEffects => (CustomStyleEnabled && GlowEnabled && KeyBreatheEnabled)
         || (CustomStyleEnabled && FontGlowEnabled && FontBreatheEnabled)
         || (BackgroundBreatheEnabled && (!string.IsNullOrWhiteSpace(BackgroundImagePath) || !string.IsNullOrWhiteSpace(BackgroundFileName)))
-        || (ControlArrowBreatheEnabled && (!string.IsNullOrWhiteSpace(ControlArrowImagePath) || !string.IsNullOrWhiteSpace(ControlArrowFileName)))
+        || (ControlArrowGlowEnabled && ControlArrowBreatheEnabled)
         || Sprites.Any(sprite => sprite.GlowEnabled && sprite.BreatheEnabled);
+
+    public void EnableCustomStyleFromTheme(KeyboardTheme theme)
+    {
+        if (!CustomStyleInitialized)
+        {
+            FontColor = theme.Ink;
+            FontOutlineColor = Color.FromArgb(220, 8, 11, 15);
+            FontGlowColor = theme.Bright;
+            FontGlowEnabled = false;
+            FontBreatheEnabled = false;
+            KeyColor = theme.Accent;
+            PlateFillColor = theme.KeyIdle;
+            PlateOutlineWidth = theme.Modern ? 2 : 1;
+            GlowColor = theme.Bright;
+            GlowEnabled = theme.Modern;
+            GlowStrength = theme.Modern ? 35 : 0;
+            GlowRadius = 4;
+            HoverColor = theme.Bright;
+            HoverEnabled = true;
+            HoverStrength = Math.Clamp((int)Math.Round(theme.KeyHot.A / 2.0), 0, 100);
+            OutlineEnabled = theme.Outline;
+            KeyRoundness = theme.Modern ? 14 : 2;
+            KeyBreatheEnabled = false;
+            CustomStyleInitialized = true;
+        }
+        CustomStyleEnabled = true;
+    }
 
     // Font coverage follows what this keyboard actually displays. We do not
     // reject a decorative font for Unicode characters or hypothetical keys
@@ -630,6 +686,9 @@ internal sealed class KeyboardDocument
         output.AppendLine($"top_offset textbar {FormatFloat(TextBarOffsetX)} {FormatFloat(TextBarOffsetY)}");
         output.AppendLine($"top_offset mode {FormatFloat(ModeButtonOffsetX)} {FormatFloat(ModeButtonOffsetY)}");
         output.AppendLine($"top_offset lock {FormatFloat(LockButtonOffsetX)} {FormatFloat(LockButtonOffsetY)}");
+        output.AppendLine($"top_design textbar {FormatFloat(TextBarWidth)} {FormatFloat(TextBarHeight)} {FormatFloat(TextBarFontScale)}");
+        output.AppendLine($"top_design mode {FormatFloat(ModeButtonWidth)} {FormatFloat(ModeButtonHeight)} {FormatFloat(ModeButtonFontScale)}");
+        output.AppendLine($"top_design lock {FormatFloat(LockButtonWidth)} {FormatFloat(LockButtonHeight)} {FormatFloat(LockButtonFontScale)}");
         WriteControlDesign(output, "size", SizeControlDesign);
         WriteControlDesign(output, "opacity", OpacityControlDesign);
         WriteControlDesign(output, "tilt", TiltControlDesign);
@@ -640,6 +699,15 @@ internal sealed class KeyboardDocument
                 .Append(Math.Clamp(ControlArrowBreatheMinPercent, 0, 100)).Append(' ')
                 .Append(FormatFloat(Math.Clamp(ControlArrowBreathePeriodSeconds, 0.5f, 10f))).Append(' ')
                 .AppendLine(FormatFloat(NormalizeRotation(ControlArrowBreathePhaseDegrees)));
+        output.Append("control_arrow_effect ")
+            .Append(ControlArrowGlowEnabled.ToString().ToLowerInvariant()).Append(' ')
+            .Append(FormatColor(ControlArrowGlowColor)).Append(' ')
+            .Append(Math.Clamp(ControlArrowGlowStrength, 0, 100)).Append(' ')
+            .Append(Math.Clamp(ControlArrowGlowRadius, 1, 48)).Append(' ')
+            .Append(ControlArrowBreatheEnabled.ToString().ToLowerInvariant()).Append(' ')
+            .Append(Math.Clamp(ControlArrowBreatheMinPercent, 0, 100)).Append(' ')
+            .Append(FormatFloat(Math.Clamp(ControlArrowBreathePeriodSeconds, 0.5f, 10f))).Append(' ')
+            .AppendLine(FormatFloat(NormalizeRotation(ControlArrowBreathePhaseDegrees)));
         output.AppendLine();
 
         foreach (KeyboardKey key in Keys)
@@ -773,6 +841,7 @@ internal sealed class KeyboardDocument
             case "style":
                 Require(tokens, 2, line);
                 document.CustomStyleEnabled = tokens[1].Equals("custom", StringComparison.OrdinalIgnoreCase);
+                document.CustomStyleInitialized = document.CustomStyleEnabled;
                 return true;
             case "base_theme":
                 Require(tokens, 2, line);
@@ -960,6 +1029,25 @@ internal sealed class KeyboardDocument
                     default: throw new FormatException($"Unknown top-bar element '{tokens[1]}'.");
                 }
                 return true;
+            case "top_design":
+                Require(tokens, 5, line);
+                float topWidth = Math.Max(0, ParseFloat(tokens[2]));
+                float topHeight = Math.Max(0, ParseFloat(tokens[3]));
+                float topFontScale = Math.Clamp(ParseFloat(tokens[4]), 0, 3f);
+                switch (tokens[1].ToLowerInvariant())
+                {
+                    case "textbar":
+                        document.TextBarWidth = topWidth; document.TextBarHeight = topHeight;
+                        document.TextBarFontScale = topFontScale; break;
+                    case "mode":
+                        document.ModeButtonWidth = topWidth; document.ModeButtonHeight = topHeight;
+                        document.ModeButtonFontScale = topFontScale; break;
+                    case "lock":
+                        document.LockButtonWidth = topWidth; document.LockButtonHeight = topHeight;
+                        document.LockButtonFontScale = topFontScale; break;
+                    default: throw new FormatException($"Unknown top-bar design target '{tokens[1]}'.");
+                }
+                return true;
             case "control_box":
                 Require(tokens, 4, line);
                 KeyboardControlDesign boxDesign = document.GetControlDesign(tokens[1]);
@@ -1011,9 +1099,21 @@ internal sealed class KeyboardDocument
                 document.ControlArrowFileName = tokens[1];
                 document.ControlArrowRotation = tokens.Count > 2 ? NormalizeRotation(ParseFloat(tokens[2])) : 0;
                 document.ControlArrowBreatheEnabled = tokens.Count > 3 && ParseBool(tokens[3]);
+                document.ControlArrowGlowEnabled = document.ControlArrowBreatheEnabled;
                 document.ControlArrowBreatheMinPercent = tokens.Count > 4 ? Math.Clamp(int.Parse(tokens[4], CultureInfo.InvariantCulture), 0, 100) : 35;
                 document.ControlArrowBreathePeriodSeconds = tokens.Count > 5 ? Math.Clamp(ParseFloat(tokens[5]), 0.5f, 10f) : 2f;
                 document.ControlArrowBreathePhaseDegrees = tokens.Count > 6 ? NormalizeRotation(ParseFloat(tokens[6])) : 0;
+                return true;
+            case "control_arrow_effect":
+                Require(tokens, 9, line);
+                document.ControlArrowGlowEnabled = ParseBool(tokens[1]);
+                document.ControlArrowGlowColor = ParseColor(tokens[2]);
+                document.ControlArrowGlowStrength = Math.Clamp(int.Parse(tokens[3], CultureInfo.InvariantCulture), 0, 100);
+                document.ControlArrowGlowRadius = Math.Clamp(int.Parse(tokens[4], CultureInfo.InvariantCulture), 1, 48);
+                document.ControlArrowBreatheEnabled = ParseBool(tokens[5]);
+                document.ControlArrowBreatheMinPercent = Math.Clamp(int.Parse(tokens[6], CultureInfo.InvariantCulture), 0, 100);
+                document.ControlArrowBreathePeriodSeconds = Math.Clamp(ParseFloat(tokens[7]), 0.5f, 10f);
+                document.ControlArrowBreathePhaseDegrees = NormalizeRotation(ParseFloat(tokens[8]));
                 return true;
             case "overlay":
                 Require(tokens, 2, line);
