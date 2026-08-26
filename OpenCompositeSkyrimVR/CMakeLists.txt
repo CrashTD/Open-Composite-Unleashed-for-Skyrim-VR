@@ -305,6 +305,7 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/Keyboard/KeyboardLayout.cpp
 	OpenOVR/Misc/Keyboard/SudoFontMeta.cpp
 	OpenOVR/Misc/Keyboard/LaserRaySmoothing.cpp
+	OpenOVR/Misc/Keyboard/LaserTextureAtlas.cpp
 	OpenOVR/Misc/Keyboard/VRKeyboard.cpp
 	OpenOVR/Misc/Keyboard/VRMenuLaser.cpp
 	OpenOVR/Misc/Input/InteractionProfile.cpp

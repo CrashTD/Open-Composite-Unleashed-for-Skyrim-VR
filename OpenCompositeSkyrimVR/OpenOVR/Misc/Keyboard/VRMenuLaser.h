@@ -1,10 +1,13 @@
 #pragma once
 
 #include <d3d11.h>
+#include <memory>
 #include <vector>
 
 #include "Misc/xr_ext.h"
 #include "Misc/xrutil.h"
+
+class LaserTextureAtlas;
 
 // Renders laser pointers from VR controllers to a virtual menu quad.
 // Used for interacting with MCM/pause menus in Skyrim VR.
@@ -77,14 +80,10 @@ private:
 	ID3D11Device* dev;
 	ID3D11DeviceContext* ctx = nullptr;
 
-	// Beam textures are shared by both hand layers. State 0=idle, 1=clicked.
-	// Inactive hands reuse idle; a duplicate standby swapchain wastes a runtime
-	// resource and can exceed SteamVR OpenXR's swapchain limit when Console is open.
-	XrSwapchain beamChain[2] = {};
+	// Menu, console, and keyboard lasers share one immutable session atlas.
+	std::shared_ptr<LaserTextureAtlas> laserAtlas;
 	XrCompositionLayerQuad beamLayer[2] = {};
 
-	// Dot textures use the same shared idle/clicked state convention.
-	XrSwapchain dotChain[2] = {};
 	XrCompositionLayerQuad dotLayer[2] = {};
 
 	// Debug quad overlay — semi-transparent rectangle showing the menu hit area

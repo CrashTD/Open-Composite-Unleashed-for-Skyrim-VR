@@ -11,8 +11,7 @@
 #include "Reimpl/BaseSystem.h"
 #include "Misc/LaserCalibration.h"
 #include "LaserRaySmoothing.h"
-#include "BeamTexture.h"
-#include "LaserDotTexture.h"
+#include "LaserTextureAtlas.h"
 #include "generated/static_bases.gen.h"
 
 #ifdef _WIN32
@@ -127,23 +126,15 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
     : dev(dev)
 {
 	dev->GetImmediateContext(&ctx);
+	laserAtlas = LaserTextureAtlas::Acquire(dev);
 
-	// OpenXR swapchain formats are runtime-specific. Preserve OCU's existing
-	// formats whenever the active runtime advertises them, then fall back between
-	// RGBA/BGRA and sRGB/linear. PimaxXR, VDXR, and Oculus therefore keep their
-	// current path while SteamVR can use the formats it actually exposes.
+	// The dynamic calibration surface remains separate from the immutable atlas.
 	uint32_t formatCount = 0;
 	OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainFormats(xr_session.get(), 0, &formatCount, nullptr));
 	std::vector<int64_t> runtimeFormats(formatCount);
 	OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainFormats(
 	    xr_session.get(), formatCount, &formatCount, runtimeFormats.data()));
 
-	DXGI_FORMAT laserColorFormat = PickSupportedFormat(runtimeFormats, {
-	    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-	    DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
-	    DXGI_FORMAT_R8G8B8A8_UNORM,
-	    DXGI_FORMAT_B8G8R8A8_UNORM,
-	});
 	debugQuadFormat = PickSupportedFormat(runtimeFormats, {
 	    DXGI_FORMAT_R8G8B8A8_UNORM,
 	    DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -151,159 +142,44 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 	    DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
 	});
 	std::string offeredFormats = DescribeFormats(runtimeFormats);
-	if (laserColorFormat == DXGI_FORMAT_UNKNOWN || debugQuadFormat == DXGI_FORMAT_UNKNOWN) {
+	if (debugQuadFormat == DXGI_FORMAT_UNKNOWN) {
 		OOVR_ABORTF("Menu laser requires a supported 8-bit RGBA/BGRA swapchain format. Runtime offered: %s",
 		    offeredFormats.c_str());
 	}
-	OOVR_LOGF("Menu laser swapchain formats: offered=[%s] beam/dot=%s(%d) calibration=%s(%d)",
-	    offeredFormats.c_str(), LaserFormatName(laserColorFormat), static_cast<int>(laserColorFormat),
+	OOVR_LOGF("Menu laser swapchain formats: offered=[%s] shared-atlas=%s(%d) calibration=%s(%d)",
+	    offeredFormats.c_str(), LaserFormatName(laserAtlas->GetFormat()), static_cast<int>(laserAtlas->GetFormat()),
 	    LaserFormatName(debugQuadFormat), static_cast<int>(debugQuadFormat));
 
-	// Create one idle and one clicked beam texture. Both hand layers may reference
-	// the same released swapchain image, so the inactive hand reuses idle instead
-	// of consuming a third, pixel-identical standby swapchain.
-	for (int state = 0; state < 2; state++) {
-		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
-		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-		sci.format = static_cast<int64_t>(laserColorFormat);
-		sci.sampleCount = 1;
-		sci.width = beamtex::kW;
-		sci.height = beamtex::kH;
-		sci.faceCount = 1;
-		sci.arraySize = 1;
-		sci.mipCount = 1;
-
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &beamChain[state]));
-
-		uint32_t imgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[state], 0, &imgCount, nullptr));
-		std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(beamChain[state], imgCount, &imgCount,
-		    (XrSwapchainImageBaseHeader*)imgs.data()));
-
-		std::vector<uint32_t> colorPixels;
-		uint8_t r = state == 1 ? 55 : 255;
-		uint8_t g = state == 1 ? 145 : 240;
-		uint8_t b = state == 1 ? 255 : 220;
-		uint8_t a = state == 1 ? 220 : 200;
-		if (IsBgraFormat(laserColorFormat))
-			std::swap(r, b);
-		beamtex::Fill(colorPixels, r, g, b, a);
-
-		D3D11_TEXTURE2D_DESC td = {};
-		td.Width = beamtex::kW;
-		td.Height = beamtex::kH;
-		td.MipLevels = 1;
-		td.ArraySize = 1;
-		td.Format = laserColorFormat;
-		td.SampleDesc = { 1, 0 };
-		td.Usage = D3D11_USAGE_DEFAULT;
-
-		D3D11_SUBRESOURCE_DATA init = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
-		CComPtr<ID3D11Texture2D> tex;
-		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
-
-		XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-		uint32_t idx = 0;
-		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(beamChain[state], &acq, &idx));
-		XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-		wait.timeout = 500000000;
-		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(beamChain[state], &wait));
-		ctx->CopyResource(imgs[idx].texture, tex);
-		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(beamChain[state], &rel));
-	}
-
+	const XrSwapchain atlasChain = laserAtlas->GetSwapchain();
+	const XrRect2Di idleBeamRect = laserAtlas->GetImageRect(LaserAtlasRegion::BeamIdle);
 	for (int i = 0; i < 2; i++) {
 		memset(&beamLayer[i], 0, sizeof(beamLayer[i]));
 		beamLayer[i].type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		beamLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		beamLayer[i].space = xr_gbl->floorSpace;
 		beamLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		beamLayer[i].subImage.swapchain = beamChain[0];
-		beamLayer[i].subImage.imageRect.offset = { 0, 0 };
-		beamLayer[i].subImage.imageRect.extent = { beamtex::kW, beamtex::kH };
+		beamLayer[i].subImage.swapchain = atlasChain;
+		beamLayer[i].subImage.imageRect = idleBeamRect;
 		beamLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	// Create matching shared idle and clicked dot textures.
-	for (int state = 0; state < 2; state++) {
-		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
-		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-		sci.format = static_cast<int64_t>(laserColorFormat);
-		sci.sampleCount = 1;
-		sci.width = laserdot::kSize;
-		sci.height = laserdot::kSize;
-		sci.faceCount = 1;
-		sci.arraySize = 1;
-		sci.mipCount = 1;
-
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &sci, &dotChain[state]));
-
-		uint32_t imgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[state], 0, &imgCount, nullptr));
-		std::vector<XrSwapchainImageD3D11KHR> imgs(imgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[state], imgCount, &imgCount,
-		    (XrSwapchainImageBaseHeader*)imgs.data()));
-
-		std::vector<uint32_t> dotPixels;
-		if (state == 1) {
-			laserdot::Fill(dotPixels, IsBgraFormat(laserColorFormat),
-			    { 225, 245, 255 }, { 90, 175, 255 }, { 35, 105, 255 });
-		} else {
-			laserdot::Fill(dotPixels, IsBgraFormat(laserColorFormat));
-		}
-
-		D3D11_TEXTURE2D_DESC td = {};
-		td.Width = laserdot::kSize;
-		td.Height = laserdot::kSize;
-		td.MipLevels = 1;
-		td.ArraySize = 1;
-		td.Format = laserColorFormat;
-		td.SampleDesc = { 1, 0 };
-		td.Usage = D3D11_USAGE_DEFAULT;
-
-		D3D11_SUBRESOURCE_DATA init = {
-			dotPixels.data(), sizeof(uint32_t) * laserdot::kSize,
-			sizeof(uint32_t) * laserdot::kSize * laserdot::kSize
-		};
-		CComPtr<ID3D11Texture2D> tex;
-		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
-
-		XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-		uint32_t idx = 0;
-		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(dotChain[state], &acq, &idx));
-		XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-		wait.timeout = 500000000;
-		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(dotChain[state], &wait));
-		ctx->CopyResource(imgs[idx].texture, tex);
-		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(dotChain[state], &rel));
-	}
-
+	const XrRect2Di idleDotRect = laserAtlas->GetImageRect(LaserAtlasRegion::DotIdle);
 	for (int i = 0; i < 2; i++) {
 		memset(&dotLayer[i], 0, sizeof(dotLayer[i]));
 		dotLayer[i].type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		dotLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		dotLayer[i].space = xr_gbl->floorSpace;
 		dotLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		dotLayer[i].subImage.swapchain = dotChain[0];
-		dotLayer[i].subImage.imageRect.offset = { 0, 0 };
-		dotLayer[i].subImage.imageRect.extent = { laserdot::kSize, laserdot::kSize };
+		dotLayer[i].subImage.swapchain = atlasChain;
+		dotLayer[i].subImage.imageRect = idleDotRect;
 		dotLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	OOVR_LOG("Menu laser swapchains: 4 shared idle/clicked beam/dot textures; calibration grid is lazy");
+	OOVR_LOG("Menu laser resources: 1 shared four-sprite atlas swapchain; calibration grid is lazy");
 }
 
 VRMenuLaser::~VRMenuLaser()
 {
-	for (int state = 0; state < 2; state++) {
-		if (beamChain[state] != XR_NULL_HANDLE)
-			xrDestroySwapchain(beamChain[state]);
-		if (dotChain[state] != XR_NULL_HANDLE)
-			xrDestroySwapchain(dotChain[state]);
-	}
 	DestroyDebugQuad();
 	if (ctx)
 		ctx->Release();
@@ -894,11 +770,13 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 			}
 		}
 
-		// Composition layers are submitted after Update returns, so switching the
-		// selected pre-baked swapchain here affects this same frame.
-		int colorState = triggerState[side] ? 1 : 0;
-		beamLayer[side].subImage.swapchain = beamChain[colorState];
-		dotLayer[side].subImage.swapchain = dotChain[colorState];
+		// Composition layers are submitted after Update returns, so selecting the
+		// pre-baked atlas rectangle here affects this same frame.
+		const bool clicked = triggerState[side];
+		beamLayer[side].subImage.imageRect = laserAtlas->GetImageRect(
+		    clicked ? LaserAtlasRegion::BeamClicked : LaserAtlasRegion::BeamIdle);
+		dotLayer[side].subImage.imageRect = laserAtlas->GetImageRect(
+		    clicked ? LaserAtlasRegion::DotClicked : LaserAtlasRegion::DotIdle);
 	}
 
 	return activeLayers;
@@ -970,9 +848,11 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::UpdateWorld(
 			}
 		}
 
-		int colorState = triggerState[side] ? 1 : 0;
-		beamLayer[side].subImage.swapchain = beamChain[colorState];
-		dotLayer[side].subImage.swapchain = dotChain[colorState];
+		const bool clicked = triggerState[side];
+		beamLayer[side].subImage.imageRect = laserAtlas->GetImageRect(
+		    clicked ? LaserAtlasRegion::BeamClicked : LaserAtlasRegion::BeamIdle);
+		dotLayer[side].subImage.imageRect = laserAtlas->GetImageRect(
+		    clicked ? LaserAtlasRegion::DotClicked : LaserAtlasRegion::DotIdle);
 
 		if (keyboardHitSide[side]) {
 			oovr_laser_smoothing::Reset(

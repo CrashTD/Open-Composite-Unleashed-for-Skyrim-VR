@@ -14,8 +14,7 @@
 
 #include "resources.h"
 
-#include "BeamTexture.h"
-#include "LaserDotTexture.h"
+#include "LaserTextureAtlas.h"
 #include "LaserRaySmoothing.h"
 #include "Misc/Config.h"
 #include "Misc/LaserCalibration.h"
@@ -1413,56 +1412,10 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 	// this once, after the .kb exists, so a custom SFN is active on first open.
 	LoadKeyboardLayout(); // embedded default or a Keyboard Studio .kb beside the DLL
 
-	// Create laser beam swapchains — tapered VD-style beams (2026-07-25),
-	// shared generator with the menu laser (BeamTexture.h).
-	for (int clicked = 0; clicked < 2; clicked++) {
-		XrSwapchainCreateInfo laserSci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
-		laserSci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-		laserSci.format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		laserSci.sampleCount = 1;
-		laserSci.width = beamtex::kW;
-		laserSci.height = beamtex::kH;
-		laserSci.faceCount = 1;
-		laserSci.arraySize = 1;
-		laserSci.mipCount = 1;
-
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &laserSci, &laserChain[clicked]));
-
-			uint32_t laserImgCount = 0;
-			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(laserChain[clicked], 0, &laserImgCount, nullptr));
-			std::vector<XrSwapchainImageD3D11KHR> laserImgs(laserImgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-			OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(laserChain[clicked], laserImgCount, &laserImgCount,
-			    (XrSwapchainImageBaseHeader*)laserImgs.data()));
-
-			std::vector<uint32_t> colorPixels;
-			if (clicked)
-				beamtex::Fill(colorPixels, 55, 145, 255, 220); // electric blue click
-			else
-				beamtex::Fill(colorPixels, 255, 240, 220, 200); // warm white idle
-
-			D3D11_TEXTURE2D_DESC ltd = {};
-			ltd.Width = beamtex::kW;
-			ltd.Height = beamtex::kH;
-			ltd.MipLevels = 1;
-			ltd.ArraySize = 1;
-			ltd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-			ltd.SampleDesc = { 1, 0 };
-			ltd.Usage = D3D11_USAGE_DEFAULT;
-
-			D3D11_SUBRESOURCE_DATA linit = { colorPixels.data(), sizeof(uint32_t) * beamtex::kW, sizeof(uint32_t) * beamtex::kW * beamtex::kH };
-			CComPtr<ID3D11Texture2D> ltex;
-			OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&ltd, &linit, &ltex));
-
-			XrSwapchainImageAcquireInfo lacq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-			uint32_t lidx = 0;
-			OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(laserChain[clicked], &lacq, &lidx));
-			XrSwapchainImageWaitInfo lwait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-			lwait.timeout = 500000000;
-			OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(laserChain[clicked], &lwait));
-			ctx->CopyResource(laserImgs[lidx].texture, ltex);
-			XrSwapchainImageReleaseInfo lrel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-			OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(laserChain[clicked], &lrel));
-	}
+	// Reuse the immutable laser atlas shared by keyboard, flat menus, and console.
+	laserAtlas = LaserTextureAtlas::Acquire(dev);
+	const XrSwapchain atlasChain = laserAtlas->GetSwapchain();
+	const XrRect2Di idleBeamRect = laserAtlas->GetImageRect(LaserAtlasRegion::BeamIdle);
 
 	for (int i = 0; i < 2; i++) {
 		// Initialize the laser composition layer
@@ -1471,65 +1424,13 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		laserLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		laserLayer[i].space = xr_gbl->floorSpace;
 		laserLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		laserLayer[i].subImage.swapchain = laserChain[0];
-		laserLayer[i].subImage.imageRect.offset = { 0, 0 };
-		laserLayer[i].subImage.imageRect.extent = { beamtex::kW, beamtex::kH };
+		laserLayer[i].subImage.swapchain = atlasChain;
+		laserLayer[i].subImage.imageRect = idleBeamRect;
 		laserLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	// Create target dot swapchains — small white dots (2 controllers + 1 headset).
-	constexpr uint32_t dotTextureSize = laserdot::kSize;
-	{
-		XrSwapchainCreateInfo dotSci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
-		dotSci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-		dotSci.format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		dotSci.sampleCount = 1;
-		dotSci.width = dotTextureSize;
-		dotSci.height = dotTextureSize;
-		dotSci.faceCount = 1;
-		dotSci.arraySize = 1;
-		dotSci.mipCount = 1;
-
-		OOVR_FAILED_XR_ABORT(xrCreateSwapchain(xr_session.get(), &dotSci, &targetDotChain));
-
-		uint32_t dotImgCount = 0;
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(targetDotChain, 0, &dotImgCount, nullptr));
-		std::vector<XrSwapchainImageD3D11KHR> dotImgs(dotImgCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(targetDotChain, dotImgCount, &dotImgCount,
-		    (XrSwapchainImageBaseHeader*)dotImgs.data()));
-
-		// Prisma-style warm core and faded halo. RGB is premultiplied so the
-		// transparent area cannot appear as a square on stricter runtimes.
-		std::vector<uint32_t> colorPixels;
-		laserdot::Fill(colorPixels, false);
-
-		D3D11_TEXTURE2D_DESC dtd = {};
-		dtd.Width = dotTextureSize;
-		dtd.Height = dotTextureSize;
-		dtd.MipLevels = 1;
-		dtd.ArraySize = 1;
-		dtd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		dtd.SampleDesc = { 1, 0 };
-		dtd.Usage = D3D11_USAGE_DEFAULT;
-
-		D3D11_SUBRESOURCE_DATA dinit = {
-			colorPixels.data(), sizeof(uint32_t) * dotTextureSize,
-			sizeof(uint32_t) * dotTextureSize * dotTextureSize
-		};
-		CComPtr<ID3D11Texture2D> dtex;
-		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&dtd, &dinit, &dtex));
-
-		XrSwapchainImageAcquireInfo dacq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-		uint32_t didx = 0;
-		OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(targetDotChain, &dacq, &didx));
-		XrSwapchainImageWaitInfo dwait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-		dwait.timeout = 500000000;
-		OOVR_FAILED_XR_ABORT(xrWaitSwapchainImage(targetDotChain, &dwait));
-		ctx->CopyResource(dotImgs[didx].texture, dtex);
-		XrSwapchainImageReleaseInfo drel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		OOVR_FAILED_XR_ABORT(xrReleaseSwapchainImage(targetDotChain, &drel));
-	}
-
+	// Controller/headset dots select the atlas's warm-white dot region.
+	const XrRect2Di idleDotRect = laserAtlas->GetImageRect(LaserAtlasRegion::DotIdle);
 	for (int i = 0; i < 3; i++) {
 		// Initialize the target dot composition layer
 		memset(&targetDotLayer[i], 0, sizeof(targetDotLayer[i]));
@@ -1537,11 +1438,8 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		targetDotLayer[i].layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 		targetDotLayer[i].space = xr_gbl->floorSpace;
 		targetDotLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		targetDotLayer[i].subImage.swapchain = targetDotChain;
-		targetDotLayer[i].subImage.imageRect.offset = { 0, 0 };
-		targetDotLayer[i].subImage.imageRect.extent = {
-			static_cast<int32_t>(dotTextureSize), static_cast<int32_t>(dotTextureSize)
-		};
+		targetDotLayer[i].subImage.swapchain = atlasChain;
+		targetDotLayer[i].subImage.imageRect = idleDotRect;
 		targetDotLayer[i].subImage.imageArrayIndex = 0;
 		// The bright core remains about one centimetre; the larger transparent
 		// quad carries the soft halo around it.
@@ -1596,7 +1494,7 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 	// 	XrSwapchainCreateInfo chSci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 	// 	... (crosshair code disabled)
 	// }
-	OOVR_LOG("VR keyboard swapchains: 5 total (panel, 2 shared beams, shared dot, console)");
+	OOVR_LOG("VR keyboard resources: 2 private swapchains (panel, console) plus shared laser atlas");
 }
 
 VRKeyboard::~VRKeyboard()
@@ -1611,16 +1509,6 @@ VRKeyboard::~VRKeyboard()
 	if (consoleChain != XR_NULL_HANDLE) {
 		xrDestroySwapchain(consoleChain);
 		consoleChain = XR_NULL_HANDLE;
-	}
-	for (int state = 0; state < 2; state++) {
-		if (laserChain[state] != XR_NULL_HANDLE) {
-			xrDestroySwapchain(laserChain[state]);
-			laserChain[state] = XR_NULL_HANDLE;
-		}
-	}
-	if (targetDotChain != XR_NULL_HANDLE) {
-		xrDestroySwapchain(targetDotChain);
-		targetDotChain = XR_NULL_HANDLE;
 	}
 	if (chain != XR_NULL_HANDLE) {
 		xrDestroySwapchain(chain);
@@ -2615,14 +2503,15 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 		if (laserActive[side]) {
 			// Match the menu pointer: idle is warm white; the complete trigger
 			// hold is electric blue, including PC-mode long key presses.
-			laserLayer[side].subImage.swapchain = laserChain[lastTriggerState[side] ? 1 : 0];
+			laserLayer[side].subImage.imageRect = laserAtlas->GetImageRect(
+			    lastTriggerState[side] ? LaserAtlasRegion::BeamClicked : LaserAtlasRegion::BeamIdle);
 			activeLayers.push_back((XrCompositionLayerBaseHeader*)&laserLayer[side]);
 			activeLayers.push_back((XrCompositionLayerBaseHeader*)&cursorDotLayer[side]);
 		}
 	}
 	if (s_targetMode) {
 		for (int i = 0; i < 3; i++) {
-			if (targetDotValid[i] && targetDotChain != XR_NULL_HANDLE)
+			if (targetDotValid[i] && laserAtlas)
 				activeLayers.push_back((XrCompositionLayerBaseHeader*)&targetDotLayer[i]);
 		}
 	}

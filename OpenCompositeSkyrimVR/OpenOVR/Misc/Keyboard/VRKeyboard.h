@@ -16,6 +16,7 @@
 #include "SudoFontMeta.h"
 
 struct KbThemeDef; // Selectable keyboard theme (palette + font + background), table in VRKeyboard.cpp
+class LaserTextureAtlas;
 
 class VRKeyboard {
 public:
@@ -177,9 +178,10 @@ private:
 	bool headLocked = false; // true = head-locked (viewSpace), false = world-anchored (floorSpace)
 	XrVector3f headWorldPos = {}; // Head position in world/view space, updated each frame
 
-	// Target dot composition layers (controller 0, controller 1, headset)
-	// One identical white-dot texture is shared by controller and headset layers.
-	XrSwapchain targetDotChain = XR_NULL_HANDLE;
+	// Menu, console, and keyboard laser sprites share one immutable atlas.
+	std::shared_ptr<LaserTextureAtlas> laserAtlas;
+
+	// Target dot composition layers (controller 0, controller 1, headset).
 	XrCompositionLayerQuad targetDotLayer[3] = {};
 	// Live keyboard cursors use their own quads backed by the same tiny dot
 	// texture. Cursor motion must not dirty and upload the 1024x560 keyboard.
@@ -192,11 +194,7 @@ private:
 	XrVector3f laserOrigin[2] = {};
 	XrVector3f laserHitPoint[2] = {};
 
-	// Laser beam composition layers (one per hand, idle/clicked variants).
-	// Both textures are built up front so press feedback never uploads during a
-	// VR frame. State 0 = warm white; state 1 = electric blue.
-	// Idle/clicked textures are shared by both hand layers.
-	XrSwapchain laserChain[2] = {};
+	// Laser beam composition layers (one per hand, atlas-selected idle/clicked).
 	XrCompositionLayerQuad laserLayer[2] = {};
 
 	// All layers returned by Update (keyboard + laser beams)
