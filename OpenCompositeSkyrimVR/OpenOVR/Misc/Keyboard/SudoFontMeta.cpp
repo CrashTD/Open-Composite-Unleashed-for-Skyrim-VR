@@ -295,6 +295,113 @@ void SudoFontMeta::BlitTextCentered(const std::wstring& text,
 	}
 }
 
+void SudoFontMeta::BlitTextGlowCentered(const std::wstring& text,
+    int boxX, int boxY, int boxW, int boxH,
+    int img_width, int img_height,
+    float offsetX, float offsetY, float scale,
+    int outerRadius, int innerRadius,
+    pix_t outerColour, pix_t innerColour, pix_t* rawPixels)
+{
+	if (text.empty() || outerColour.a == 0)
+		return;
+	scale = std::clamp(scale, 0.25f, 3.0f);
+	outerRadius = std::max(1, outerRadius);
+	innerRadius = std::max(1, innerRadius);
+
+	struct Run {
+		const CharInfo* glyph;
+		int cursor;
+	};
+	std::vector<Run> runs;
+	int cursor = 0;
+	int minX = std::numeric_limits<int>::max();
+	int minY = std::numeric_limits<int>::max();
+	int maxX = std::numeric_limits<int>::min();
+	int maxY = std::numeric_limits<int>::min();
+	for (wchar_t ch : text) {
+		auto found = chars.find(ch);
+		if (found == chars.end())
+			continue;
+		const CharInfo& glyph = found->second;
+		if (glyph.PackedWidth > 0 && glyph.PackedHeight > 0) {
+			runs.push_back({ &glyph, cursor });
+			minX = std::min(minX, cursor + int(glyph.XOffset));
+			minY = std::min(minY, int(glyph.YOffset));
+			maxX = std::max(maxX, cursor + int(glyph.XOffset) + int(glyph.PackedWidth));
+			maxY = std::max(maxY, int(glyph.YOffset) + int(glyph.PackedHeight));
+		}
+		cursor += glyph.XAdvance;
+	}
+	if (runs.empty())
+		return;
+
+	const float visualWidth = (maxX - minX) * scale;
+	const float visualHeight = (maxY - minY) * scale;
+	const float originX = boxX + (boxW - visualWidth) * 0.5f + offsetX - minX * scale;
+	const float originY = boxY + (boxH - visualHeight) * 0.5f + offsetY - minY * scale;
+	const pix_t* atlas = reinterpret_cast<const pix_t*>(pixel_data.data());
+	pix_t* output = reinterpret_cast<pix_t*>(rawPixels);
+
+	auto alphaAt = [&](const CharInfo& glyph, int x, int y) -> uint8_t {
+		x = std::clamp(x, 0, int(glyph.PackedWidth) - 1);
+		y = std::clamp(y, 0, int(glyph.PackedHeight) - 1);
+		const int atlasX = int(glyph.PackedX) + x;
+		const int atlasY = int(glyph.PackedY) + y;
+		if (atlasX < 0 || atlasY < 0 || atlasX >= int(imgWidth) || atlasY >= int(imgHeight))
+			return 0;
+		return atlas[atlasX + atlasY * imgWidth].a;
+	};
+
+	const int ringX[8] = { -1, 1, 0, 0, -1, 1, -1, 1 };
+	const int ringY[8] = { 0, 0, -1, 1, -1, -1, 1, 1 };
+	auto stampRing = [&](int targetX, int targetY, int radius,
+	                     const pix_t& colour, uint8_t coverage) {
+		if (colour.a == 0)
+			return;
+		for (int index = 0; index < 8; ++index) {
+			const int x = targetX + ringX[index] * radius;
+			const int y = targetY + ringY[index] * radius;
+			if (x < 0 || y < 0 || x >= img_width || y >= img_height)
+				continue;
+			BlendGlyphPixel(output[x + y * img_width], colour, coverage);
+		}
+	};
+
+	for (const Run& run : runs) {
+		const CharInfo& glyph = *run.glyph;
+		const int outputWidth = std::max(1, int(std::ceil(glyph.PackedWidth * scale)));
+		const int outputHeight = std::max(1, int(std::ceil(glyph.PackedHeight * scale)));
+		const int drawX = int(std::round(originX + (run.cursor + glyph.XOffset) * scale));
+		const int drawY = int(std::round(originY + glyph.YOffset * scale));
+
+		for (int y = 0; y < outputHeight; ++y) {
+			const float sourceY = (y + 0.5f) / scale - 0.5f;
+			const int y0 = std::clamp(int(std::floor(sourceY)), 0, int(glyph.PackedHeight) - 1);
+			const int y1 = std::min(y0 + 1, int(glyph.PackedHeight) - 1);
+			const float fy = std::clamp(sourceY - std::floor(sourceY), 0.0f, 1.0f);
+			for (int x = 0; x < outputWidth; ++x) {
+				const float sourceX = (x + 0.5f) / scale - 0.5f;
+				const int x0 = std::clamp(int(std::floor(sourceX)), 0, int(glyph.PackedWidth) - 1);
+				const int x1 = std::min(x0 + 1, int(glyph.PackedWidth) - 1);
+				const float fx = std::clamp(sourceX - std::floor(sourceX), 0.0f, 1.0f);
+				const float top = alphaAt(glyph, x0, y0)
+				    + (alphaAt(glyph, x1, y0) - alphaAt(glyph, x0, y0)) * fx;
+				const float bottom = alphaAt(glyph, x0, y1)
+				    + (alphaAt(glyph, x1, y1) - alphaAt(glyph, x0, y1)) * fx;
+				const uint8_t coverage = uint8_t(std::clamp(
+				    int(std::round(top + (bottom - top) * fy)), 0, 255));
+				if (coverage == 0)
+					continue;
+				const int targetX = drawX + x;
+				const int targetY = drawY + y;
+				stampRing(targetX, targetY, outerRadius, outerColour, coverage);
+				if (innerRadius != outerRadius)
+					stampRing(targetX, targetY, innerRadius, innerColour, coverage);
+			}
+		}
+	}
+}
+
 int SudoFontMeta::Width(wchar_t ch)
 {
 	// Safety check: return 0 width for characters not in the font

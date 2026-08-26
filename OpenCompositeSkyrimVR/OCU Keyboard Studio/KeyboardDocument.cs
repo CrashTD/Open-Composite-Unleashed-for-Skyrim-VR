@@ -358,7 +358,9 @@ internal sealed class KeyboardDocument
             GlowEnabled = theme.Modern;
             GlowStrength = theme.Modern ? 35 : 0;
             GlowRadius = 4;
-            HoverColor = theme.Bright;
+            // Preserve the Base Theme's exact hover RGB when the first edited
+            // appearance value promotes the theme into editable overrides.
+            HoverColor = Color.FromArgb(255, theme.KeyHot.R, theme.KeyHot.G, theme.KeyHot.B);
             HoverEnabled = true;
             HoverStrength = Math.Clamp((int)Math.Round(theme.KeyHot.A / 2.0), 0, 100);
             OutlineEnabled = theme.Outline;

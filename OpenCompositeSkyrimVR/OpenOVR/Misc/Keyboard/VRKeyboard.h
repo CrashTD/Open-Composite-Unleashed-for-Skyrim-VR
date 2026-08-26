@@ -107,7 +107,24 @@ private:
 	DecodedKeyboardArtwork customKeyboardBg;
 	std::vector<DecodedKeyboardArtwork> customKeyboardSprites;
 	DecodedKeyboardArtwork customControlArrow;
+	// Reused CPU surfaces. Breathing effects redraw while the keyboard is open;
+	// retaining these buffers avoids allocating several megabytes every tick.
+	std::vector<uint32_t> keyboardRenderBuffer;
+	std::vector<uint32_t> consoleRenderBuffer;
 	uint64_t lastAnimationRefreshMs = 0;
+	uint64_t lastSlowRefreshLogMs = 0;
+	struct PlateGlowMask {
+		int plateWidth = 0;
+		int plateHeight = 0;
+		int plateRadius = 0;
+		int glowRadius = 0;
+		int width = 0;
+		int height = 0;
+		std::vector<uint8_t> coverage;
+	};
+	// Geometry is shared by almost every key. Cache the expanded rounded glow
+	// band instead of rebuilding it ring-by-ring on every breathing frame.
+	std::vector<PlateGlowMask> plateGlowMasks;
 
 	// These use the OpenVR eye constants
 	float lastInputTime[2] = { 0, 0 };
@@ -164,6 +181,9 @@ private:
 	// One identical white-dot texture is shared by controller and headset layers.
 	XrSwapchain targetDotChain = XR_NULL_HANDLE;
 	XrCompositionLayerQuad targetDotLayer[3] = {};
+	// Live keyboard cursors use their own quads backed by the same tiny dot
+	// texture. Cursor motion must not dirty and upload the 1024x560 keyboard.
+	XrCompositionLayerQuad cursorDotLayer[2] = {};
 
 	// Laser pointer data
 	bool laserActive[2] = { false, false };

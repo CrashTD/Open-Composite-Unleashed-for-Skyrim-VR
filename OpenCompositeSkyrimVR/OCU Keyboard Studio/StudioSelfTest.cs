@@ -618,6 +618,9 @@ internal static class StudioSelfTest
                 || stockStyle.KeyColor != dwemerTheme.Accent
                 || stockStyle.PlateFillColor != dwemerTheme.KeyIdle
                 || stockStyle.GlowColor != dwemerTheme.Bright
+                || stockStyle.HoverColor.R != dwemerTheme.KeyHot.R
+                || stockStyle.HoverColor.G != dwemerTheme.KeyHot.G
+                || stockStyle.HoverColor.B != dwemerTheme.KeyHot.B
                 || stockStyle.KeyRoundness != 2
                 || stockStyle.PlateOutlineWidth != 1)
                 throw new InvalidDataException("Enabling custom colors did not seed the visible Dwemer theme values.");

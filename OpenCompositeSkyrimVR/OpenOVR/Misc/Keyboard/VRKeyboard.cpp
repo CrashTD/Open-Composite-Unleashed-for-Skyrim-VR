@@ -15,6 +15,7 @@
 #include "resources.h"
 
 #include "BeamTexture.h"
+#include "LaserDotTexture.h"
 #include "LaserRaySmoothing.h"
 #include "Misc/Config.h"
 #include "Misc/LaserCalibration.h"
@@ -1477,13 +1478,14 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 	}
 
 	// Create target dot swapchains — small white dots (2 controllers + 1 headset).
+	constexpr uint32_t dotTextureSize = laserdot::kSize;
 	{
 		XrSwapchainCreateInfo dotSci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		dotSci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		dotSci.format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 		dotSci.sampleCount = 1;
-		dotSci.width = 4;
-		dotSci.height = 4;
+		dotSci.width = dotTextureSize;
+		dotSci.height = dotTextureSize;
 		dotSci.faceCount = 1;
 		dotSci.arraySize = 1;
 		dotSci.mipCount = 1;
@@ -1496,22 +1498,24 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(targetDotChain, dotImgCount, &dotImgCount,
 		    (XrSwapchainImageBaseHeader*)dotImgs.data()));
 
-		// Solid white dot — fully opaque
-		uint8_t cr = 255, cg = 255, cb = 255, ca = 255;
-		uint32_t packed = cr | (cg << 8) | (cb << 16) | (ca << 24);
-		uint32_t colorPixels[16];
-		for (int j = 0; j < 16; j++) colorPixels[j] = packed;
+		// Prisma-style warm core and faded halo. RGB is premultiplied so the
+		// transparent area cannot appear as a square on stricter runtimes.
+		std::vector<uint32_t> colorPixels;
+		laserdot::Fill(colorPixels, false);
 
 		D3D11_TEXTURE2D_DESC dtd = {};
-		dtd.Width = 4;
-		dtd.Height = 4;
+		dtd.Width = dotTextureSize;
+		dtd.Height = dotTextureSize;
 		dtd.MipLevels = 1;
 		dtd.ArraySize = 1;
 		dtd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 		dtd.SampleDesc = { 1, 0 };
 		dtd.Usage = D3D11_USAGE_DEFAULT;
 
-		D3D11_SUBRESOURCE_DATA dinit = { colorPixels, sizeof(uint32_t) * 4, sizeof(uint32_t) * 16 };
+		D3D11_SUBRESOURCE_DATA dinit = {
+			colorPixels.data(), sizeof(uint32_t) * dotTextureSize,
+			sizeof(uint32_t) * dotTextureSize * dotTextureSize
+		};
 		CComPtr<ID3D11Texture2D> dtex;
 		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&dtd, &dinit, &dtex));
 
@@ -1535,11 +1539,19 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 		targetDotLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 		targetDotLayer[i].subImage.swapchain = targetDotChain;
 		targetDotLayer[i].subImage.imageRect.offset = { 0, 0 };
-		targetDotLayer[i].subImage.imageRect.extent = { 4, 4 };
+		targetDotLayer[i].subImage.imageRect.extent = {
+			static_cast<int32_t>(dotTextureSize), static_cast<int32_t>(dotTextureSize)
+		};
 		targetDotLayer[i].subImage.imageArrayIndex = 0;
-		// Size: 0.01m (1cm) dot
-		targetDotLayer[i].size.width = 0.01f;
-		targetDotLayer[i].size.height = 0.01f;
+		// The bright core remains about one centimetre; the larger transparent
+		// quad carries the soft halo around it.
+		targetDotLayer[i].size.width = 0.026f;
+		targetDotLayer[i].size.height = 0.026f;
+	}
+	for (int i = 0; i < 2; ++i) {
+		cursorDotLayer[i] = targetDotLayer[i];
+		cursorDotLayer[i].size.width = 0.028f;
+		cursorDotLayer[i].size.height = 0.028f;
 	}
 
 	// Create console INPUT overlay swapchain (floating panel above keyboard)
@@ -1878,9 +1890,9 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 		LoadKeyboardLayout();
 		dirty = true;
 	}
-	// Procedural keyboard animation is capped at 20 Hz. VRKeyboard only exists
-	// while the overlay is open, so breathing effects have no hidden-game cost.
-	if (layout && layout->HasBreathingEffects() && now - lastAnimationRefreshMs >= 50) {
+	// Ten animation samples per second keep the slow glow breathing fluid in VR
+	// while halving full-surface redraws. There is no closed-keyboard cost.
+	if (layout && layout->HasBreathingEffects() && now - lastAnimationRefreshMs >= 100) {
 		lastAnimationRefreshMs = now;
 		dirty = true;
 	}
@@ -1940,7 +1952,6 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 		}
 
 		// Laser pointer hit testing
-		bool anyLaserActive = false;
 		for (int side = 0; side < 2; side++) {
 			int hitResult = HitTestLaser(side);
 			if (hitResult >= 0) {
@@ -1981,13 +1992,34 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				s_lastHoveredArrow[side] = currentArrow;
 			}
 			if (laserActive[side]) {
-				anyLaserActive = true;
 				UpdateLaserBeam(side);
+
+				// Track the laser contact with a tiny composition layer. Cursor motion
+				// no longer dirties, recreates, waits on, and uploads the full keyboard
+				// texture at headset refresh rate.
+				XrVector3f normal;
+				rotate_vector_by_quaternion(
+					{ 0.0f, 0.0f, 1.0f }, layer.pose.orientation, normal);
+				const XrVector3f towardController = {
+					laserOrigin[side].x - laserHitPoint[side].x,
+					laserOrigin[side].y - laserHitPoint[side].y,
+					laserOrigin[side].z - laserHitPoint[side].z
+				};
+				if (xr_dot(normal, towardController) < 0.0f) {
+					normal.x = -normal.x;
+					normal.y = -normal.y;
+					normal.z = -normal.z;
+				}
+				constexpr float cursorLiftMeters = 0.0015f;
+				cursorDotLayer[side].pose.position = {
+					laserHitPoint[side].x + normal.x * cursorLiftMeters,
+					laserHitPoint[side].y + normal.y * cursorLiftMeters,
+					laserHitPoint[side].z + normal.z * cursorLiftMeters
+				};
+				cursorDotLayer[side].pose.orientation = layer.pose.orientation;
+				cursorDotLayer[side].space = layer.space;
 			}
 		}
-
-		if (anyLaserActive)
-			dirty = true;
 
 		// Force redraw every 500ms for blinking cursor in non-minimal mode
 		if (!minimal) {
@@ -2585,6 +2617,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 			// hold is electric blue, including PC-mode long key presses.
 			laserLayer[side].subImage.swapchain = laserChain[lastTriggerState[side] ? 1 : 0];
 			activeLayers.push_back((XrCompositionLayerBaseHeader*)&laserLayer[side]);
+			activeLayers.push_back((XrCompositionLayerBaseHeader*)&cursorDotLayer[side]);
 		}
 	}
 	if (s_targetMode) {
@@ -3651,6 +3684,16 @@ void VRKeyboard::LoadKeyboardArtwork()
 
 void VRKeyboard::Refresh()
 {
+	LARGE_INTEGER refreshStart = {};
+	LARGE_INTEGER refreshCpuDone = {};
+	LARGE_INTEGER refreshDone = {};
+	static LARGE_INTEGER performanceFrequency = [] {
+		LARGE_INTEGER value = {};
+		QueryPerformanceFrequency(&value);
+		return value;
+	}();
+	QueryPerformanceCounter(&refreshStart);
+
 	D3D11_TEXTURE2D_DESC desc;
 	desc.Width = texWidth;
 	desc.Height = texHeight;
@@ -3663,7 +3706,8 @@ void VRKeyboard::Refresh()
 	desc.CPUAccessFlags = 0;
 	desc.MiscFlags = 0;
 
-	pix_t* pixels = new pix_t[desc.Width * desc.Height];
+	keyboardRenderBuffer.resize(static_cast<size_t>(desc.Width) * desc.Height);
+	pix_t* pixels = reinterpret_cast<pix_t*>(keyboardRenderBuffer.data());
 
 	// ── Parchment background ──
 	const int BORD = 2; // Key border thickness in pixels
@@ -3818,15 +3862,23 @@ void VRKeyboard::Refresh()
 
 		float opacityFrac = s_opacityPercent / 100.0f;
 
-		for (unsigned int y = 0; y < parchmentH && (y + offsetY) < desc.Height; y++) {
-			for (unsigned int x = 0; x < parchmentW && (x + offsetX) < desc.Width; x++) {
-				int srcIdx = (y * parchmentW + x) * 4;
-				int dstIdx = ((y + offsetY) * desc.Width + (x + offsetX));
+		// Stock themes are authored at the native runtime size. At full opacity
+		// they can seed the render surface with one memcpy instead of more than
+		// half a million per-channel assignments on every breathing frame.
+		if (s_opacityPercent == 100 && offsetX == 0 && parchmentW == desc.Width
+		    && parchmentH == desc.Height) {
+			memcpy(pixels, parchmentBg.data(), parchmentBg.size());
+		} else {
+			for (unsigned int y = 0; y < parchmentH && (y + offsetY) < desc.Height; y++) {
+				for (unsigned int x = 0; x < parchmentW && (x + offsetX) < desc.Width; x++) {
+					int srcIdx = (y * parchmentW + x) * 4;
+					int dstIdx = ((y + offsetY) * desc.Width + (x + offsetX));
 
-				pixels[dstIdx].r = parchmentBg[srcIdx + 0];
-				pixels[dstIdx].g = parchmentBg[srcIdx + 1];
-				pixels[dstIdx].b = parchmentBg[srcIdx + 2];
-				pixels[dstIdx].a = (uint8_t)(parchmentBg[srcIdx + 3] * opacityFrac);
+					pixels[dstIdx].r = parchmentBg[srcIdx + 0];
+					pixels[dstIdx].g = parchmentBg[srcIdx + 1];
+					pixels[dstIdx].b = parchmentBg[srcIdx + 2];
+					pixels[dstIdx].a = (uint8_t)(parchmentBg[srcIdx + 3] * opacityFrac);
+				}
 			}
 		}
 	}
@@ -4010,16 +4062,80 @@ void VRKeyboard::Refresh()
 	auto paintModernPlate = [&](int x, int y, int w, int h,
 	                            const uint8_t fill[4], bool hot) {
 		const int radius = std::min(customStyle ? std::clamp(VS.keyRoundness, 0, 30) : 14, h / 2);
-		// Four faint expanding layers create the same soft key-edge glow used by
-		// the Configurator without requiring a baked bitmap for every color.
+		// Cache the union of the expanding rounded glow rings. Breathing only
+		// changes the tint alpha; key geometry does not change while the keyboard
+		// is open. This preserves the same single-layer effect without repeatedly
+		// rasterizing eight complete rounded rectangles per key.
 		if (!customStyle || VS.glowEnabled) {
 			const int strength = effectiveGlowStrength;
 			const int baseAlpha = std::clamp((hot ? 12 : 5) + strength / 4, 0, 80);
 			const int glowRadius = customStyle ? std::clamp(VS.glowRadius, 1, 8) : 4;
-			for (int spread = glowRadius; spread >= 1; --spread) {
-				const int glowAlpha = baseAlpha * effectiveGlow[3] / 255;
-				strokeRoundedArea(x - spread, y - spread, w + spread * 2, h + spread * 2,
-				    radius + spread, 1, effectiveGlow[0], effectiveGlow[1], effectiveGlow[2], glowAlpha);
+			const int glowAlpha = baseAlpha * effectiveGlow[3] / 255;
+			if (glowAlpha > 0) {
+				PlateGlowMask* mask = nullptr;
+				for (PlateGlowMask& candidate : plateGlowMasks) {
+					if (candidate.plateWidth == w && candidate.plateHeight == h
+					    && candidate.plateRadius == radius && candidate.glowRadius == glowRadius) {
+						mask = &candidate;
+						break;
+					}
+				}
+				if (!mask) {
+					PlateGlowMask generated;
+					generated.plateWidth = w;
+					generated.plateHeight = h;
+					generated.plateRadius = radius;
+					generated.glowRadius = glowRadius;
+					generated.width = w + glowRadius * 2;
+					generated.height = h + glowRadius * 2;
+					generated.coverage.assign(
+					    static_cast<size_t>(generated.width) * generated.height, 0);
+					auto insideRounded = [](int px, int py, int rw, int rh, int rr) {
+						if (px < 0 || py < 0 || px >= rw || py >= rh)
+							return false;
+						rr = std::max(0, std::min(rr, std::min(rw, rh) / 2));
+						const int left = rr;
+						const int right = rw - rr - 1;
+						const int top = rr;
+						const int bottom = rh - rr - 1;
+						const int dx = px < left ? left - px : px > right ? px - right : 0;
+						const int dy = py < top ? top - py : py > bottom ? py - bottom : 0;
+						return dx * dx + dy * dy <= rr * rr;
+					};
+					for (int gy = 0; gy < generated.height; ++gy) {
+						for (int gx = 0; gx < generated.width; ++gx) {
+							const bool inOuter = insideRounded(gx, gy, generated.width,
+							    generated.height, radius + glowRadius);
+							const bool inPlate = insideRounded(gx - glowRadius, gy - glowRadius,
+							    w, h, radius);
+							if (inOuter && !inPlate)
+								generated.coverage[gx + gy * generated.width] = 255;
+						}
+					}
+					plateGlowMasks.push_back(std::move(generated));
+					mask = &plateGlowMasks.back();
+				}
+
+				const float alpha = glowAlpha / 255.0f;
+				const int drawX = x - glowRadius;
+				const int drawY = y - glowRadius;
+				for (int gy = 0; gy < mask->height; ++gy) {
+					const int targetY = drawY + gy;
+					if (targetY < 0 || targetY >= int(desc.Height))
+						continue;
+					for (int gx = 0; gx < mask->width; ++gx) {
+						if (mask->coverage[gx + gy * mask->width] == 0)
+							continue;
+						const int targetX = drawX + gx;
+						if (targetX < 0 || targetX >= int(desc.Width))
+							continue;
+						pix_t& pixel = pixels[targetX + targetY * desc.Width];
+						pixel.r = uint8_t(effectiveGlow[0] * alpha + pixel.r * (1.0f - alpha));
+						pixel.g = uint8_t(effectiveGlow[1] * alpha + pixel.g * (1.0f - alpha));
+						pixel.b = uint8_t(effectiveGlow[2] * alpha + pixel.b * (1.0f - alpha));
+						pixel.a = uint8_t(std::min(255.0f, glowAlpha + pixel.a * (1.0f - alpha)));
+					}
+				}
 			}
 		}
 		const int outlineWidth = customStyle ? std::clamp(VS.plateOutlineWidth, 0, 8) : 2;
@@ -4081,10 +4197,23 @@ void VRKeyboard::Refresh()
 	auto drawCenteredText = [&](const wstring& text,
 	    int boxX, int boxY, int boxWidth, int boxHeight,
 	    float offsetX, float offsetY, float scale, pix_t colour, bool outline) {
-		forEachFontGlowStamp([&](int dx, int dy, pix_t glowColour) {
-			drawCenteredTextRaw(text, boxX, boxY, boxWidth, boxHeight,
-			    offsetX + dx, offsetY + dy, scale, glowColour);
-		});
+		if (effectiveFontGlowStrength > 0 && effectiveFontGlowAlpha > 0) {
+			const int innerRadius = std::max(1, effectiveFontGlowRadius / 2);
+			const float outerScale = innerRadius == effectiveFontGlowRadius ? 1.0f : 0.55f;
+			SudoFontMeta::pix_t outerColour = {
+				VS.fontGlowColor[0], VS.fontGlowColor[1], VS.fontGlowColor[2],
+				uint8_t(std::clamp(int(std::round(effectiveFontGlowAlpha * outerScale)), 0, 255))
+			};
+			SudoFontMeta::pix_t innerColour = {
+				VS.fontGlowColor[0], VS.fontGlowColor[1], VS.fontGlowColor[2],
+				uint8_t(std::clamp(int(std::round(effectiveFontGlowAlpha * 0.82f)), 0, 255))
+			};
+			font->BlitTextGlowCentered(text, boxX, boxY, boxWidth, boxHeight,
+			    desc.Width, desc.Height, offsetX, offsetY, scale,
+			    effectiveFontGlowRadius, innerRadius,
+			    outerColour, innerColour,
+			    reinterpret_cast<SudoFontMeta::pix_t*>(pixels));
+		}
 		if (outline) {
 			pix_t outlineColour = tp(effectiveLabelOutlineColor);
 			for (int index = 0; index < 8; ++index) {
@@ -4633,44 +4762,7 @@ void VRKeyboard::Refresh()
 		}
 	}
 
-	// Draw laser cursor dots on the keyboard surface
-	for (int side = 0; side < 2; side++) {
-		if (!laserActive[side])
-			continue;
-
-		int cx = (int)(laserU[side] * desc.Width);
-		int cy = (int)((1.0f - laserV[side]) * desc.Height);
-		int radius = 6;
-
-		// White cursor dot
-		int cr = 255, cg = 255, cb = 255;
-
-		// Filled circle
-		for (int dy = -radius; dy <= radius; dy++) {
-			for (int dx = -radius; dx <= radius; dx++) {
-				if (dx * dx + dy * dy <= radius * radius) {
-					int px = cx + dx, py = cy + dy;
-					if (px >= 0 && px < (int)desc.Width && py >= 0 && py < (int)desc.Height) {
-						pix_t& p = pixels[px + py * desc.Width];
-						p.r = cr; p.g = cg; p.b = cb; p.a = 255;
-					}
-				}
-			}
-		}
-	}
-
-	// Create a staging texture with the CPU-rendered pixels
-	D3D11_SUBRESOURCE_DATA init[] = {
-		{ pixels, sizeof(pix_t) * desc.Width, sizeof(pix_t) * desc.Width * desc.Height }
-	};
-
-	CComPtr<ID3D11Texture2D> tex;
-	HRESULT rres = dev->CreateTexture2D(&desc, init, &tex);
-	delete[] pixels;
-	if (FAILED(rres)) {
-		OOVR_LOGF("[VRKeyboard] Refresh: CreateTexture2D failed 0x%08x — skipping frame", rres);
-		return;
-	}
+	QueryPerformanceCounter(&refreshCpuDone);
 
 	// Acquire an image from the OpenXR swap chain
 	XrSwapchainImageAcquireInfo acquireInfo = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
@@ -4692,12 +4784,25 @@ void VRKeyboard::Refresh()
 		return;
 	}
 
-	// Copy the staging texture to the swap chain image
-	ctx->CopyResource(swapchainImages[currentIndex].texture, tex);
+	// Upload directly to the acquired swapchain image. The old path allocated a
+	// fresh 1024x560 D3D texture and copied it on every breathing animation tick.
+	ctx->UpdateSubresource(swapchainImages[currentIndex].texture, 0, nullptr,
+	    pixels, sizeof(pix_t) * desc.Width, sizeof(pix_t) * desc.Width * desc.Height);
 
 	// Release the swap chain image
 	XrSwapchainImageReleaseInfo releaseInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 	xrReleaseSwapchainImage(chain, &releaseInfo);
+
+	QueryPerformanceCounter(&refreshDone);
+	const double frequency = double(performanceFrequency.QuadPart);
+	const double cpuMs = (refreshCpuDone.QuadPart - refreshStart.QuadPart) * 1000.0 / frequency;
+	const double totalMs = (refreshDone.QuadPart - refreshStart.QuadPart) * 1000.0 / frequency;
+	const uint64_t now = GetTickCount64();
+	if (totalMs >= 4.0 && now - lastSlowRefreshLogMs >= 5000) {
+		lastSlowRefreshLogMs = now;
+		OOVR_LOGF("[VRKeyboard] Slow refresh: CPU %.2f ms, XR wait/upload %.2f ms, total %.2f ms",
+		    cpuMs, std::max(0.0, totalMs - cpuMs), totalMs);
+	}
 }
 
 void VRKeyboard::RefreshConsole()
@@ -4714,7 +4819,8 @@ void VRKeyboard::RefreshConsole()
 	desc.CPUAccessFlags = 0;
 	desc.MiscFlags = 0;
 
-	pix_t* pixels = new pix_t[desc.Width * desc.Height];
+	consoleRenderBuffer.resize(static_cast<size_t>(desc.Width) * desc.Height);
+	pix_t* pixels = reinterpret_cast<pix_t*>(consoleRenderBuffer.data());
 
 	const int BORD = 2;
 	const int PAD = 8;
@@ -4791,14 +4897,6 @@ void VRKeyboard::RefreshConsole()
 		fillArea(cursorX, inputY, 2, fontH, KBT4(consoleInk));
 	}
 
-	// Copy to console swapchain
-	D3D11_SUBRESOURCE_DATA init = { pixels, sizeof(pix_t) * desc.Width, sizeof(pix_t) * desc.Width * desc.Height };
-	CComPtr<ID3D11Texture2D> tex;
-	HRESULT hr = dev->CreateTexture2D(&desc, &init, &tex);
-	delete[] pixels;
-	if (FAILED(hr))
-		return;
-
 	XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
 	uint32_t idx = 0;
 	XrResult xrRes = xrAcquireSwapchainImage(consoleChain, &acq, &idx);
@@ -4815,7 +4913,8 @@ void VRKeyboard::RefreshConsole()
 		xrReleaseSwapchainImage(consoleChain, &rel);
 		return;
 	}
-	ctx->CopyResource(consoleSwapImages[idx].texture, tex);
+	ctx->UpdateSubresource(consoleSwapImages[idx].texture, 0, nullptr,
+	    pixels, sizeof(pix_t) * desc.Width, sizeof(pix_t) * desc.Width * desc.Height);
 	XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 	xrReleaseSwapchainImage(consoleChain, &rel);
 }

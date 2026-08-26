@@ -20,12 +20,11 @@ Quick use
    Editing a key to use new unsupported text reports it and rebuilds the atlas.
    Base Theme is the built-in foundation: its fallback background/colors, plate
    treatment, Parchment ribbon eligibility, and theme-specific top-button offsets.
-   A custom background and Use custom keyboard colors intentionally override most
-   of its visible styling; the dropdown and status line now make that explicit.
-   The first time Use custom keyboard colors is enabled, Studio copies the
-   currently visible Base Theme colors into the editable swatches. Enabling it
-   therefore does not replace a Dwemer, Parchment, or other template with the
-   old green defaults.
+   A custom background can override its artwork. The Appearance palette always
+   shows the colors of the loaded Keyboard Design and selected Base Theme. Editing
+   any color or effect automatically creates an override from those visible values;
+   Reset colors and effects restores the Base Theme. Switching Keyboard Design
+   prompts to save, discard, or cancel when the current keyboard has unsaved work.
 3. Click the actually painted pixels of a letter/symbol to move that key's
    content, or click between/around glyphs on the empty plate to move the whole
    key. Plate handles resize from the exact dragged edge while the opposite edge

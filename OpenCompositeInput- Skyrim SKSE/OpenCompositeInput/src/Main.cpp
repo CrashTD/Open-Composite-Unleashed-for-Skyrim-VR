@@ -2,8 +2,6 @@
 #include <RE/B/BSInputDeviceManager.h>
 #include <RE/B/BSInputEventQueue.h>
 #include <RE/B/BSOpenVR.h>
-#include <RE/B/BSEffectShaderMaterial.h>
-#include <RE/B/BSEffectShaderProperty.h>
 #include <RE/B/ButtonEvent.h>
 #include <RE/B/BSVirtualKeyboardDevice.h>
 #include <RE/B/BSWin32VirtualKeyboardDevice.h>
@@ -154,10 +152,8 @@ struct OCMenuTransform {
 	float    roomHmdPos[3];
 	float    roomHmdQuat[4];
 
-	// v6: Skyrim's native MapMenu pointer already resolves mountains and
-	// floating icons. Export only its authoritative beam length. OCU applies the
-	// length to its current OpenXR controller ray, avoiding any Skyrim/OpenXR
-	// endpoint-frame conversion and any mutation of UIPointerGeo.
+	// Reserved v6 ABI space. The removed MapMenu bridge used these fields;
+	// retain their layout so mixed-version shared-memory readers fail safely.
 	uint8_t  mapPointerValid;
 	float    mapPointerDistanceMeters;
 	float    mapPointerReserved[2];
@@ -1352,78 +1348,6 @@ namespace
 		return current == ancestor;
 	}
 
-	// Read-only MapMenu depth bridge. Skyrim scales UIPointerGeo from
-	// UIPointerNode to the terrain/icon hit, so the geometry bound center is the
-	// beam midpoint. Exporting only that distance lets OCU render a thick owned
-	// beam on its live controller ray without retaining or modifying any Skyrim
-	// scene object, render buffer, shader material, or Scaleform movie.
-	bool ExportNativeMapPointerDistance(bool logDiagnostics)
-	{
-		g_pTransform->mapPointerValid = 0;
-		g_pTransform->mapPointerDistanceMeters = 0.0f;
-
-		auto* player = RE::PlayerCharacter::GetSingleton();
-		auto* vrData = player ? player->GetVRNodeData() : nullptr;
-		auto* roomNode = vrData ? vrData->RoomNode.get() : nullptr;
-		auto* pointerNode = vrData ? vrData->UIPointerNode.get() : nullptr;
-		auto* pointerGeo = vrData ? vrData->UIPointerGeo.get() : nullptr;
-		if (!roomNode || !pointerNode || !pointerGeo) {
-			if (logDiagnostics) {
-				SKSE::log::info(
-				    "LASER MapMenu native distance pending room={} pointerNode={} pointerGeo={}",
-				    roomNode != nullptr, pointerNode != nullptr, pointerGeo != nullptr);
-			}
-			return false;
-		}
-
-		const auto& pointerBound = pointerGeo->GetModelData().modelBound;
-		RE::NiPoint3 originLocal{};
-		RE::NiPoint3 middleLocal{};
-		RE::NiTransform pointerToRoom;
-		RE::NiTransform pointerGeoToRoom;
-		const bool coherent =
-		    BuildLocalToAncestor(pointerNode, roomNode, pointerToRoom) &&
-		    BuildLocalToAncestor(pointerGeo, roomNode, pointerGeoToRoom);
-		if (coherent) {
-			originLocal = pointerToRoom.translate;
-			middleLocal = pointerGeoToRoom * pointerBound.center;
-		} else {
-			const auto& roomWorld = roomNode->world;
-			const float roomScale = roomWorld.scale;
-			if (!std::isfinite(roomScale) || fabsf(roomScale) < 1.0e-4f)
-				return false;
-			auto worldToRoomPoint = [&](const RE::NiPoint3& worldPoint) {
-				RE::NiPoint3 local = TransposeMul(
-				    roomWorld.rotate, worldPoint - roomWorld.translate);
-				local /= roomScale;
-				return local;
-			};
-			originLocal = worldToRoomPoint(pointerNode->world.translate);
-			middleLocal = worldToRoomPoint(pointerGeo->world * pointerBound.center);
-		}
-
-		const RE::NiPoint3 halfBeam = middleLocal - originLocal;
-		const float beamLengthSkyrim = 2.0f * sqrtf(
-		    halfBeam.x * halfBeam.x + halfBeam.y * halfBeam.y + halfBeam.z * halfBeam.z);
-		const float beamLengthMeters = beamLengthSkyrim / kSkyrimUnitsPerMeter;
-		if (!std::isfinite(beamLengthMeters) ||
-		    beamLengthMeters <= 0.03f || beamLengthMeters >= 12.0f) {
-			if (logDiagnostics) {
-				SKSE::log::info("LASER MapMenu native distance rejected source={} length={}m",
-				    coherent ? "local-chain" : "world-fallback", beamLengthMeters);
-			}
-			return false;
-		}
-
-		g_pTransform->mapPointerDistanceMeters = beamLengthMeters;
-		g_pTransform->mapPointerValid = 1;
-		if (logDiagnostics) {
-			SKSE::log::info("LASER MapMenu native distance source={} length={:.3f}m",
-			    coherent ? "local-chain" : "world-fallback", beamLengthMeters);
-		}
-		return true;
-	}
-
 	// Dialogue is loaded from skyVR_dialogue.nif rather than the normal
 	// InWorldUIQuadGeo pointer.  Prefer the named stock mesh, but retain a
 	// scene-graph fallback for replacement NIFs that rename it.
@@ -1696,9 +1620,8 @@ namespace
 			}
 		}
 
-		// Flat-menu plane export never publishes MapMenu depth. The dedicated
-		// read-only safe path handles every MapMenu and exports a scalar distance
-		// rather than retaining geometry or reconstructing an endpoint.
+		// MapMenu is a hard native bypass. These retained ABI fields are always
+		// cleared; OCU never reads its pointer geometry or publishes map depth.
 		g_pTransform->mapPointerValid = 0;
 		g_pTransform->mapPointerDistanceMeters = 0.0f;
 
@@ -4394,27 +4317,36 @@ namespace
 		static double   s_raceSculptLastX = 0.0;
 		static double   s_raceSculptLastY = 0.0;
 		static RE::GFxValue s_raceHoveredButton;
-		static RE::NiPointer<RE::BSTriShape> s_nativeMapPointer;
-		static RE::NiPointer<RE::NiNode> s_mapBeamParent;
-		static std::vector<RE::NiPointer<RE::BSTriShape>> s_mapBeamCompanions;
-		static RE::NiColorA s_nativeMapPointerOriginalColor{};
-		static float    s_nativeMapPointerOriginalScale = 1.0f;
-		static RE::NiPointer<RE::NiSourceTexture> s_nativeMapPointerOriginalTexture;
-		static RE::BSFixedString s_nativeMapPointerOriginalTexturePath;
-		static bool     s_nativeMapPointerOriginalVertexColors = false;
-		static RE::NiPointer<RE::NiTexture> s_nativeMapPointerOriginalEffectTexture;
-		static RE::NiColorA s_nativeMapPointerOriginalEffectFill{};
-		static RE::BSGraphics::VertexDesc s_nativeMapPointerOriginalGeometryVertexDesc{};
-		static RE::BSGraphics::VertexDesc s_nativeMapPointerOriginalRendererVertexDesc{};
-		static std::vector<std::array<std::uint8_t, 4>> s_nativeMapPointerOriginalVertexColorsRGBA;
-		static ID3D11Buffer* s_nativeMapPointerOriginalVertexBuffer = nullptr;
-		static bool     s_nativeMapPointerHadRendererData = false;
-		static bool     s_nativeMapPointerHadEffectData = false;
-		static bool     s_nativeMapPointerColorCaptured = false;
-		static int      s_nativeMapPointerColorState = -1;
 		static float    s_candidatePos[3] = {};
 		static float    s_candidateQuat[4] = { 0, 0, 0, 1 };
 		static float    s_candidateWidth = 0.0f, s_candidateHeight = 0.0f;
+		struct SemanticProbeCache
+		{
+			bool valid = false;
+			uint32_t menuGeneration = 0;
+			RE::GFxMovieView* movie = nullptr;
+			ULONGLONG tick = 0;
+			float x = 0.0f;
+			float y = 0.0f;
+			bool alternatePerspectiveMenu = false;
+			bool buttonHit = false;
+			JournalLeftPaneAction journalTarget = JournalLeftPaneAction::kNone;
+			bool itemListHit = false;
+			RaceMenuLaserTarget alternatePerspectiveTarget;
+			bool alternatePerspectiveTargetHit = false;
+			int messageBoxHoverButton = -1;
+			bool messageBoxButtonHit = false;
+			RaceMenuLaserTarget raceMenuTarget;
+			bool raceMenuTargetHit = false;
+			bool mcmListHit = false;
+			RE::GFxValue mcmScrollBar;
+			bool mcmScrollBarHit = false;
+		};
+		static SemanticProbeCache s_semanticProbe;
+		static ULONGLONG s_lastSlowSemanticLog = 0;
+		static ULONGLONG s_lastGfxDriveTick = 0;
+		static float s_lastGfxDriveX = 0.0f;
+		static float s_lastGfxDriveY = 0.0f;
 
 		// A scheduler wake is not a rendered frame. Do the expensive scene/menu
 		// work at most once per submitted frame, plus once for each menu-lifecycle
@@ -4495,6 +4427,9 @@ namespace
 			    "LASER MapMenu native bypass: OCU map geometry, Scaleform, input, depth bridge, and compositor laser disabled");
 		}
 		if (mapOpen) {
+			if (s_semanticProbe.valid)
+				s_semanticProbe = SemanticProbeCache{};
+			s_lastGfxDriveTick = 0;
 			g_pTransform->updateCounter++;
 			g_pTransform->uiPlaneValid = 0;
 			g_pTransform->mapPointerValid = 0;
@@ -4532,431 +4467,14 @@ namespace
 		bool bookOpen = ui && ui->IsMenuOpen("Book Menu") &&
 		    strcmp(g_pTransform->menuName, "Book Menu") == 0;
 
-		// Change only the packed RGB bytes already present in the native map
-		// pointer's vertex stream. Its alpha bytes are intentionally preserved so
-		// Bethesda's endpoint fade and terrain/icon clipping remain untouched.
-		// Immutable buffers get a same-layout DEFAULT replacement for the duration
-		// of MapMenu; the original GPU buffer is put back on close.
-		auto paintMapBeamVertexRGB = [&](RE::BSTriShape* beam, bool restore) {
-			if (!beam)
-				return false;
-			auto& geometryData = beam->GetGeometryRuntimeData();
-			auto* rendererData = geometryData.rendererData;
-			if (!rendererData || !rendererData->vertexBuffer ||
-			    !rendererData->vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLORS)) {
-				return false;
-			}
-			const bool nativeBeam = beam == s_nativeMapPointer.get();
-			auto* vertexBuffer = reinterpret_cast<ID3D11Buffer*>(rendererData->vertexBuffer);
-
-			const std::uint32_t stride = rendererData->vertexDesc.GetSize();
-			const std::uint32_t colorOffset = rendererData->vertexDesc.GetAttributeOffset(
-			    RE::BSGraphics::Vertex::VA_COLOR);
-			const std::uint32_t vertexCount = beam->GetTrishapeRuntimeData().vertexCount;
-			if (stride < colorOffset + 4 || vertexCount == 0)
-				return false;
-
-			// A GPU-only replacement retains the pristine native buffer. Restore any
-			// CPU copy as well, then transfer the saved COM reference back to the mesh.
-			if (restore && nativeBeam && s_nativeMapPointerOriginalVertexBuffer) {
-				if (rendererData->rawVertexData &&
-				    s_nativeMapPointerOriginalVertexColorsRGBA.size() == vertexCount) {
-					for (std::uint32_t i = 0; i < vertexCount; ++i) {
-						std::memcpy(rendererData->rawVertexData + i * stride + colorOffset,
-						    s_nativeMapPointerOriginalVertexColorsRGBA[i].data(), 4);
-					}
-				}
-				auto* replacement = vertexBuffer;
-				rendererData->vertexBuffer = reinterpret_cast<RE::ID3D11Buffer*>(
-				    s_nativeMapPointerOriginalVertexBuffer);
-				s_nativeMapPointerOriginalVertexBuffer = nullptr; // saved ref transfers back to rendererData
-				replacement->Release();
-				return true;
-			}
-
-			D3D11_BUFFER_DESC bufferDesc{};
-			vertexBuffer->GetDesc(&bufferDesc);
-			if (bufferDesc.ByteWidth < stride * vertexCount)
-				return false;
-
-			auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
-			auto* context = renderer ? reinterpret_cast<ID3D11DeviceContext*>(
-			    renderer->GetRuntimeData().context) : nullptr;
-			if (!context)
-				return false;
-
-			if (rendererData->rawVertexData) {
-				if (restore) {
-					if (!nativeBeam ||
-					    s_nativeMapPointerOriginalVertexColorsRGBA.size() != vertexCount) {
-						return false;
-					}
-					for (std::uint32_t i = 0; i < vertexCount; ++i) {
-						std::memcpy(rendererData->rawVertexData + i * stride + colorOffset,
-						    s_nativeMapPointerOriginalVertexColorsRGBA[i].data(), 4);
-					}
-				} else {
-					for (std::uint32_t i = 0; i < vertexCount; ++i) {
-						auto* rgba = rendererData->rawVertexData + i * stride + colorOffset;
-						rgba[0] = 0xFF;
-						rgba[1] = 0xFF;
-						rgba[2] = 0xFF;
-					}
-				}
-
-				if (bufferDesc.Usage == D3D11_USAGE_DEFAULT) {
-					for (std::uint32_t i = 0; i < vertexCount; ++i) {
-						const UINT byteOffset = i * stride + colorOffset;
-						D3D11_BOX box{};
-						box.left = byteOffset;
-						box.right = byteOffset + 4;
-						box.bottom = box.back = 1;
-						context->UpdateSubresource(vertexBuffer, 0, &box,
-						    rendererData->rawVertexData + byteOffset, 0, 0);
-					}
-					return true;
-				}
-				if (bufferDesc.Usage == D3D11_USAGE_DYNAMIC &&
-				    (bufferDesc.CPUAccessFlags & D3D11_CPU_ACCESS_WRITE) != 0) {
-					D3D11_MAPPED_SUBRESOURCE mapped{};
-					if (SUCCEEDED(context->Map(vertexBuffer, 0, D3D11_MAP_WRITE_DISCARD,
-					        0, &mapped)) && mapped.pData) {
-						const std::size_t usedBytes = static_cast<std::size_t>(stride) * vertexCount;
-						std::memcpy(mapped.pData, rendererData->rawVertexData, usedBytes);
-						if (bufferDesc.ByteWidth > usedBytes) {
-							std::memset(static_cast<std::uint8_t*>(mapped.pData) + usedBytes,
-							    0, bufferDesc.ByteWidth - usedBytes);
-						}
-						context->Unmap(vertexBuffer, 0);
-						return true;
-					}
-					return false;
-				}
-			}
-
-			if (restore)
-				return false;
-
-			// Skyrim commonly releases the CPU vertex array after uploading this
-			// static beam. Read the tiny buffer through a staging resource, preserve
-			// every byte except RGB, then install a same-layout DEFAULT buffer.
-			ID3D11Device* device = nullptr;
-			context->GetDevice(&device);
-			if (!device)
-				return false;
-			D3D11_BUFFER_DESC stagingDesc = bufferDesc;
-			stagingDesc.Usage = D3D11_USAGE_STAGING;
-			stagingDesc.BindFlags = 0;
-			stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-			stagingDesc.MiscFlags = 0;
-			ID3D11Buffer* staging = nullptr;
-			if (FAILED(device->CreateBuffer(&stagingDesc, nullptr, &staging)) || !staging) {
-				device->Release();
-				return false;
-			}
-			context->CopyResource(staging, vertexBuffer);
-			D3D11_MAPPED_SUBRESOURCE mapped{};
-			if (FAILED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped)) ||
-			    !mapped.pData) {
-				staging->Release();
-				device->Release();
-				return false;
-			}
-			std::vector<std::uint8_t> vertexBytes(bufferDesc.ByteWidth);
-			std::memcpy(vertexBytes.data(), mapped.pData, vertexBytes.size());
-			context->Unmap(staging, 0);
-			staging->Release();
-			for (std::uint32_t i = 0; i < vertexCount; ++i) {
-				auto* rgba = vertexBytes.data() + i * stride + colorOffset;
-				rgba[0] = 0xFF;
-				rgba[1] = 0xFF;
-				rgba[2] = 0xFF;
-			}
-
-			D3D11_BUFFER_DESC replacementDesc = bufferDesc;
-			replacementDesc.Usage = D3D11_USAGE_DEFAULT;
-			replacementDesc.CPUAccessFlags = 0;
-			D3D11_SUBRESOURCE_DATA initialData{};
-			initialData.pSysMem = vertexBytes.data();
-			ID3D11Buffer* replacement = nullptr;
-			const HRESULT result = device->CreateBuffer(
-			    &replacementDesc, &initialData, &replacement);
-			device->Release();
-			if (FAILED(result) || !replacement)
-				return false;
-
-			if (nativeBeam && !s_nativeMapPointerOriginalVertexBuffer) {
-				vertexBuffer->AddRef();
-				s_nativeMapPointerOriginalVertexBuffer = vertexBuffer;
-			}
-			rendererData->vertexBuffer =
-			    reinterpret_cast<RE::ID3D11Buffer*>(replacement);
-			vertexBuffer->Release();
-			return true;
-		};
-
-		// Skyrim's UIPointerGeo owns the authoritative controller direction and
-		// terrain/icon clipping. Keep it as the center line, replace its baked red
-		// texture/vertex tint, and attach four parallel clones to the same scene node
-		// for a wider game-space beam. No OpenXR coordinate conversion is involved.
-		auto restoreNativeMapPointer = [&]() {
-			if (s_mapBeamParent) {
-				for (auto& companion : s_mapBeamCompanions) {
-					if (companion && companion->parent == s_mapBeamParent.get())
-						s_mapBeamParent->DetachChild(companion.get());
-				}
-			}
-			s_mapBeamCompanions.clear();
-			s_mapBeamParent = nullptr;
-
-			if (!s_nativeMapPointer || !s_nativeMapPointerColorCaptured)
-				return;
-			auto* geo = s_nativeMapPointer.get();
-			paintMapBeamVertexRGB(geo, true);
-			auto* shader = geo->GetGeometryRuntimeData().shaderProperty.get();
-			auto* effect = shader ? netimmerse_cast<RE::BSEffectShaderProperty*>(shader) : nullptr;
-			auto* material = effect ? effect->GetMaterial() : nullptr;
-			if (material) {
-				material->baseColor = s_nativeMapPointerOriginalColor;
-				material->baseColorScale = s_nativeMapPointerOriginalScale;
-				material->sourceTexture = s_nativeMapPointerOriginalTexture;
-				material->sourceTexturePath = s_nativeMapPointerOriginalTexturePath;
-				effect->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kVertexColors,
-				    s_nativeMapPointerOriginalVertexColors);
-				if (s_nativeMapPointerHadEffectData && effect->effectData) {
-					effect->effectData->baseTexture = s_nativeMapPointerOriginalEffectTexture;
-					effect->effectData->fillColor = s_nativeMapPointerOriginalEffectFill;
-				}
-				auto& geometryData = geo->GetGeometryRuntimeData();
-				geometryData.vertexDesc = s_nativeMapPointerOriginalGeometryVertexDesc;
-				if (s_nativeMapPointerHadRendererData && geometryData.rendererData)
-					geometryData.rendererData->vertexDesc = s_nativeMapPointerOriginalRendererVertexDesc;
-				effect->InvalidateMaterial();
-				effect->SetupGeometry(geo);
-			}
-			SKSE::log::info("LASER MapMenu removed companion beam and restored native material");
-			s_nativeMapPointer = nullptr;
-			s_nativeMapPointerOriginalTexture = nullptr;
-			s_nativeMapPointerOriginalTexturePath = RE::BSFixedString();
-			s_nativeMapPointerOriginalEffectTexture = nullptr;
-			s_nativeMapPointerOriginalVertexColorsRGBA.clear();
-			if (s_nativeMapPointerOriginalVertexBuffer) {
-				// Defensive cleanup if the mesh disappeared before its buffer could be restored.
-				s_nativeMapPointerOriginalVertexBuffer->Release();
-				s_nativeMapPointerOriginalVertexBuffer = nullptr;
-			}
-			s_nativeMapPointerHadRendererData = false;
-			s_nativeMapPointerHadEffectData = false;
-			s_nativeMapPointerColorCaptured = false;
-			s_nativeMapPointerColorState = -1;
-		};
-		auto updateMapPointerCompanion = [&](bool active, bool triggerHeld) {
-			if (!active) {
-				restoreNativeMapPointer();
-				return;
-			}
-			auto pc = RE::PlayerCharacter::GetSingleton();
-			auto vrData = pc ? pc->GetVRNodeData() : nullptr;
-			auto geo = vrData ? vrData->UIPointerGeo.get() : nullptr;
-			if (!geo) {
-				restoreNativeMapPointer();
-				return;
-			}
-			if (s_nativeMapPointer.get() != geo) {
-				restoreNativeMapPointer();
-				auto* shader = geo->GetGeometryRuntimeData().shaderProperty.get();
-				auto* effect = shader ? netimmerse_cast<RE::BSEffectShaderProperty*>(shader) : nullptr;
-				auto* material = effect ? effect->GetMaterial() : nullptr;
-				if (!material) {
-					SKSE::log::warn("LASER MapMenu UIPointerGeo is not an effect-shader mesh; leaving native color unchanged");
-					return;
-				}
-				s_nativeMapPointer = RE::NiPointer<RE::BSTriShape>(geo);
-				s_nativeMapPointerOriginalColor = material->baseColor;
-				s_nativeMapPointerOriginalScale = material->baseColorScale;
-				s_nativeMapPointerOriginalTexture = material->sourceTexture;
-				s_nativeMapPointerOriginalTexturePath = material->sourceTexturePath;
-				s_nativeMapPointerOriginalVertexColors = effect->flags.any(
-				    RE::BSShaderProperty::EShaderPropertyFlag::kVertexColors);
-				auto& geometryData = geo->GetGeometryRuntimeData();
-				s_nativeMapPointerOriginalGeometryVertexDesc = geometryData.vertexDesc;
-				s_nativeMapPointerHadRendererData = geometryData.rendererData != nullptr;
-				if (geometryData.rendererData)
-					s_nativeMapPointerOriginalRendererVertexDesc = geometryData.rendererData->vertexDesc;
-				s_nativeMapPointerOriginalVertexColorsRGBA.clear();
-				if (geometryData.rendererData && geometryData.rendererData->rawVertexData &&
-				    geometryData.rendererData->vertexDesc.HasFlag(
-				        RE::BSGraphics::Vertex::VF_COLORS)) {
-					const std::uint32_t stride = geometryData.rendererData->vertexDesc.GetSize();
-					const std::uint32_t colorOffset =
-					    geometryData.rendererData->vertexDesc.GetAttributeOffset(
-					        RE::BSGraphics::Vertex::VA_COLOR);
-					const std::uint32_t vertexCount = geo->GetTrishapeRuntimeData().vertexCount;
-					if (stride >= colorOffset + 4 && vertexCount > 0) {
-						s_nativeMapPointerOriginalVertexColorsRGBA.resize(vertexCount);
-						for (std::uint32_t i = 0; i < vertexCount; ++i) {
-							std::memcpy(
-							    s_nativeMapPointerOriginalVertexColorsRGBA[i].data(),
-							    geometryData.rendererData->rawVertexData + i * stride + colorOffset,
-							    4);
-						}
-					}
-				}
-				s_nativeMapPointerHadEffectData = effect->effectData != nullptr;
-				if (effect->effectData) {
-					s_nativeMapPointerOriginalEffectTexture = effect->effectData->baseTexture;
-					s_nativeMapPointerOriginalEffectFill = effect->effectData->fillColor;
-				}
-				s_nativeMapPointerColorCaptured = true;
-				s_nativeMapPointerColorState = -1;
-
-				// Clone the already-clipped game mesh. Every companion shares its live
-				// length/orientation, but is offset slightly across the viewer-facing
-				// cross-section to form one visibly wider beam.
-				auto* parent = geo->parent;
-				if (parent) {
-					s_mapBeamParent = RE::NiPointer<RE::NiNode>(parent);
-					for (int i = 0; i < 4; ++i) {
-						RE::NiPointer<RE::NiObject> clonedObject(geo->Clone());
-						auto* cloneGeo = clonedObject ? clonedObject->AsTriShape() : nullptr;
-						if (!cloneGeo || cloneGeo == geo)
-							continue;
-						cloneGeo->local = geo->local;
-						cloneGeo->world = geo->world;
-						cloneGeo->previousWorld = geo->previousWorld;
-						cloneGeo->worldBound = geo->worldBound;
-						cloneGeo->SetAppCulled(false);
-						parent->AttachChild(cloneGeo, true);
-						s_mapBeamCompanions.emplace_back(cloneGeo);
-					}
-				}
-				SKSE::log::info(
-				    "LASER MapMenu companion created copies={} rgba({:.3f},{:.3f},{:.3f},{:.3f}) scale={:.3f} texture='{}' vertexColor={}",
-				    s_mapBeamCompanions.size(),
-				    material->baseColor.red, material->baseColor.green,
-				    material->baseColor.blue, material->baseColor.alpha,
-				    material->baseColorScale, material->sourceTexturePath.c_str(),
-				    s_nativeMapPointerOriginalVertexColors);
-			}
-
-			// Keep all copies parallel to the native beam and spread them across the
-			// screen-facing perpendicular. Copy world state too so the current render
-			// frame is correct even if this pump runs after the parent's update pass.
-			auto normalizePoint = [](RE::NiPoint3& value) {
-				const float length = sqrtf(value.x * value.x + value.y * value.y + value.z * value.z);
-				if (!std::isfinite(length) || length < 1.0e-5f)
-					return false;
-				value /= length;
-				return true;
-			};
-			auto crossPoint = [](const RE::NiPoint3& a, const RE::NiPoint3& b) {
-				return RE::NiPoint3{
-				    a.y * b.z - a.z * b.y,
-				    a.z * b.x - a.x * b.z,
-				    a.x * b.y - a.y * b.x
-				};
-			};
-			RE::NiPoint3 beamDir = MatColumn(geo->world.rotate, 1);
-			auto* pointerNode = vrData->UIPointerNode.get();
-			if (pointerNode) {
-				const RE::NiPoint3 towardMiddle = geo->worldBound.center - pointerNode->world.translate;
-				if (std::isfinite(towardMiddle.x) && std::isfinite(towardMiddle.y) &&
-				    std::isfinite(towardMiddle.z))
-					beamDir = towardMiddle;
-			}
-			if (!normalizePoint(beamDir))
-				beamDir = MatColumn(geo->world.rotate, 1);
-			RE::NiPoint3 toViewer = MatColumn(geo->world.rotate, 2);
-			if (auto* hmd = vrData->UprightHmdNode.get())
-				toViewer = hmd->world.translate - geo->worldBound.center;
-			if (!normalizePoint(toViewer))
-				toViewer = MatColumn(geo->world.rotate, 2);
-			RE::NiPoint3 sideWorld = crossPoint(beamDir, toViewer);
-			if (!normalizePoint(sideWorld))
-				sideWorld = MatColumn(geo->world.rotate, 0);
-
-			constexpr float kOffsets[4] = { -0.20f, -0.10f, 0.10f, 0.20f };
-			if (s_mapBeamParent) {
-				RE::NiPoint3 sideParent = TransposeMul(s_mapBeamParent->world.rotate, sideWorld);
-				const float parentScale = std::isfinite(s_mapBeamParent->world.scale) &&
-				    fabsf(s_mapBeamParent->world.scale) > 1.0e-4f ?
-				    s_mapBeamParent->world.scale : 1.0f;
-				sideParent /= parentScale;
-				for (std::size_t i = 0; i < s_mapBeamCompanions.size() && i < 4; ++i) {
-					auto* companion = s_mapBeamCompanions[i].get();
-					companion->local = geo->local;
-					companion->local.translate += sideParent * kOffsets[i];
-					companion->world = geo->world;
-					companion->world.translate += sideWorld * kOffsets[i];
-					companion->previousWorld = companion->world;
-					companion->worldBound = geo->worldBound;
-					companion->worldBound.center += sideWorld * kOffsets[i];
-					companion->SetAppCulled(false);
-				}
-			}
-
-			const int colorState = triggerHeld ? 1 : 0;
-			if (s_nativeMapPointerColorState == colorState)
-				return;
-			const float alpha = s_nativeMapPointerOriginalColor.alpha;
-			const RE::NiColorA targetColor = triggerHeld ?
-			    RE::NiColorA(55.0f / 255.0f, 145.0f / 255.0f, 1.0f, alpha) :
-			    RE::NiColorA(1.0f, 1.0f, 1.0f, alpha);
-			auto styleBeam = [&](RE::BSTriShape* beam) {
-				if (!beam)
-					return false;
-				auto* shader = beam->GetGeometryRuntimeData().shaderProperty.get();
-				auto* effect = shader ? netimmerse_cast<RE::BSEffectShaderProperty*>(shader) : nullptr;
-				auto* material = effect ? effect->GetMaterial() : nullptr;
-				auto* graphics = RE::BSGraphics::State::GetSingleton();
-				if (!material || !graphics)
-					return false;
-				auto whiteTexture = graphics->GetRuntimeData().defaultTextureWhite;
-				material->sourceTexture = whiteTexture;
-				material->sourceTexturePath = RE::BSFixedString();
-				material->baseColor = targetColor;
-				material->baseColorScale = s_nativeMapPointerOriginalScale;
-				// Keep the original packed vertex layout intact. Clearing VF_COLORS on
-				// an already-created renderer mesh makes its input layout disagree with
-				// the vertex buffer and produced the solid-black beam. The shader flag is
-				// enough to ignore Bethesda's baked red vertex tint.
-				effect->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kVertexColors,
-				    s_nativeMapPointerOriginalVertexColors);
-				if (effect->effectData) {
-					effect->effectData->baseTexture = whiteTexture;
-					effect->effectData->fillColor = targetColor;
-				}
-				effect->InvalidateMaterial();
-				effect->SetupGeometry(beam);
-				// SetupGeometry may rebuild/rebind the native render data, so install the
-				// white-RGB vertex stream only after its material pass is finalized.
-				const bool vertexRGBPainted = paintMapBeamVertexRGB(beam, false);
-				beam->SetAppCulled(false);
-				return vertexRGBPainted;
-			};
-			const bool nativePainted = styleBeam(geo);
-			std::size_t companionsPainted = 0;
-			for (auto& companion : s_mapBeamCompanions) {
-				if (styleBeam(companion.get()))
-					++companionsPainted;
-			}
-			s_nativeMapPointerColorState = colorState;
-			SKSE::log::info(
-			    "LASER MapMenu companion color={} vertexRGB(native={} companions={}/{})",
-			    triggerHeld ? "blue" : "warm-white", nativePainted,
-			    companionsPainted, s_mapBeamCompanions.size());
-		};
-		// The legacy widened Skyrim mesh path is intentionally never activated.
-		// Calling it inactive preserves defensive cleanup without touching a live
-		// MapMenu object in a new session.
-		updateMapPointerCompanion(false, false);
-
 		// Stats/Sovngarde forbids Scaleform calls. Retain the exact old movie
 		// through that interval, then clear its held state on the first safe tick.
 		if (!statsOpen && s_pressedMoviePendingStats && s_pressedMovie)
 			releasePressedMovie("post-Stats cleanup");
 
 		if (!menuActive || statsOpen) {
+			s_semanticProbe = SemanticProbeCache{};
+			s_lastGfxDriveTick = 0;
 			s_journalReturnToSystemCategories = false;
 			s_journalReturnLastPulsedState = -1;
 			s_journalReplayCategoryPending = false;
@@ -5001,6 +4519,8 @@ namespace
 		const bool generationChanged = s_planeGeneration != g_menuPlaneGeneration;
 		const bool menuNameChanged = strncmp(s_planeMenuName, g_pTransform->menuName, sizeof(s_planeMenuName)) != 0;
 		if (!s_wasActive || generationChanged || menuNameChanged) {
+			s_semanticProbe = SemanticProbeCache{};
+			s_lastGfxDriveTick = 0;
 			s_journalReturnToSystemCategories = false;
 			s_journalReturnLastPulsedState = -1;
 			s_journalReplayCategoryPending = false;
@@ -5053,6 +4573,9 @@ namespace
 		const bool advertisedMenuReady = advertisedTopMenu && advertisedTopMenu->OnStack() &&
 		    advertisedTopMenu->uiMovie;
 		if (!advertisedMenuReady) {
+			if (s_semanticProbe.valid)
+				s_semanticProbe = SemanticProbeCache{};
+			s_lastGfxDriveTick = 0;
 			s_journalReturnToSystemCategories = false;
 			s_journalReturnLastPulsedState = -1;
 			s_journalReplayCategoryPending = false;
@@ -5373,54 +4896,6 @@ namespace
 			// same transition quarantine that already blocks click edges.
 			const bool menuSemanticInputReady = semanticNow >= s_clickRearmNotBefore;
 			const bool messageBoxOpen = strcmp(s_planeMenuName, "MessageBoxMenu") == 0;
-			const bool alternatePerspectiveMenu = menuSemanticInputReady && laserMovie &&
-			    strcmp(s_planeMenuName, "CustomMenu") == 0 &&
-			    IsAlternatePerspectiveMenu(*laserMovie);
-
-			// A hit proves where the laser can act, but it does not prove user intent.
-			// Ownership is sticky: native stick/button input owns the menu until the
-			// user deliberately moves the laser or presses its trigger over a target.
-			// This prevents a resting ray from undoing SkyUI's controller focus every
-			// frame. Dialogue and Map keep their established laser-owned behavior.
-			bool buttonHit = false;
-			JournalLeftPaneAction journalTarget = JournalLeftPaneAction::kNone;
-			if (menuSemanticInputReady && laserMovie && !dialogueOpen && !mapOpen) {
-				buttonHit = laserMovie->HitTest(
-				    targetX, targetY, RE::GFxMovieView::HitTestType::kButtonEvents, 0);
-				if (journalOpen) {
-					int ignoredSystemState = -1;
-					journalTarget = ResolveJournalLeftPaneAction(
-					    *laserMovie, targetX, targetY, ignoredSystemState);
-				}
-			}
-			const bool itemListHit = menuSemanticInputReady && laserMovie && !buttonHit &&
-			    PointerOverVRItemList(*laserMovie, s_planeMenuName, targetX, targetY);
-			RaceMenuLaserTarget alternatePerspectiveTarget;
-			const bool alternatePerspectiveTargetHit = alternatePerspectiveMenu &&
-			    ResolveAlternatePerspectiveLaserTarget(
-			        *laserMovie, targetX, targetY, alternatePerspectiveTarget);
-			int messageBoxHoverButton = -1;
-			const bool messageBoxButtonHit = menuSemanticInputReady && messageBoxOpen && laserMovie &&
-			    GetMessageBoxButtonAtViewportPoint(*laserMovie, targetX, targetY,
-			        messageBoxHoverButton, nullptr);
-			RaceMenuLaserTarget raceMenuTarget;
-			const bool raceMenuTargetHit = menuSemanticInputReady && raceMenuOpen && laserMovie &&
-			    ResolveRaceMenuLaserTarget(
-			        *laserMovie, targetX, targetY, raceMenuTarget);
-			bool mcmListHit = false;
-			RE::GFxValue mcmScrollBar;
-			const bool mcmScrollBarHit = menuSemanticInputReady && journalOpen && laserMovie &&
-			    ResolveMCMScrollTarget(
-			        *laserMovie, targetX, targetY, mcmListHit, mcmScrollBar);
-			// RaceMenu sliders use track clicks and drags whose empty track regions do
-			// not always advertise kButtonEvents. Treat its whole proven quad as an
-			// input surface; the SWF still decides whether the pointed control reacts.
-			const bool laserTargetInteractive = dialogueOpen || mapOpen ||
-			    (menuSemanticInputReady && raceMenuOpen) || buttonHit ||
-			    itemListHit || alternatePerspectiveTargetHit || messageBoxButtonHit || mcmListHit ||
-			    s_verticalScrollBarDragging ||
-			    journalTarget != JournalLeftPaneAction::kNone;
-
 			const uint32_t pressSeq = g_pTransform->laserPressSeq;
 			const uint32_t releaseSeq = g_pTransform->laserReleaseSeq;
 			const ULONGLONG intentNow = semanticNow;
@@ -5431,12 +4906,106 @@ namespace
 					s_clickArmed = true;
 			}
 			const bool newLaserPress = s_clickArmed && pressSeq != s_lastPressSeq;
+			const bool newLaserRelease = s_clickArmed && releaseSeq != s_lastReleaseSeq;
+
+			// Keep the OpenXR ray and plane pose at the headset's full refresh rate, but
+			// do not make Scaleform rediscover the same object tree for every duplicate
+			// stationary sample. A moving pointer is sampled at 45-60 Hz depending on
+			// headset refresh, a resting pointer gets a 20 Hz keepalive, and every button
+			// edge bypasses the limiter. Clicks therefore remain frame-immediate while
+			// the expensive idle-menu path loses most of its redundant work.
+			const float semanticDx = targetX - s_semanticProbe.x;
+			const float semanticDy = targetY - s_semanticProbe.y;
+			const bool semanticMoved = !s_semanticProbe.valid ||
+			    semanticDx * semanticDx + semanticDy * semanticDy >= 2.25f;
+			const ULONGLONG semanticIntervalMs = semanticMoved ? 16 : 50;
+			const bool semanticProbeDue = menuSemanticInputReady && laserMovie &&
+			    (!s_semanticProbe.valid ||
+			        s_semanticProbe.menuGeneration != s_planeGeneration ||
+			        s_semanticProbe.movie != laserMovie.get() ||
+			        newLaserPress || newLaserRelease ||
+			        semanticNow - s_semanticProbe.tick >= semanticIntervalMs);
+			if (semanticProbeDue) {
+				const auto semanticStarted = std::chrono::steady_clock::now();
+				SemanticProbeCache next;
+				next.valid = true;
+				next.menuGeneration = s_planeGeneration;
+				next.movie = laserMovie.get();
+				next.tick = semanticNow;
+				next.x = targetX;
+				next.y = targetY;
+				next.alternatePerspectiveMenu = strcmp(s_planeMenuName, "CustomMenu") == 0 &&
+				    IsAlternatePerspectiveMenu(*laserMovie);
+				if (!dialogueOpen) {
+					next.buttonHit = laserMovie->HitTest(
+					    targetX, targetY, RE::GFxMovieView::HitTestType::kButtonEvents, 0);
+					if (journalOpen) {
+						int ignoredSystemState = -1;
+						next.journalTarget = ResolveJournalLeftPaneAction(
+						    *laserMovie, targetX, targetY, ignoredSystemState);
+					}
+				}
+				next.itemListHit = !next.buttonHit &&
+				    PointerOverVRItemList(*laserMovie, s_planeMenuName, targetX, targetY);
+				next.alternatePerspectiveTargetHit = next.alternatePerspectiveMenu &&
+				    ResolveAlternatePerspectiveLaserTarget(
+				        *laserMovie, targetX, targetY, next.alternatePerspectiveTarget);
+				next.messageBoxButtonHit = messageBoxOpen &&
+				    GetMessageBoxButtonAtViewportPoint(*laserMovie, targetX, targetY,
+				        next.messageBoxHoverButton, nullptr);
+				next.raceMenuTargetHit = raceMenuOpen &&
+				    ResolveRaceMenuLaserTarget(
+				        *laserMovie, targetX, targetY, next.raceMenuTarget);
+				next.mcmScrollBarHit = journalOpen &&
+				    ResolveMCMScrollTarget(
+				        *laserMovie, targetX, targetY, next.mcmListHit, next.mcmScrollBar);
+				s_semanticProbe = std::move(next);
+
+				const auto semanticMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+				    std::chrono::steady_clock::now() - semanticStarted).count();
+				if (semanticMicros >= 4000 && semanticNow - s_lastSlowSemanticLog >= 2000) {
+					s_lastSlowSemanticLog = semanticNow;
+					SKSE::log::warn(
+					    "LASER slow semantic probe menu='{}' duration={:.2f}ms",
+					    s_planeMenuName, static_cast<double>(semanticMicros) / 1000.0);
+				}
+			}
+
+			const bool alternatePerspectiveMenu = s_semanticProbe.valid &&
+			    s_semanticProbe.alternatePerspectiveMenu;
+			const bool buttonHit = s_semanticProbe.valid && s_semanticProbe.buttonHit;
+			const JournalLeftPaneAction journalTarget = s_semanticProbe.valid ?
+			    s_semanticProbe.journalTarget : JournalLeftPaneAction::kNone;
+			const bool itemListHit = s_semanticProbe.valid && s_semanticProbe.itemListHit;
+			RaceMenuLaserTarget& alternatePerspectiveTarget =
+			    s_semanticProbe.alternatePerspectiveTarget;
+			const bool alternatePerspectiveTargetHit = s_semanticProbe.valid &&
+			    s_semanticProbe.alternatePerspectiveTargetHit;
+			const int messageBoxHoverButton = s_semanticProbe.valid ?
+			    s_semanticProbe.messageBoxHoverButton : -1;
+			const bool messageBoxButtonHit = s_semanticProbe.valid &&
+			    s_semanticProbe.messageBoxButtonHit;
+			RaceMenuLaserTarget& raceMenuTarget = s_semanticProbe.raceMenuTarget;
+			const bool raceMenuTargetHit = s_semanticProbe.valid &&
+			    s_semanticProbe.raceMenuTargetHit;
+			const bool mcmListHit = s_semanticProbe.valid && s_semanticProbe.mcmListHit;
+			RE::GFxValue& mcmScrollBar = s_semanticProbe.mcmScrollBar;
+			const bool mcmScrollBarHit = s_semanticProbe.valid &&
+			    s_semanticProbe.mcmScrollBarHit;
+			// RaceMenu sliders use track clicks and drags whose empty track regions do
+			// not always advertise kButtonEvents. Treat its whole proven quad as an
+			// input surface; the SWF still decides whether the pointed control reacts.
+			const bool laserTargetInteractive = dialogueOpen ||
+			    (menuSemanticInputReady && raceMenuOpen) || buttonHit ||
+			    itemListHit || alternatePerspectiveTargetHit || messageBoxButtonHit || mcmListHit ||
+			    s_verticalScrollBarDragging ||
+			    journalTarget != JournalLeftPaneAction::kNone;
 
 			const auto controllerIntentSerial =
 			    g_controllerMenuIntentSerial.load(std::memory_order_acquire);
 			if (controllerIntentSerial != s_seenControllerIntentSerial) {
 				s_seenControllerIntentSerial = controllerIntentSerial;
-				if (!dialogueOpen && !mapOpen) {
+				if (!dialogueOpen) {
 					// A click/drag on StatsList's right scrollbar moves Scaleform focus
 					// away from the left CategoryList. As soon as a native controller is
 					// used again, hand focus back through SkyUI's own page routine. The
@@ -5501,7 +5070,7 @@ namespace
 
 			const bool explicitLaserIntent = laserTargetInteractive &&
 			    (newLaserPress || meaningfulLaserMotion);
-			if (dialogueOpen || mapOpen) {
+			if (dialogueOpen) {
 				s_laserOwnsFocus = true;
 			} else if (explicitLaserIntent && !s_laserOwnsFocus) {
 				s_laserOwnsFocus = true;
@@ -5512,7 +5081,7 @@ namespace
 				    static_cast<int>(journalTarget));
 			}
 
-			const bool laserShouldDrive = dialogueOpen || mapOpen ||
+			const bool laserShouldDrive = dialogueOpen ||
 			    (s_laserOwnsFocus && laserTargetInteractive);
 			if (!laserShouldDrive) {
 				// Leave SkyUI's native focus untouched while the controller owns it.
@@ -5676,7 +5245,15 @@ namespace
 			// menu's movie — the same channel the VR keyboard's GFxCharEvent
 			// injection has used safely for months. Game thread, tracked menus
 			// only, never StatsMenu, no MovieDef access = no Sovngarde risk.
-			if (laserMovie) {
+			const float gfxDriveDx = targetX - s_lastGfxDriveX;
+			const float gfxDriveDy = targetY - s_lastGfxDriveY;
+			const bool gfxPointerMoved = !s_gfxMousePrimed ||
+			    gfxDriveDx * gfxDriveDx + gfxDriveDy * gfxDriveDy >= 2.25f;
+			const ULONGLONG gfxDriveIntervalMs = gfxPointerMoved ? 16 : 50;
+			const bool gfxDriveDue = !s_gfxMousePrimed || newLaserPress || newLaserRelease ||
+			    s_mouseHeld || s_raceSliderDragging || s_verticalScrollBarDragging ||
+			    semanticNow - s_lastGfxDriveTick >= gfxDriveIntervalMs;
+			if (laserMovie && gfxDriveDue) {
 				// Hover is authoritative. Do not synthesize a Down-arrow to prime
 				// list focus; it can move selection away from the pointed-at row.
 				const bool firstGfxMouse = !s_gfxMousePrimed;
@@ -5728,10 +5305,13 @@ namespace
 					    s_planeMenuName, targetX, targetY, mouseX, mouseY, mouseButtons, diagnosticButtonHit);
 					s_gfxMousePrimed = true;
 				}
-				if (s_pressedMovie && s_pressedMovie.get() == laserMovie.get()) {
-					s_pressedMovieX = targetX;
-					s_pressedMovieY = targetY;
-				}
+				s_lastGfxDriveTick = semanticNow;
+				s_lastGfxDriveX = targetX;
+				s_lastGfxDriveY = targetY;
+			}
+			if (s_pressedMovie && s_pressedMovie.get() == laserMovie.get()) {
+				s_pressedMovieX = targetX;
+				s_pressedMovieY = targetY;
 			}
 
 			// Throttled drive diagnostics (every 2s while pointing).
@@ -5985,6 +5565,9 @@ namespace
 					releasePressedMovie("trigger release");
 			}
 		} else {
+			if (s_semanticProbe.valid)
+				s_semanticProbe = SemanticProbeCache{};
+			s_lastGfxDriveTick = 0;
 			s_lastPressSeq = g_pTransform->laserPressSeq;
 			s_lastReleaseSeq = g_pTransform->laserReleaseSeq;
 			if (s_mouseHeld || s_pressedMovie)

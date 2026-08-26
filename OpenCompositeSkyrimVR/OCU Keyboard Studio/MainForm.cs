@@ -7,6 +7,15 @@ internal sealed record KeyboardDesignChoice(string Name, string Path, bool Built
     public override string ToString() => BuiltIn ? $"{Name} (Built-in)" : Name;
 }
 
+internal readonly record struct EffectiveKeyboardStyle(
+    Color Font,
+    Color FontOutline,
+    Color FontGlow,
+    Color PlateFill,
+    Color PlateOutline,
+    Color PlateGlow,
+    Color Hover);
+
 internal sealed class MainForm : Form
 {
     private static readonly Color Surface = StudioTheme.Window;
@@ -45,7 +54,6 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _topElementWidth = NumberBox(8, 2048, 0, 1);
     private readonly NumericUpDown _topElementHeight = NumberBox(8, 1120, 0, 1);
     private readonly NumericUpDown _topElementFontScale = NumberBox(0.2m, 3, 2, 0.05m);
-    private readonly ModernCheckBox _customStyle = new() { Text = "Use custom keyboard colors", AutoSize = true };
     private readonly ModernCheckBox _keyPlatesEnabled = new() { Text = "Show key plates", AutoSize = true };
     private readonly ModernCheckBox _topButtonPlatesEnabled = new() { Text = "Show PC/VR Mode + Lock plates", AutoSize = true };
     private readonly ModernCheckBox _inputBarPlateEnabled = new() { Text = "Show input bar plate", AutoSize = true };
@@ -53,13 +61,13 @@ internal sealed class MainForm : Form
     private readonly ModernCheckBox _glowEnabled = new() { Text = "Plate outline glow", AutoSize = true };
     private readonly ModernCheckBox _hoverEnabled = new() { Text = "Hover effect", AutoSize = true };
     private readonly ModernCheckBox _outlineEnabled = new() { Text = "Font outline", AutoSize = true };
-    private readonly Button _fontColor = SwatchButton();
-    private readonly Button _fontOutlineColor = SwatchButton();
-    private readonly Button _fontGlowColor = SwatchButton();
-    private readonly Button _keyColor = SwatchButton();
-    private readonly Button _plateFillColor = SwatchButton();
-    private readonly Button _glowColor = SwatchButton();
-    private readonly Button _hoverColor = SwatchButton();
+    private readonly ColorEntryControl _fontColor = new();
+    private readonly ColorEntryControl _fontOutlineColor = new();
+    private readonly ColorEntryControl _fontGlowColor = new();
+    private readonly ColorEntryControl _keyColor = new();
+    private readonly ColorEntryControl _plateFillColor = new();
+    private readonly ColorEntryControl _glowColor = new();
+    private readonly ColorEntryControl _hoverColor = new();
     private readonly NumericUpDown _glowStrength = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _glowRadius = NumberBox(1, 8, 0, 1);
     private readonly NumericUpDown _hoverStrength = NumberBox(0, 100, 0, 5);
@@ -95,7 +103,7 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _spriteFade = NumberBox(0, 300, 0, 2);
     private readonly NumericUpDown _spriteRotation = NumberBox(-360, 360, 0, 5);
     private readonly ModernCheckBox _spriteGlow = new() { Text = "Procedural glow", AutoSize = true };
-    private readonly Button _spriteGlowColor = SwatchButton();
+    private readonly ColorEntryControl _spriteGlowColor = new();
     private readonly NumericUpDown _spriteGlowStrength = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _spriteGlowRadius = NumberBox(1, 48, 0, 1);
     private readonly ModernCheckBox _spriteBreathe = new() { Text = "Breathing glow", AutoSize = true };
@@ -116,7 +124,7 @@ internal sealed class MainForm : Form
     private readonly Label _controlArrowName = new() { AutoSize = true, MaximumSize = new Size(280, 0) };
     private readonly NumericUpDown _controlArrowRotation = NumberBox(-360, 360, 0, 5);
     private readonly ModernCheckBox _controlArrowGlow = new() { Text = "Procedural arrow glow", AutoSize = true };
-    private readonly Button _controlArrowGlowColor = SwatchButton();
+    private readonly ColorEntryControl _controlArrowGlowColor = new();
     private readonly NumericUpDown _controlArrowGlowStrength = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _controlArrowGlowRadius = NumberBox(1, 48, 0, 1);
     private readonly ModernCheckBox _controlArrowBreathe = new() { Text = "Breathing arrow glow", AutoSize = true };
@@ -386,9 +394,9 @@ internal sealed class MainForm : Form
         AddHint(inspector, "Visible plates can be selected anywhere inside their shape. Hidden plates are click-through in Studio; select their visible text or artwork instead. Hiding a plate changes the look, not the key assigned to that location in game.");
 
         AddSection(inspector, "CUSTOM COLORS");
-        StyleCheck(_customStyle);
-        AddWide(inspector, _customStyle);
-        AddHint(inspector, "Each swatch opens a real hue/saturation wheel. These values are stored in the keyboard layout and reproduced by OCU.");
+        AddHint(inspector, "The palette always shows the colors currently visible from the selected Base Theme. Editing any color or effect automatically creates an override; no enable checkbox is required.");
+        AddWide(inspector, ActionButton("Reset colors and effects to Base Theme", (_, _) => ResetStyleToBaseTheme(), compact: true));
+        AddHint(inspector, "Click a swatch for the hue/saturation wheel, or type/paste #RRGGBB or #RRGGBBAA in the box. Reset removes the overrides and restores the selected theme palette.");
         AddRow(inspector, "Font", _fontColor);
         AddRow(inspector, "Font outline", _fontOutlineColor);
         AddRow(inspector, "Font glow", _fontGlowColor);
@@ -663,7 +671,7 @@ internal sealed class MainForm : Form
         _canvas.UseBuiltInControlArrowRequested += (_, _) => ClearControlArrow();
         _canvas.KeyboardFileDropped += path =>
         {
-            if (ConfirmDiscard())
+            if (ConfirmDiscard("Opening the dropped keyboard"))
                 LoadKeyboardFile(path);
         };
 
@@ -675,7 +683,7 @@ internal sealed class MainForm : Form
             if (!string.IsNullOrWhiteSpace(currentPath)
                 && Path.GetFullPath(currentPath).Equals(Path.GetFullPath(choice.Path), StringComparison.OrdinalIgnoreCase))
                 return;
-            if (!ConfirmDiscard())
+            if (!ConfirmDiscard("Switching keyboard designs"))
             {
                 RefreshDesignChoices(currentPath);
                 return;
@@ -708,11 +716,11 @@ internal sealed class MainForm : Form
                 {
                     PushUndo();
                     _document.BaseTheme = configName;
+                    _document.CustomStyleEnabled = false;
+                    _document.CustomStyleInitialized = false;
                     MarkChanged();
+                    SetStatus($"Base Theme applied: {theme.Name}. The Appearance palette was refreshed; Undo restores prior color and effect overrides.");
                 }
-                SetStatus(_document.CustomStyleEnabled || !string.IsNullOrWhiteSpace(_document.BackgroundImagePath)
-                    ? $"Base Theme: {theme.Name}. Custom colors/artwork override most theme visuals; its fallback styling and geometry remain."
-                    : $"Base Theme: {theme.Name}. This supplies the keyboard's built-in background, colors, plate treatment, and offsets.");
             }
             _canvas.RefreshPreview();
             PopulateAppearanceInspector();
@@ -762,37 +770,36 @@ internal sealed class MainForm : Form
             _canvas.RefreshPreview();
         };
         _snapCheck.CheckedChanged += (_, _) => _canvas.SnapToTenth = _snapCheck.Checked;
-        _customStyle.CheckedChanged += (_, _) => ToggleCustomStyle();
         _keyPlatesEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.KeyPlatesEnabled = _keyPlatesEnabled.Checked);
         _topButtonPlatesEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.TopButtonPlatesEnabled = _topButtonPlatesEnabled.Checked);
         _inputBarPlateEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.InputBarPlateEnabled = _inputBarPlateEnabled.Checked);
         _parchmentRibbonEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.ParchmentRibbonEnabled = _parchmentRibbonEnabled.Checked);
-        _glowEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.GlowEnabled = _glowEnabled.Checked);
-        _fontGlowEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.FontGlowEnabled = _fontGlowEnabled.Checked);
-        _hoverEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.HoverEnabled = _hoverEnabled.Checked);
-        _outlineEnabled.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.OutlineEnabled = _outlineEnabled.Checked);
-        _glowStrength.ValueChanged += (_, _) => ApplyDocumentChange(document => document.GlowStrength = (int)_glowStrength.Value);
-        _glowRadius.ValueChanged += (_, _) => ApplyDocumentChange(document => document.GlowRadius = (int)_glowRadius.Value);
-        _fontGlowStrength.ValueChanged += (_, _) => ApplyDocumentChange(document => document.FontGlowStrength = (int)_fontGlowStrength.Value);
-        _fontGlowRadius.ValueChanged += (_, _) => ApplyDocumentChange(document => document.FontGlowRadius = (int)_fontGlowRadius.Value);
-        _hoverStrength.ValueChanged += (_, _) => ApplyDocumentChange(document => document.HoverStrength = (int)_hoverStrength.Value);
-        _keyRoundness.ValueChanged += (_, _) => ApplyDocumentChange(document => document.KeyRoundness = (int)_keyRoundness.Value);
-        _plateOutlineWidth.ValueChanged += (_, _) => ApplyDocumentChange(document => document.PlateOutlineWidth = (int)_plateOutlineWidth.Value);
-        _keyBreathe.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.KeyBreatheEnabled = _keyBreathe.Checked);
-        _keyBreatheMin.ValueChanged += (_, _) => ApplyDocumentChange(document => document.KeyBreatheMinPercent = (int)_keyBreatheMin.Value);
-        _keyBreathePeriod.ValueChanged += (_, _) => ApplyDocumentChange(document => document.KeyBreathePeriodSeconds = (float)_keyBreathePeriod.Value);
-        _keyBreathePhase.ValueChanged += (_, _) => ApplyDocumentChange(document => document.KeyBreathePhaseDegrees = (float)_keyBreathePhase.Value);
-        _fontBreathe.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.FontBreatheEnabled = _fontBreathe.Checked);
-        _fontBreatheMin.ValueChanged += (_, _) => ApplyDocumentChange(document => document.FontBreatheMinPercent = (int)_fontBreatheMin.Value);
-        _fontBreathePeriod.ValueChanged += (_, _) => ApplyDocumentChange(document => document.FontBreathePeriodSeconds = (float)_fontBreathePeriod.Value);
-        _fontBreathePhase.ValueChanged += (_, _) => ApplyDocumentChange(document => document.FontBreathePhaseDegrees = (float)_fontBreathePhase.Value);
-        _fontColor.Click += (_, _) => ChooseVisualColor("Font color", _document.FontColor, color => _document.FontColor = color);
-        _fontOutlineColor.Click += (_, _) => ChooseVisualColor("Font outline color and transparency", _document.FontOutlineColor, color => _document.FontOutlineColor = color);
-        _fontGlowColor.Click += (_, _) => ChooseVisualColor("Font glow color and transparency", _document.FontGlowColor, color => _document.FontGlowColor = color);
-        _plateFillColor.Click += (_, _) => ChooseVisualColor("Plate fill color and transparency", _document.PlateFillColor, color => _document.PlateFillColor = color);
-        _keyColor.Click += (_, _) => ChooseVisualColor("Plate outline color and transparency", _document.KeyColor, color => _document.KeyColor = color);
-        _glowColor.Click += (_, _) => ChooseVisualColor("Glow color", _document.GlowColor, color => _document.GlowColor = color);
-        _hoverColor.Click += (_, _) => ChooseVisualColor("Hover color", _document.HoverColor, color => _document.HoverColor = color);
+        _glowEnabled.CheckedChanged += (_, _) => ApplyStyleChange(document => document.GlowEnabled = _glowEnabled.Checked);
+        _fontGlowEnabled.CheckedChanged += (_, _) => ApplyStyleChange(document => document.FontGlowEnabled = _fontGlowEnabled.Checked);
+        _hoverEnabled.CheckedChanged += (_, _) => ApplyStyleChange(document => document.HoverEnabled = _hoverEnabled.Checked);
+        _outlineEnabled.CheckedChanged += (_, _) => ApplyStyleChange(document => document.OutlineEnabled = _outlineEnabled.Checked);
+        _glowStrength.ValueChanged += (_, _) => ApplyStyleChange(document => document.GlowStrength = (int)_glowStrength.Value);
+        _glowRadius.ValueChanged += (_, _) => ApplyStyleChange(document => document.GlowRadius = (int)_glowRadius.Value);
+        _fontGlowStrength.ValueChanged += (_, _) => ApplyStyleChange(document => document.FontGlowStrength = (int)_fontGlowStrength.Value);
+        _fontGlowRadius.ValueChanged += (_, _) => ApplyStyleChange(document => document.FontGlowRadius = (int)_fontGlowRadius.Value);
+        _hoverStrength.ValueChanged += (_, _) => ApplyStyleChange(document => document.HoverStrength = (int)_hoverStrength.Value);
+        _keyRoundness.ValueChanged += (_, _) => ApplyStyleChange(document => document.KeyRoundness = (int)_keyRoundness.Value);
+        _plateOutlineWidth.ValueChanged += (_, _) => ApplyStyleChange(document => document.PlateOutlineWidth = (int)_plateOutlineWidth.Value);
+        _keyBreathe.CheckedChanged += (_, _) => ApplyStyleChange(document => document.KeyBreatheEnabled = _keyBreathe.Checked);
+        _keyBreatheMin.ValueChanged += (_, _) => ApplyStyleChange(document => document.KeyBreatheMinPercent = (int)_keyBreatheMin.Value);
+        _keyBreathePeriod.ValueChanged += (_, _) => ApplyStyleChange(document => document.KeyBreathePeriodSeconds = (float)_keyBreathePeriod.Value);
+        _keyBreathePhase.ValueChanged += (_, _) => ApplyStyleChange(document => document.KeyBreathePhaseDegrees = (float)_keyBreathePhase.Value);
+        _fontBreathe.CheckedChanged += (_, _) => ApplyStyleChange(document => document.FontBreatheEnabled = _fontBreathe.Checked);
+        _fontBreatheMin.ValueChanged += (_, _) => ApplyStyleChange(document => document.FontBreatheMinPercent = (int)_fontBreatheMin.Value);
+        _fontBreathePeriod.ValueChanged += (_, _) => ApplyStyleChange(document => document.FontBreathePeriodSeconds = (float)_fontBreathePeriod.Value);
+        _fontBreathePhase.ValueChanged += (_, _) => ApplyStyleChange(document => document.FontBreathePhaseDegrees = (float)_fontBreathePhase.Value);
+        WireVisualColor(_fontColor, "Font color", () => EffectiveStyle().Font, color => _document.FontColor = color);
+        WireVisualColor(_fontOutlineColor, "Font outline color and transparency", () => EffectiveStyle().FontOutline, color => _document.FontOutlineColor = color);
+        WireVisualColor(_fontGlowColor, "Font glow color and transparency", () => EffectiveStyle().FontGlow, color => _document.FontGlowColor = color);
+        WireVisualColor(_plateFillColor, "Plate fill color and transparency", () => EffectiveStyle().PlateFill, color => _document.PlateFillColor = color);
+        WireVisualColor(_keyColor, "Plate outline color and transparency", () => EffectiveStyle().PlateOutline, color => _document.KeyColor = color);
+        WireVisualColor(_glowColor, "Glow color", () => EffectiveStyle().PlateGlow, color => _document.GlowColor = color);
+        WireVisualColor(_hoverColor, "Hover color", () => EffectiveStyle().Hover, color => _document.HoverColor = color);
 
         _backgroundX.ValueChanged += (_, _) => ApplyDocumentChange(document => document.BackgroundX = (float)_backgroundX.Value);
         _backgroundY.ValueChanged += (_, _) => ApplyDocumentChange(document => document.BackgroundY = (float)_backgroundY.Value);
@@ -810,7 +817,8 @@ internal sealed class MainForm : Form
         _spriteFade.ValueChanged += (_, _) => ApplySpriteChange(sprite => sprite.EdgeFade = (int)_spriteFade.Value);
         _spriteRotation.ValueChanged += (_, _) => ApplySpriteChange(sprite => sprite.Rotation = (float)_spriteRotation.Value);
         _spriteGlow.CheckedChanged += (_, _) => ApplySpriteChange(sprite => sprite.GlowEnabled = _spriteGlow.Checked);
-        _spriteGlowColor.Click += (_, _) => ChooseSpriteGlowColor();
+        _spriteGlowColor.SwatchClicked += (_, _) => ChooseSpriteGlowColor();
+        _spriteGlowColor.ColorCommitted += ApplySpriteGlowColor;
         _spriteGlowStrength.ValueChanged += (_, _) => ApplySpriteChange(sprite => sprite.GlowStrength = (int)_spriteGlowStrength.Value);
         _spriteGlowRadius.ValueChanged += (_, _) => ApplySpriteChange(sprite => sprite.GlowRadius = (int)_spriteGlowRadius.Value);
         _spriteBreathe.CheckedChanged += (_, _) => ApplySpriteChange(sprite => sprite.BreatheEnabled = _spriteBreathe.Checked);
@@ -867,7 +875,8 @@ internal sealed class MainForm : Form
         });
         _controlArrowRotation.ValueChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowRotation = (float)_controlArrowRotation.Value);
         _controlArrowGlow.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowGlowEnabled = _controlArrowGlow.Checked);
-        _controlArrowGlowColor.Click += (_, _) => ChooseControlArrowGlowColor();
+        _controlArrowGlowColor.SwatchClicked += (_, _) => ChooseControlArrowGlowColor();
+        _controlArrowGlowColor.ColorCommitted += ApplyControlArrowGlowColor;
         _controlArrowGlowStrength.ValueChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowGlowStrength = (int)_controlArrowGlowStrength.Value);
         _controlArrowGlowRadius.ValueChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowGlowRadius = (int)_controlArrowGlowRadius.Value);
         _controlArrowBreathe.CheckedChanged += (_, _) => ApplyDocumentChange(document => document.ControlArrowBreatheEnabled = _controlArrowBreathe.Checked);
@@ -939,26 +948,54 @@ internal sealed class MainForm : Form
         PopulateControlsInspector();
     }
 
-    private void ToggleCustomStyle()
+    private KeyboardTheme ActiveTheme()
+        => _themeCombo.SelectedItem as KeyboardTheme
+            ?? _renderer?.Theme
+            ?? KeyboardTheme.BuiltIns[0];
+
+    private EffectiveKeyboardStyle EffectiveStyle()
+    {
+        if (_document.CustomStyleEnabled)
+            return new(_document.FontColor, _document.FontOutlineColor, _document.FontGlowColor,
+                _document.PlateFillColor, _document.KeyColor, _document.GlowColor, _document.HoverColor);
+
+        KeyboardTheme theme = ActiveTheme();
+        return new(theme.Ink, Color.FromArgb(220, 8, 11, 15), theme.Bright,
+            theme.KeyIdle, theme.Accent, theme.Bright,
+            Color.FromArgb(255, theme.KeyHot.R, theme.KeyHot.G, theme.KeyHot.B));
+    }
+
+    private void EnsureStyleOverride()
+        => _document.EnableCustomStyleFromTheme(ActiveTheme());
+
+    private void ApplyStyleChange(Action<KeyboardDocument> apply)
     {
         if (_updatingEditor)
             return;
         PushUndo();
-        if (_customStyle.Checked && _themeCombo.SelectedItem is KeyboardTheme theme)
-        {
-            bool seeded = !_document.CustomStyleInitialized;
-            _document.EnableCustomStyleFromTheme(theme);
-            SetStatus(seeded
-                ? $"Custom colors enabled from the visible {theme.Name} template. Nothing was replaced; choose any swatch to change only that color."
-                : "Custom colors enabled with your previous color settings restored.");
-        }
-        else
-        {
-            _document.CustomStyleEnabled = false;
-            SetStatus("Custom colors disabled. The selected Base Theme colors are visible again.");
-        }
+        EnsureStyleOverride();
+        apply(_document);
         MarkChanged();
         PopulateAppearanceInspector();
+    }
+
+    private void ResetStyleToBaseTheme()
+    {
+        if (_updatingEditor)
+            return;
+        if (!_document.CustomStyleEnabled && !_document.CustomStyleInitialized)
+        {
+            PopulateAppearanceInspector();
+            SetStatus($"Appearance is already using the {ActiveTheme().Name} Base Theme palette.");
+            return;
+        }
+
+        PushUndo();
+        _document.CustomStyleEnabled = false;
+        _document.CustomStyleInitialized = false;
+        MarkChanged();
+        PopulateAppearanceInspector();
+        SetStatus($"Colors and effects reset to the {ActiveTheme().Name} Base Theme. Undo restores the overrides.");
     }
 
     private void ApplyTopElementChange(float x, float y)
@@ -1051,11 +1088,26 @@ internal sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
         PushUndo();
-        _document.CustomStyleEnabled = true;
-        _document.CustomStyleInitialized = true;
+        EnsureStyleOverride();
         apply(dialog.SelectedColor);
         MarkChanged();
         PopulateAppearanceInspector();
+    }
+
+    private void WireVisualColor(ColorEntryControl entry, string title,
+        Func<Color> current, Action<Color> apply)
+    {
+        entry.SwatchClicked += (_, _) => ChooseVisualColor(title, current(), apply);
+        entry.ColorCommitted += color =>
+        {
+            if (_updatingEditor)
+                return;
+            PushUndo();
+            EnsureStyleOverride();
+            apply(color);
+            MarkChanged();
+            PopulateAppearanceInspector();
+        };
     }
 
     private void ChooseSpriteGlowColor()
@@ -1072,6 +1124,17 @@ internal sealed class MainForm : Form
         PopulateArtworkInspector();
     }
 
+    private void ApplySpriteGlowColor(Color color)
+    {
+        if (_updatingEditor || _canvas.SelectedSprite is not KeyboardSprite sprite)
+            return;
+        PushUndo();
+        sprite.GlowEnabled = true;
+        sprite.GlowColor = color;
+        MarkChanged();
+        PopulateArtworkInspector();
+    }
+
     private void ChooseControlArrowGlowColor()
     {
         using var dialog = new ColorWheelDialog("Control triangle glow color", _document.ControlArrowGlowColor);
@@ -1080,6 +1143,17 @@ internal sealed class MainForm : Form
         PushUndo();
         _document.ControlArrowGlowEnabled = true;
         _document.ControlArrowGlowColor = dialog.SelectedColor;
+        MarkChanged();
+        PopulateControlsInspector();
+    }
+
+    private void ApplyControlArrowGlowColor(Color color)
+    {
+        if (_updatingEditor)
+            return;
+        PushUndo();
+        _document.ControlArrowGlowEnabled = true;
+        _document.ControlArrowGlowColor = color;
         MarkChanged();
         PopulateControlsInspector();
     }
@@ -1392,55 +1466,68 @@ internal sealed class MainForm : Form
         _updatingEditor = true;
         try
         {
-            _customStyle.Checked = _document.CustomStyleEnabled;
+            KeyboardTheme theme = ActiveTheme();
+            EffectiveKeyboardStyle style = EffectiveStyle();
+            bool custom = _document.CustomStyleEnabled;
+            bool plateGlowEnabled = custom ? _document.GlowEnabled : theme.Modern;
+            bool fontGlowEnabled = custom && _document.FontGlowEnabled;
+            bool hoverEnabled = custom ? _document.HoverEnabled : true;
+            bool outlineEnabled = custom ? _document.OutlineEnabled : theme.Outline;
+            bool keyBreatheEnabled = custom && _document.KeyBreatheEnabled;
+            bool fontBreatheEnabled = custom && _document.FontBreatheEnabled;
+
             _keyPlatesEnabled.Checked = _document.KeyPlatesEnabled;
             _topButtonPlatesEnabled.Checked = _document.TopButtonPlatesEnabled;
             _inputBarPlateEnabled.Checked = _document.InputBarPlateEnabled;
             _parchmentRibbonEnabled.Checked = _document.ParchmentRibbonEnabled;
             _parchmentRibbonEnabled.Enabled = _document.BaseTheme.Equals("parchment", StringComparison.OrdinalIgnoreCase);
-            _glowEnabled.Checked = _document.GlowEnabled;
-            _fontGlowEnabled.Checked = _document.FontGlowEnabled;
-            _hoverEnabled.Checked = _document.HoverEnabled;
-            _outlineEnabled.Checked = _document.OutlineEnabled;
-            _glowStrength.Value = ClampDecimal(_document.GlowStrength, _glowStrength);
-            _glowRadius.Value = ClampDecimal(_document.GlowRadius, _glowRadius);
+            _glowEnabled.Checked = plateGlowEnabled;
+            _fontGlowEnabled.Checked = fontGlowEnabled;
+            _hoverEnabled.Checked = hoverEnabled;
+            _outlineEnabled.Checked = outlineEnabled;
+            _glowStrength.Value = ClampDecimal(custom ? _document.GlowStrength : theme.Modern ? 35 : 0, _glowStrength);
+            _glowRadius.Value = ClampDecimal(custom ? _document.GlowRadius : 4, _glowRadius);
             _fontGlowStrength.Value = ClampDecimal(_document.FontGlowStrength, _fontGlowStrength);
             _fontGlowRadius.Value = ClampDecimal(_document.FontGlowRadius, _fontGlowRadius);
-            _hoverStrength.Value = ClampDecimal(_document.HoverStrength, _hoverStrength);
-            _keyRoundness.Value = ClampDecimal(_document.KeyRoundness, _keyRoundness);
-            _plateOutlineWidth.Value = ClampDecimal(_document.PlateOutlineWidth, _plateOutlineWidth);
-            _keyBreathe.Checked = _document.KeyBreatheEnabled;
+            _hoverStrength.Value = ClampDecimal(custom
+                ? _document.HoverStrength
+                : Math.Clamp((int)Math.Round(theme.KeyHot.A / 2.0), 0, 100), _hoverStrength);
+            _keyRoundness.Value = ClampDecimal(custom ? _document.KeyRoundness : theme.Modern ? 14 : 2, _keyRoundness);
+            _plateOutlineWidth.Value = ClampDecimal(custom ? _document.PlateOutlineWidth : theme.Modern ? 2 : 1, _plateOutlineWidth);
+            _keyBreathe.Checked = keyBreatheEnabled;
             _keyBreatheMin.Value = ClampDecimal(_document.KeyBreatheMinPercent, _keyBreatheMin);
             _keyBreathePeriod.Value = ClampDecimal((decimal)_document.KeyBreathePeriodSeconds, _keyBreathePeriod);
             _keyBreathePhase.Value = ClampDecimal((decimal)_document.KeyBreathePhaseDegrees, _keyBreathePhase);
-            _fontBreathe.Checked = _document.FontBreatheEnabled;
+            _fontBreathe.Checked = fontBreatheEnabled;
             _fontBreatheMin.Value = ClampDecimal(_document.FontBreatheMinPercent, _fontBreatheMin);
             _fontBreathePeriod.Value = ClampDecimal((decimal)_document.FontBreathePeriodSeconds, _fontBreathePeriod);
             _fontBreathePhase.Value = ClampDecimal((decimal)_document.FontBreathePhaseDegrees, _fontBreathePhase);
-            SetSwatch(_fontColor, _document.FontColor);
-            SetSwatch(_fontOutlineColor, _document.FontOutlineColor);
-            SetSwatch(_fontGlowColor, _document.FontGlowColor);
-            SetSwatch(_keyColor, _document.KeyColor);
-            SetSwatch(_plateFillColor, _document.PlateFillColor);
-            SetSwatch(_glowColor, _document.GlowColor);
-            SetSwatch(_hoverColor, _document.HoverColor);
+            SetSwatch(_fontColor, style.Font);
+            SetSwatch(_fontOutlineColor, style.FontOutline);
+            SetSwatch(_fontGlowColor, style.FontGlow);
+            SetSwatch(_keyColor, style.PlateOutline);
+            SetSwatch(_plateFillColor, style.PlateFill);
+            SetSwatch(_glowColor, style.PlateGlow);
+            SetSwatch(_hoverColor, style.Hover);
 
             foreach (Control control in new Control[]
             {
-                _fontColor, _fontOutlineColor, _fontGlowColor, _plateFillColor, _keyColor, _glowColor, _hoverColor,
+                _fontColor, _plateFillColor, _keyColor,
                 _glowEnabled, _fontGlowEnabled, _hoverEnabled, _outlineEnabled,
-                _glowStrength, _glowRadius, _fontGlowStrength, _fontGlowRadius,
-                _hoverStrength, _keyRoundness, _plateOutlineWidth, _keyBreathe, _fontBreathe
+                _keyRoundness, _plateOutlineWidth
             })
-                control.Enabled = _document.CustomStyleEnabled;
-            _keyBreathe.Enabled = _document.CustomStyleEnabled && _document.GlowEnabled;
+                control.Enabled = true;
+            _fontOutlineColor.Enabled = outlineEnabled;
+            foreach (Control control in new Control[] { _glowColor, _glowStrength, _glowRadius, _keyBreathe })
+                control.Enabled = plateGlowEnabled;
             foreach (Control control in new Control[] { _keyBreatheMin, _keyBreathePeriod, _keyBreathePhase })
-                control.Enabled = _document.CustomStyleEnabled && _document.GlowEnabled && _document.KeyBreatheEnabled;
+                control.Enabled = plateGlowEnabled && keyBreatheEnabled;
             foreach (Control control in new Control[] { _fontGlowColor, _fontGlowStrength, _fontGlowRadius, _fontBreathe })
-                control.Enabled = _document.CustomStyleEnabled && _document.FontGlowEnabled;
-            _fontBreathe.Enabled = _document.CustomStyleEnabled && _document.FontGlowEnabled;
+                control.Enabled = fontGlowEnabled;
             foreach (Control control in new Control[] { _fontBreatheMin, _fontBreathePeriod, _fontBreathePhase })
-                control.Enabled = _document.CustomStyleEnabled && _document.FontGlowEnabled && _document.FontBreatheEnabled;
+                control.Enabled = fontGlowEnabled && fontBreatheEnabled;
+            _hoverColor.Enabled = hoverEnabled;
+            _hoverStrength.Enabled = hoverEnabled;
         }
         finally
         {
@@ -1590,7 +1677,7 @@ internal sealed class MainForm : Form
 
     private void OpenLayout()
     {
-        if (!ConfirmDiscard())
+        if (!ConfirmDiscard("Opening another keyboard"))
             return;
         using var dialog = new OpenFileDialog
         {
@@ -2234,12 +2321,13 @@ internal sealed class MainForm : Form
         Filter = "Recommended PNG background (*.png)|*.png|JPEG background (*.jpg;*.jpeg)|*.jpg;*.jpeg"
     };
 
-    private bool ConfirmDiscard()
+    private bool ConfirmDiscard(string action = "Continuing")
     {
         if (!_document.IsDirty)
             return true;
-        DialogResult result = MessageBox.Show(this, "Save your keyboard changes first?", "Unsaved keyboard",
-            MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+        DialogResult result = MessageBox.Show(this,
+            $"This keyboard has unsaved changes. {action} will discard them.\n\nSave before continuing?",
+            "Unsaved keyboard changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
         return result switch
         {
             DialogResult.Yes => SaveLayout(false),
@@ -2250,7 +2338,7 @@ internal sealed class MainForm : Form
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
-        if (!ConfirmDiscard())
+        if (!ConfirmDiscard("Closing Keyboard Studio"))
             e.Cancel = true;
     }
 
@@ -2275,17 +2363,38 @@ internal sealed class MainForm : Form
             e.Handled = true;
             return;
         }
+        bool editingTextOrNumber = FocusedEditor() is not null;
         if (e.Control && e.KeyCode == Keys.S) { SaveLayout(e.Shift); e.SuppressKeyPress = true; }
         else if (e.Control && e.KeyCode == Keys.O) { OpenLayout(); e.SuppressKeyPress = true; }
-        else if (e.Control && e.KeyCode == Keys.Z) { Undo(); e.SuppressKeyPress = true; }
-        else if (e.Control && e.KeyCode == Keys.Y) { Redo(); e.SuppressKeyPress = true; }
-        else if (e.Control && e.KeyCode == Keys.X && ActiveControl is not TextBox) { _canvas.CutSelection(); e.SuppressKeyPress = true; }
-        else if (e.Control && e.KeyCode == Keys.C && ActiveControl is not TextBox) { _canvas.CopySelection(); e.SuppressKeyPress = true; }
-        else if (e.Control && e.KeyCode == Keys.V && ActiveControl is not TextBox) { _canvas.PasteClipboard(); e.SuppressKeyPress = true; }
-        else if (e.KeyCode == Keys.Delete && ActiveControl is not TextBox)
+        else if (e.Control && e.KeyCode == Keys.Z && !editingTextOrNumber) { Undo(); e.SuppressKeyPress = true; }
+        else if (e.Control && e.KeyCode == Keys.Y && !editingTextOrNumber) { Redo(); e.SuppressKeyPress = true; }
+        else if (e.Control && e.KeyCode == Keys.X && !editingTextOrNumber) { _canvas.CutSelection(); e.SuppressKeyPress = true; }
+        else if (e.Control && e.KeyCode == Keys.C && !editingTextOrNumber) { _canvas.CopySelection(); e.SuppressKeyPress = true; }
+        else if (e.Control && e.KeyCode == Keys.V && !editingTextOrNumber) { _canvas.PasteClipboard(); e.SuppressKeyPress = true; }
+        else if (e.KeyCode == Keys.Delete && !editingTextOrNumber)
         {
             if (!_canvas.DeleteSelection()) DeleteKey();
             e.SuppressKeyPress = true;
+        }
+    }
+
+    private Control? FocusedEditor()
+    {
+        return FindFocusedEditor(this);
+
+        static Control? FindFocusedEditor(Control root)
+        {
+            if (!root.ContainsFocus)
+                return null;
+            if (root is TextBoxBase or UpDownBase)
+                return root;
+            foreach (Control child in root.Controls)
+            {
+                Control? editor = FindFocusedEditor(child);
+                if (editor is not null)
+                    return editor;
+            }
+            return null;
         }
     }
 
@@ -2509,27 +2618,7 @@ internal sealed class MainForm : Form
         return button;
     }
 
-    private static Button SwatchButton()
-    {
-        var button = new Button
-        {
-            Text = "Choose on wheel",
-            Height = 32,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Color.White,
-            Cursor = Cursors.Hand
-        };
-        button.FlatAppearance.BorderColor = Edge;
-        return button;
-    }
-
-    private static void SetSwatch(Button button, Color color)
-    {
-        button.BackColor = color;
-        double luminance = color.R * 0.299 + color.G * 0.587 + color.B * 0.114;
-        button.ForeColor = luminance > 150 ? Color.Black : Color.White;
-        button.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
-    }
+    private static void SetSwatch(ColorEntryControl entry, Color color) => entry.Value = color;
 
     private static TabPage InspectorPage(string title) => new(title)
     {

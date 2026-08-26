@@ -23,16 +23,6 @@ public:
 	void SetRenderHand(int side, bool show) { renderHand[side] = show; }
 	void SetActiveHand(int side) { activeHand = side == 0 ? 0 : 1; }
 
-	// MapMenu retains Skyrim's native input and depth test. When the SKSE bridge
-	// supplies its read-only native hit distance, OCU draws an owned thick beam
-	// and dot along the current OpenXR controller ray. Skyrim geometry is never
-	// retained or modified by this renderer.
-	void SetMapVisualMode(bool enabled) { mapVisualMode = enabled; }
-	void SetMapVisualDistance(bool valid, float distanceMeters) {
-		mapVisualDistanceValid = valid;
-		mapVisualDistanceMeters = distanceMeters;
-	}
-
 	// Toggle debug quad visibility and set its opacity (0-100)
 	void SetShowDebugQuad(bool show);
 	void SetDebugQuadOpacity(int percent) { debugOpacityPercent = percent; }
@@ -112,9 +102,6 @@ private:
 	XrExtent2Df menuSize = { 0, 0 };
 	bool menuValid = false;
 	bool showDebugQuad = true;
-	bool mapVisualMode = false;
-	bool mapVisualDistanceValid = false;
-	float mapVisualDistanceMeters = 0.0f;
 	int debugOpacityPercent = 20;
 	int debugColorR = 30, debugColorG = 100, debugColorB = 30; // fill color (default green)
 

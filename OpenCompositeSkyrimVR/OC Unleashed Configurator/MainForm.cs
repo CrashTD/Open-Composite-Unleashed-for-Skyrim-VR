@@ -4769,6 +4769,8 @@ namespace OpenCompositeConfigurator
             using var dlg = new ComboEditForm(KeyScancodes);
             if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
             {
+                if (!ConfirmOverlappingTapCombo(dlg.Result))
+                    return;
                 _combos.Add(dlg.Result);
                 RebuildComboList();
                 AutoSaveCombos("Combo added");
@@ -4810,10 +4812,56 @@ namespace OpenCompositeConfigurator
             using var dlg = new ComboEditForm(KeyScancodes, _combos[index]);
             if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
             {
+                if (!ConfirmOverlappingTapCombo(dlg.Result, index))
+                    return;
                 _combos[index] = dlg.Result;
                 RebuildComboList();
                 AutoSaveCombos("Combo updated");
             }
+        }
+
+        private bool ConfirmOverlappingTapCombo(ComboEntry candidate, int editingIndex = -1)
+        {
+            static bool IsTapMode(string mode) => mode is
+                "press" or "double_tap" or "triple_tap" or "quadruple_tap";
+            static string NormalizeButtons(string buttons) => string.Join("+",
+                buttons.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(button => button.ToLowerInvariant())
+                    .OrderBy(button => button, StringComparer.Ordinal));
+
+            if (!IsTapMode(candidate.Mode))
+                return true;
+
+            string normalized = NormalizeButtons(candidate.ButtonString);
+            var overlapping = new List<ComboEntry>();
+            for (int i = 0; i < _combos.Count; ++i)
+            {
+                if (i == editingIndex || !IsTapMode(_combos[i].Mode))
+                    continue;
+                if (NormalizeButtons(_combos[i].ButtonString) == normalized)
+                    overlapping.Add(_combos[i]);
+            }
+            if (overlapping.Count == 0)
+                return true;
+
+            string existing = string.Join(", ", overlapping.Select(combo => combo.Mode switch
+            {
+                "press" => "Press",
+                "double_tap" => "Double Tap",
+                "triple_tap" => "Triple Tap",
+                "quadruple_tap" => "Quad Tap",
+                _ => combo.Mode
+            }).Distinct());
+            int decisionWindowMs = Math.Max(candidate.TimingMs,
+                overlapping.Max(combo => combo.TimingMs));
+            DialogResult result = MessageBox.Show(this,
+                $"This same controller input already has: {existing}.\n\n" +
+                "Tap bindings are independent. A double or triple tap also contains the shorter presses, " +
+                "so every matching action can fire during the sequence.\n\n" +
+                $"Making them exclusive would delay the shorter action until the {decisionWindowMs} ms tap window expires. " +
+                "OCU will not silently add that input delay. Use a different button/combo, or continue if overlapping actions are intentional.",
+                "Overlapping tap actions", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            return result == DialogResult.OK;
         }
 
         private void DeleteCombo(int index)

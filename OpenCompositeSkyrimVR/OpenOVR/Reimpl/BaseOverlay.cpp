@@ -122,8 +122,8 @@ struct OCMenuTransform {
 	float    roomHmdPos[3];
 	float    roomHmdQuat[4];
 
-	// v6: native Skyrim MapMenu beam length. OCU applies this scalar to the
-	// current OpenXR controller ray; no cross-engine endpoint conversion.
+	// Reserved v6 ABI space. The removed MapMenu bridge used these fields;
+	// retain their layout so mixed-version shared-memory readers fail safely.
 	uint8_t  mapPointerValid;
 	float    mapPointerDistanceMeters;
 	float    mapPointerReserved[2];
@@ -336,7 +336,6 @@ static constexpr MenuQuadProfile kMenuProfiles[] = {
 	{ "MagicMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
 	{ "FavoritesMenu", 0.86f, 0.43f, 0.58f, -0.23f, -0.28f, 20 },
 	{ "CustomMenu", 0.86f, 1.17f, 0.64f, -0.11f, 0.00f, 20 },
-	{ "MapMenu", 0.86f, 1.16f, 0.75f, -0.14f, 0.00f, 20 },
 	{ "ContainerMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
 	{ "BarterMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
 	{ "GiftMenu", 0.86f, 0.73f, 0.89f, -0.14f, -0.42f, 20 },
@@ -2625,6 +2624,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 #ifdef _WIN32
 	{
 		bool menuActive = false;
+		bool menuSignalActive = false;
 		static HWND cachedHwnd = nullptr;
 		if (!cachedHwnd || !IsWindow(cachedHwnd)) {
 			cachedHwnd = FindWindowW(L"Skyrim Special Edition", nullptr);
@@ -2632,7 +2632,8 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				cachedHwnd = FindWindowW(nullptr, L"Skyrim VR");
 		}
 		if (cachedHwnd)
-			menuActive = (intptr_t)GetPropW(cachedHwnd, L"OC_MENU_ACTIVE") != 0;
+			menuSignalActive = (intptr_t)GetPropW(cachedHwnd, L"OC_MENU_ACTIVE") != 0;
+		menuActive = menuSignalActive;
 
 		// Master gate — laser stays fully dormant unless enable_laser=1
 		const bool menuLaserMasterEnabled = s_mqEnableLaser &&
@@ -2656,19 +2657,43 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 		// down after ~15 frames without one (tolerates transient seqlock
 		// read misses mid-menu).
 		static int s_noMenuNameFrames = 0;
-		if (menuActive && !alwaysShow) {
+		static bool s_mapNativeOnlyLatched = false;
+		bool mapNativeOnly = false;
+		if (menuActive) {
 			OpenSharedMemory();
 			OCMenuTransform mxGate = {};
 			bool readOk = ReadMenuTransform(mxGate);
 			bool named = readOk && mxGate.menuName[0] != '\0';
+			if (!menuSignalActive) {
+				s_mapNativeOnlyLatched = false;
+			} else if (named) {
+				s_mapNativeOnlyLatched = strcmp(mxGate.menuName, "MapMenu") == 0;
+			}
+			mapNativeOnly = menuSignalActive && s_mapNativeOnlyLatched;
+
+			// MapMenu is only a lifecycle-name sentinel here. Keep any existing
+			// flat-menu laser allocation idle and never enter its renderer, publish
+			// pointer input, or submit a compositor layer while Skyrim owns the map.
+			if (mapNativeOnly) {
+				g_menuLaserActive = false;
+				for (int side = 0; side < 2; ++side) {
+					g_menuLaserConsumesTrigger[side] = false;
+					g_menuLaserSuppressUntilRelease[side].store(false, std::memory_order_release);
+				}
+				if (s_pTransform) {
+					s_pTransform->laserActive = 0;
+					s_pTransform->laserHand = 0xFF;
+					s_pTransform->laserTriggerHeld = 0;
+				}
+			}
+
+			if (!alwaysShow && !mapNativeOnly) {
 			// Pump present (v2 bridge) but refusing to export a plane = the SKSE
 			// side is deliberately dormant (StatsMenu-on-top-of-TweenMenu left a
 			// stale fallback quad floating in Sovngarde, 2026-07-25). Never show
 			// the fallback in that state: delay creation until the first valid
 			// plane, and tear down if the export starves mid-menu. Transient
 			// seqlock read misses reset nothing (readOk=false = no information).
-			bool pumpPresent = readOk && mxGate.version >= 2;
-			bool planeLive = pumpPresent && mxGate.uiPlaneValid;
 			if (named)
 				s_noMenuNameFrames = 0;
 			else if (readOk)
@@ -2679,9 +2704,10 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 			} else if (s_noMenuNameFrames > 15) {
 				menuActive = false; // menu closed — tear down
 			}
+			}
 		}
 
-		if (menuActive) {
+		if (menuActive && !mapNativeOnly) {
 			OOVR_LOG_ONCE("MCM menu detected active via OC_MENU_ACTIVE property");
 
 			// Try to open shared memory from SKSE plugin (once)
@@ -3053,14 +3079,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					}
 				}
 
-				// MapMenu is a complete native bypass. Do not submit an OCU laser, read
-				// the native pointer/depth bridge, publish laser input, or mask any
-				// controller edge. Skyrim VR's original map laser remains authoritative.
-				const bool mapNativeOnly = strcmp(s_lastMenuName, "MapMenu") == 0;
-				menuLaser->SetMapVisualMode(false);
-				menuLaser->SetMapVisualDistance(false, 0.0f);
-				bool hardSuppressLaser = mapNativeOnly
-				    || (strcmp(s_lastMenuName, "StatsMenu") == 0)
+				bool hardSuppressLaser = (strcmp(s_lastMenuName, "StatsMenu") == 0)
 				    || (strcmp(s_lastMenuName, "Loading Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Main Menu") == 0)
 				    || (strcmp(s_lastMenuName, "Mist Menu") == 0)
@@ -3080,17 +3099,6 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					s_authorityAnchorValid[0] = false;
 					s_authorityAnchorValid[1] = false;
 					snprintf(s_authorityMenu, sizeof(s_authorityMenu), "%s", s_lastMenuName);
-				}
-				if (mapNativeOnly) {
-					s_activeLaserHand = 1; // Skyrim's native map pointer is right-hand owned.
-					s_authorityAnchorValid[0] = false;
-					s_authorityAnchorValid[1] = false;
-					g_menuLaserActive = false;
-					for (int side = 0; side < 2; ++side) {
-						g_menuLaserConsumesTrigger[side] = false;
-						g_menuLaserSuppressUntilRelease[side].store(
-						    false, std::memory_order_release);
-					}
 				}
 				menuLaser->SetActiveHand(s_activeLaserHand);
 				menuLaser->SetRenderHand(0, true);
@@ -3120,7 +3128,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				bool meaningfulMotion[2] = {};
 				float motionDistanceSq[2] = {};
 				for (int side = 0; side < 2; ++side) {
-					if (suppressLaser || mapNativeOnly || !menuLaser->IsHit(side)) {
+					if (suppressLaser || !menuLaser->IsHit(side)) {
 						s_authorityAnchorValid[side] = false;
 						continue;
 					}
@@ -3144,7 +3152,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				// mask even if another hand currently owns a drag, but do not transfer
 				// the cursor until that drag's release edge has reached the SKSE bridge.
 				int clickedHand = -1;
-				for (int side = 0; !suppressLaser && !mapNativeOnly && side < 2; side++) {
+				for (int side = 0; !suppressLaser && side < 2; side++) {
 					if (menuLaser->IsHit(side) && menuLaser->IsTriggerPressed(side)) {
 						g_menuLaserSuppressUntilRelease[side].store(
 						    true, std::memory_order_release);
@@ -3153,7 +3161,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				}
 
 				int authorityCandidate = -1;
-				if (!ownerLocked && !suppressLaser && !mapNativeOnly) {
+				if (!ownerLocked && !suppressLaser) {
 					if (clickedHand >= 0) {
 						authorityCandidate = clickedHand;
 					} else if (!menuLaser->IsHit(s_activeLaserHand) &&
@@ -3184,15 +3192,14 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				}
 				menuLaser->SetActiveHand(s_activeLaserHand);
 
-				// MapMenu is entirely native: never render, claim, or mask its input.
-				// For other flat menus, own the physical trigger only while the beam is
+				// Own the physical trigger only while the beam is
 				// ON the quad, plus a short grace window after it leaves. The
 				// grace covers the one-frame off-quad transition where Skyrim
 				// could otherwise see the same trigger our Scaleform bridge
 				// handled and activate the newly opened row underneath it. Off
 				// the quad past the grace, the full legacy menu bindings
 				// (trigger included) belong to the game again.
-				g_menuLaserActive = !suppressLaser && !mapNativeOnly &&
+				g_menuLaserActive = !suppressLaser &&
 				    (menuLaser->IsHit(0) || menuLaser->IsHit(1));
 				static ULONGLONG s_lastQuadHitMs[2] = {};
 				constexpr ULONGLONG kTriggerGraceMs = 250;
@@ -3201,7 +3208,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						s_lastQuadHitMs[side] = GetTickCount64();
 					const bool recentHit = s_lastQuadHitMs[side] != 0
 					    && GetTickCount64() - s_lastQuadHitMs[side] <= kTriggerGraceMs;
-					g_menuLaserConsumesTrigger[side] = !suppressLaser && !mapNativeOnly &&
+					g_menuLaserConsumesTrigger[side] = !suppressLaser &&
 					    !kbHit[side] && menuLaser->IsRayValid(side) && recentHit;
 				}
 
@@ -3216,13 +3223,13 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				static ULONGLONG s_adjustLastSave = 0;
 
 				// Left thumbstick click toggles local adjustment mode
-				if (!mapNativeOnly && menuLaser->IsThumbstickPressed(0)) {
+				if (menuLaser->IsThumbstickPressed(0)) {
 					s_adjustModeLocal = !s_adjustModeLocal;
 					OOVR_LOGF("Menu quad adjustment mode: %s", s_adjustModeLocal ? "ON" : "OFF");
 				}
 
 				// Active if either local toggle OR ini toggle is on
-				bool s_adjustMode = !mapNativeOnly && (s_adjustModeLocal || s_mqThumbstickAdjust);
+				bool s_adjustMode = s_adjustModeLocal || s_mqThumbstickAdjust;
 
 				// X button cycles right-stick parameter
 				if (s_adjustMode && menuLaser->IsXButtonPressed(0)) {
@@ -3243,7 +3250,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				static char s_mouseCalMenu[64] = {};
 				static float s_mouseCalTargetU[2] = {};
 				static float s_mouseCalTargetV[2] = {};
-				if (!mapNativeOnly && !s_adjustMode && menuLaser->IsXButtonPressed(0)) {
+				if (!s_adjustMode && menuLaser->IsXButtonPressed(0)) {
 					if (strcmp(s_mouseCalMenu, s_lastMenuName) != 0) {
 						s_mouseCalStep = 0;
 						snprintf(s_mouseCalMenu, sizeof(s_mouseCalMenu), "%s", s_lastMenuName);
@@ -3398,7 +3405,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					int side = s_activeLaserHand;
 					s_pTransform->laserHand = static_cast<uint8_t>(side);
 					s_pTransform->laserTriggerHeld = menuLaser->IsTriggerDown(side) ? 1 : 0;
-					if (!suppressLaser && !mapNativeOnly && menuLaser->IsHit(side)) {
+					if (!suppressLaser && menuLaser->IsHit(side)) {
 						// Calibration trims retained (default identity)
 						float adjU = physicalBookMode ? menuLaser->GetHitU(side) :
 						    menuLaser->GetHitU(side) * s_mqMouseScaleX + s_mqMouseOffsetX;
@@ -3416,7 +3423,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					// A held drag can leave the quad before the trigger comes up. Publish
 					// that owning-hand release even without a current hit so SKSE can
 					// always close the exact interaction that received DOWN.
-					if (!suppressLaser && !mapNativeOnly && menuLaser->IsTriggerReleased(side))
+					if (!suppressLaser && menuLaser->IsTriggerReleased(side))
 						s_pTransform->laserReleaseSeq++;
 					if (!wroteHit)
 						s_pTransform->laserActive = 0;
@@ -3424,7 +3431,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					s_pTransform->laserFrameSeq++;
 				}
 			}
-		} else {
+		} else if (!menuActive) {
 			// Menu closed — destroy laser system, unlock profile
 			if (menuLaser) {
 				OOVR_LOG("Menu laser: destroyed (menu-active flag went false)");

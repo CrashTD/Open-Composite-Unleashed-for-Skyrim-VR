@@ -12,6 +12,7 @@
 #include "Misc/LaserCalibration.h"
 #include "LaserRaySmoothing.h"
 #include "BeamTexture.h"
+#include "LaserDotTexture.h"
 #include "generated/static_bases.gen.h"
 
 #ifdef _WIN32
@@ -231,8 +232,8 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		sci.format = static_cast<int64_t>(laserColorFormat);
 		sci.sampleCount = 1;
-		sci.width = 8;
-		sci.height = 8;
+		sci.width = laserdot::kSize;
+		sci.height = laserdot::kSize;
 		sci.faceCount = 1;
 		sci.arraySize = 1;
 		sci.mipCount = 1;
@@ -245,29 +246,27 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(dotChain[state], imgCount, &imgCount,
 		    (XrSwapchainImageBaseHeader*)imgs.data()));
 
-		uint8_t cr = state == 1 ? 55 : 255;
-		uint8_t cg = state == 1 ? 145 : 240;
-		uint8_t cb = state == 1 ? 255 : 220;
-		uint8_t ca = 255;
-		uint32_t packed = PackColor(laserColorFormat, cr, cg, cb, ca);
-		uint32_t dotPixels[64];
-		for (int py = 0; py < 8; py++) {
-			for (int px = 0; px < 8; px++) {
-				float dx = px - 3.5f, dy = py - 3.5f;
-				dotPixels[py * 8 + px] = (dx * dx + dy * dy <= 12.25f) ? packed : 0;
-			}
+		std::vector<uint32_t> dotPixels;
+		if (state == 1) {
+			laserdot::Fill(dotPixels, IsBgraFormat(laserColorFormat),
+			    { 225, 245, 255 }, { 90, 175, 255 }, { 35, 105, 255 });
+		} else {
+			laserdot::Fill(dotPixels, IsBgraFormat(laserColorFormat));
 		}
 
 		D3D11_TEXTURE2D_DESC td = {};
-		td.Width = 8;
-		td.Height = 8;
+		td.Width = laserdot::kSize;
+		td.Height = laserdot::kSize;
 		td.MipLevels = 1;
 		td.ArraySize = 1;
 		td.Format = laserColorFormat;
 		td.SampleDesc = { 1, 0 };
 		td.Usage = D3D11_USAGE_DEFAULT;
 
-		D3D11_SUBRESOURCE_DATA init = { dotPixels, sizeof(uint32_t) * 8, sizeof(uint32_t) * 64 };
+		D3D11_SUBRESOURCE_DATA init = {
+			dotPixels.data(), sizeof(uint32_t) * laserdot::kSize,
+			sizeof(uint32_t) * laserdot::kSize * laserdot::kSize
+		};
 		CComPtr<ID3D11Texture2D> tex;
 		OOVR_FAILED_DX_ABORT(dev->CreateTexture2D(&td, &init, &tex));
 
@@ -290,7 +289,7 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		dotLayer[i].eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 		dotLayer[i].subImage.swapchain = dotChain[0];
 		dotLayer[i].subImage.imageRect.offset = { 0, 0 };
-		dotLayer[i].subImage.imageRect.extent = { 8, 8 };
+		dotLayer[i].subImage.imageRect.extent = { laserdot::kSize, laserdot::kSize };
 		dotLayer[i].subImage.imageArrayIndex = 0;
 	}
 
@@ -671,10 +670,7 @@ void VRMenuLaser::UpdateBeam(int side, const XrVector3f& origin, const XrVector3
 	};
 
 	beamLayer[side].pose.position = mid;
-	// MapMenu is farther away and visually busier than a flat UI panel. Its
-	// compositor-owned compatibility beam replaces the old five-copy Skyrim
-	// mesh treatment with one clean 6mm layer.
-	beamLayer[side].size.width = mapVisualMode ? 0.006f : 0.003f;
+	beamLayer[side].size.width = 0.003f;
 	beamLayer[side].size.height = beamLen;
 	beamLayer[side].pose.orientation = BeamOrientation(dir, mid, headPos);
 }
@@ -691,9 +687,7 @@ void VRMenuLaser::UpdateDot(int side, const XrVector3f& hitPoint)
 		hitPoint.z + planeNormal.z * 0.001f
 	};
 	dotLayer[side].pose.orientation = menuPose.orientation;
-	// The map is visually busy and farther away than flat inventory panels.
-	// Give its endpoint enough size to remain obvious without obscuring icons.
-	float dotSize = mapVisualMode ? 0.018f : 0.012f;
+	float dotSize = 0.028f;
 	dotLayer[side].size.width = dotSize;
 	dotLayer[side].size.height = dotSize;
 }
@@ -710,7 +704,7 @@ void VRMenuLaser::UpdateWorldDot(int side, const XrVector3f& hitPoint,
 		hitPoint.z - rayDir.z * 0.003f
 	};
 	dotLayer[side].pose.orientation = headOrientation;
-	float dotSize = mapVisualMode ? 0.018f : 0.015f;
+	float dotSize = 0.032f;
 	dotLayer[side].size.width = dotSize;
 	dotLayer[side].size.height = dotSize;
 }
@@ -826,35 +820,18 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 		lastRayOrigin[side] = rayOrigin;
 		lastRayDir[side] = rayDir;
 
-		// Flat menus intersect the exported Scaleform quad. MapMenu instead uses
-		// Skyrim's native depth-resolved distance, which already follows terrain
-		// relief and floating icons, on this live OpenXR controller ray.
+		// Flat menus intersect the exported Scaleform quad. MapMenu never enters
+		// this renderer; Skyrim owns its native pointer from end to end.
 		float u = 0.0f, v = 0.0f, t = -1.0f;
-		bool hit = false;
 		bool visualSurfaceHit = false;
 		XrVector3f hitPoint = {};
-		if (mapVisualMode) {
-			if (mapVisualDistanceValid && std::isfinite(mapVisualDistanceMeters) &&
-			    mapVisualDistanceMeters > 0.03f && mapVisualDistanceMeters < 12.0f) {
-				t = mapVisualDistanceMeters;
-				hitPoint = {
-					rayOrigin.x + t * rayDir.x,
-					rayOrigin.y + t * rayDir.y,
-					rayOrigin.z + t * rayDir.z
-				};
-				hit = true;
-				visualSurfaceHit = true;
-			}
-		} else {
-			hit = RayIntersectQuad(rayOrigin, rayDir, u, v, t);
-			visualSurfaceHit = hit;
-			if (hit) {
-				hitPoint = {
-					rayOrigin.x + t * rayDir.x,
-					rayOrigin.y + t * rayDir.y,
-					rayOrigin.z + t * rayDir.z
-				};
-			}
+		visualSurfaceHit = RayIntersectQuad(rayOrigin, rayDir, u, v, t);
+		if (visualSurfaceHit) {
+			hitPoint = {
+				rayOrigin.x + t * rayDir.x,
+				rayOrigin.y + t * rayDir.y,
+				rayOrigin.z + t * rayDir.z
+			};
 		}
 		lastRayDir[side] = rayDir;
 
@@ -862,33 +839,22 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 		if (visualSurfaceHit) {
 			lastHitT[side] = t;
 			hitActive[side] = true;
-			if (!mapVisualMode) {
-				hitU[side] = u;
-				// Flip V so 0=top, 1=bottom (Scaleform convention: 0,0 is top-left)
-				hitV[side] = 1.0f - v;
-			}
+			hitU[side] = u;
+			// Flip V so 0=top, 1=bottom (Scaleform convention: 0,0 is top-left)
+			hitV[side] = 1.0f - v;
 
 			if (renderHand[side]) {
-				if (mapVisualMode)
-					UpdateWorldDot(side, hitPoint, headLoc.pose.orientation, rayDir);
-				else
-					UpdateDot(side, hitPoint);
+				UpdateDot(side, hitPoint);
 				drawDot = true;
 			}
 		}
 
-		// Flat menus use OCU's shaft. MapMenu uses the same owned shaft only while
-		// Skyrim has published a valid depth-resolved distance. Because its direction
-		// remains the live OpenXR controller ray, no RoomNode endpoint conversion can
-		// produce the old vertical beam.
-		// Hidden hands still track hits/trigger above so they can claim the
-		// pointer, but draw nothing.
+		// Hidden hands still track hits/trigger above so they can claim the pointer,
+		// but draw nothing.
 		if (renderHand[side]) {
-			if (!mapVisualMode || visualSurfaceHit) {
-				float beamLen = visualSurfaceHit ? t : DEFAULT_BEAM;
-				UpdateBeam(side, rayOrigin, rayDir, beamLen, headPos);
-				activeLayers.push_back((XrCompositionLayerBaseHeader*)&beamLayer[side]);
-			}
+			float beamLen = visualSurfaceHit ? t : DEFAULT_BEAM;
+			UpdateBeam(side, rayOrigin, rayDir, beamLen, headPos);
+			activeLayers.push_back((XrCompositionLayerBaseHeader*)&beamLayer[side]);
 			// Submit the dot after the beam so it remains visible on top of the
 			// shaft and Skyrim's busy map art.
 			if (drawDot)

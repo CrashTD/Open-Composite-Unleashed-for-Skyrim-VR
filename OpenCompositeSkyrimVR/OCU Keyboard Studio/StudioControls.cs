@@ -260,6 +260,129 @@ internal sealed class ModernCheckBox : CheckBox
     }
 }
 
+internal sealed class ColorEntryControl : UserControl
+{
+    private readonly Button _swatch = new()
+    {
+        Dock = DockStyle.Left,
+        Width = 34,
+        FlatStyle = FlatStyle.Flat,
+        Cursor = Cursors.Hand,
+        TabStop = false,
+        AccessibleName = "Open color wheel"
+    };
+    private readonly TextBox _hex = new()
+    {
+        Dock = DockStyle.Fill,
+        BorderStyle = BorderStyle.FixedSingle,
+        BackColor = StudioTheme.Input,
+        ForeColor = StudioTheme.TextPrimary,
+        TextAlign = HorizontalAlignment.Center
+    };
+    private Color _value = Color.White;
+    private bool _updating;
+
+    internal event EventHandler? SwatchClicked;
+    internal event Action<Color>? ColorCommitted;
+
+    internal ColorEntryControl()
+    {
+        Height = 32;
+        MinimumSize = new Size(120, 30);
+        BackColor = StudioTheme.Surface;
+        _swatch.FlatAppearance.BorderColor = StudioTheme.Border;
+        _swatch.FlatAppearance.BorderSize = 1;
+        _swatch.Click += (_, e) => SwatchClicked?.Invoke(this, e);
+        _hex.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode != Keys.Enter)
+                return;
+            CommitText();
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+        };
+        _hex.Leave += (_, _) => CommitText();
+        Controls.Add(_hex);
+        Controls.Add(_swatch);
+        Value = Color.White;
+    }
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal Color Value
+    {
+        get => _value;
+        set
+        {
+            _updating = true;
+            try
+            {
+                _value = value;
+                _swatch.BackColor = Color.FromArgb(255, value.R, value.G, value.B);
+                _hex.Text = Format(value);
+            }
+            finally
+            {
+                _updating = false;
+            }
+        }
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        _swatch.Enabled = Enabled;
+        _hex.Enabled = Enabled;
+        base.OnEnabledChanged(e);
+    }
+
+    private void CommitText()
+    {
+        if (_updating)
+            return;
+        if (!TryParse(_hex.Text, out Color parsed))
+        {
+            System.Media.SystemSounds.Beep.Play();
+            _hex.Text = Format(_value);
+            return;
+        }
+        if (parsed.ToArgb() == _value.ToArgb())
+        {
+            _hex.Text = Format(_value);
+            return;
+        }
+        _value = parsed;
+        _swatch.BackColor = Color.FromArgb(255, parsed.R, parsed.G, parsed.B);
+        _hex.Text = Format(parsed);
+        ColorCommitted?.Invoke(parsed);
+    }
+
+    private static bool TryParse(string text, out Color color)
+    {
+        color = Color.Empty;
+        string value = text.Trim().TrimStart('#');
+        if (value.Length is not (6 or 8)
+            || !uint.TryParse(value, System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out uint packed))
+            return false;
+
+        if (value.Length == 6)
+        {
+            color = Color.FromArgb(255, (int)((packed >> 16) & 0xff),
+                (int)((packed >> 8) & 0xff), (int)(packed & 0xff));
+        }
+        else
+        {
+            color = Color.FromArgb((int)(packed & 0xff), (int)((packed >> 24) & 0xff),
+                (int)((packed >> 16) & 0xff), (int)((packed >> 8) & 0xff));
+        }
+        return true;
+    }
+
+    private static string Format(Color color) => color.A == 255
+        ? $"#{color.R:X2}{color.G:X2}{color.B:X2}"
+        : $"#{color.R:X2}{color.G:X2}{color.B:X2}{color.A:X2}";
+}
+
 internal sealed class ModernTabControl : TabControl
 {
     internal ModernTabControl()

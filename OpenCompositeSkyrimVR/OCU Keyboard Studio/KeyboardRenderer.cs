@@ -178,7 +178,7 @@ internal sealed class KeyboardRenderer
             float scale = Math.Clamp(key.LabelScale, 0.25f, 3f);
             float width = plate.Width * scale;
             float height = plate.Height * scale;
-            float ribbonHoverOffset = key.Id == SelectedKeyId ? (Pressed ? 2 : -2) : 0;
+            float ribbonHoverOffset = key.Id == SelectedKeyId && Pressed ? 2 : 0;
             return new RectangleF(
                 plate.Left + (plate.Width - width) / 2f + key.LabelOffsetX,
                 plate.Top + (plate.Height - height) / 2f + key.LabelOffsetY + ribbonHoverOffset,
@@ -189,14 +189,14 @@ internal sealed class KeyboardRenderer
             float scale = Math.Clamp(key.LabelScale, 0.25f, 3f);
             float width = Math.Max(4f, 20f * scale);
             float height = Math.Max(4f, 16f * scale);
-            float arrowHoverOffset = key.Id == SelectedKeyId ? (Pressed ? 2 : -2) : 0;
+            float arrowHoverOffset = key.Id == SelectedKeyId && Pressed ? 2 : 0;
             return new RectangleF(
                 plate.Left + (plate.Width - width) / 2f + key.LabelOffsetX,
                 plate.Top + (plate.Height - height) / 2f + key.LabelOffsetY + arrowHoverOffset,
                 width, height);
         }
         string label = State == KeyboardPreviewState.Lower ? key.Label : key.ShiftLabel;
-        float hoverOffset = key.Id == SelectedKeyId ? (Pressed ? 2 : -2) : 0;
+        float hoverOffset = key.Id == SelectedKeyId && Pressed ? 2 : 0;
         RectangleF visible = Font.VisibleTextRectangle(label, plate, key.LabelOffsetX, key.LabelOffsetY + hoverOffset, key.LabelScale);
         return visible.IsEmpty ? new RectangleF(plate.Left + plate.Width / 2f - 2, plate.Top + plate.Height / 2f - 2, 4, 4)
             : RectangleF.Inflate(visible, 2, 2);
@@ -221,7 +221,7 @@ internal sealed class KeyboardRenderer
         if (key.Character is '\x04' or '\x05' or '\x06' or '\x07')
             return KeyContentRectangle(document, key).Contains(point);
         string label = State == KeyboardPreviewState.Lower ? key.Label : key.ShiftLabel;
-        float hoverOffset = key.Id == SelectedKeyId ? (Pressed ? 2 : -2) : 0;
+        float hoverOffset = key.Id == SelectedKeyId && Pressed ? 2 : 0;
         return Font.HitTestText(label, plate, key.LabelOffsetX, key.LabelOffsetY + hoverOffset, key.LabelScale, point);
     }
 
@@ -563,7 +563,7 @@ internal sealed class KeyboardRenderer
         }
 
         string label = State == KeyboardPreviewState.Lower ? key.Label : key.ShiftLabel;
-        float hoverOffset = selected ? (Pressed ? 2 : -2) : 0;
+        float hoverOffset = selected && Pressed ? 2 : 0;
         DrawStyledText(surface, document, label, rectangle,
             key.LabelOffsetX,
             key.LabelOffsetY + hoverOffset,

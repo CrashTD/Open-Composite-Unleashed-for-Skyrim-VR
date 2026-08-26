@@ -55,6 +55,19 @@ public:
 	    float offsetX, float offsetY, float scale,
 	    pix_t targetColour, pix_t* rawPixels);
 
+	/**
+	 * Draw the two-ring glow used behind a centered label. The old keyboard
+	 * renderer called BlitTextCentered once per glow offset, repeating glyph
+	 * layout and atlas resampling sixteen times. This path lays the label out
+	 * and samples its atlas once, then fans that coverage out to both rings.
+	 */
+	void BlitTextGlowCentered(const std::wstring& text,
+	    int boxX, int boxY, int boxW, int boxH,
+	    int img_width, int img_height,
+	    float offsetX, float offsetY, float scale,
+	    int outerRadius, int innerRadius,
+	    pix_t outerColour, pix_t innerColour, pix_t* rawPixels);
+
 	int Width(wchar_t ch);
 	int Width(std::wstring str);
 

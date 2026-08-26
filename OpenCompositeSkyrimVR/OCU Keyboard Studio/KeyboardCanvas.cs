@@ -34,6 +34,7 @@ internal sealed class KeyboardCanvas : Control
     private CanvasDragOperation _dragOperation;
     private bool _dragging;
     private PointF _dragStartTexture;
+    private Point _dragStartClient;
     private KeyboardKey? _dragStartKey;
     private RectangleF _dragStartRectangle;
     private float _dragStartControlX;
@@ -442,6 +443,17 @@ internal sealed class KeyboardCanvas : Control
             if (Cursor == Cursors.Default && HitTest(ClientToTexture(e.Location)) != CanvasSelectionKind.None) Cursor = Cursors.SizeAll;
             return;
         }
+        // A click selects an item and arms a move, but normal mouse jitter must not
+        // become an edit. With Snap enabled that tiny movement used to round an
+        // authored X value such as 1.15 to 1.20 merely by reselecting the key.
+        if (!_dragChanged && _dragOperation == CanvasDragOperation.Move)
+        {
+            int thresholdX = Math.Max(2, SystemInformation.DragSize.Width / 2);
+            int thresholdY = Math.Max(2, SystemInformation.DragSize.Height / 2);
+            if (Math.Abs(e.X - _dragStartClient.X) < thresholdX
+                && Math.Abs(e.Y - _dragStartClient.Y) < thresholdY)
+                return;
+        }
         PointF point = ClientToTexture(e.Location);
         ApplyDrag(point, point.X - _dragStartTexture.X, point.Y - _dragStartTexture.Y);
         _document.IsDirty = true;
@@ -665,6 +677,7 @@ internal sealed class KeyboardCanvas : Control
         _dragging = true;
         _dragOperation = operation;
         _dragStartTexture = point;
+        _dragStartClient = PointToClient(MousePosition);
         _dragStartRectangle = rectangle;
         _dragChanged = false;
         _dragStartDocument = _multiSelection.Count > 1 && _document is not null ? _document.Clone() : null;
@@ -1232,7 +1245,7 @@ internal sealed class KeyboardCanvas : Control
         float scale = Math.Abs(scaleX - originalScale) >= Math.Abs(scaleY - originalScale) ? scaleX : scaleY;
         key.LabelScale = MathF.Round(Math.Clamp(scale, 0.25f, 3f) * 20f) / 20f;
 
-        float hoverOffset = key.Id == _renderer.SelectedKeyId ? (_renderer.Pressed ? 2 : -2) : 0;
+        float hoverOffset = key.Id == _renderer.SelectedKeyId && _renderer.Pressed ? 2 : 0;
         key.LabelOffsetX = RoundPixel(rectangle.Left + rectangle.Width / 2f - (plate.Left + plate.Width / 2f));
         key.LabelOffsetY = RoundPixel(rectangle.Top + rectangle.Height / 2f - (plate.Top + plate.Height / 2f) - hoverOffset);
     }
