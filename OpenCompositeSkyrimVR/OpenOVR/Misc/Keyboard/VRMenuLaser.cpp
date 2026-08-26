@@ -159,10 +159,10 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 	    offeredFormats.c_str(), LaserFormatName(laserColorFormat), static_cast<int>(laserColorFormat),
 	    LaserFormatName(debugQuadFormat), static_cast<int>(debugQuadFormat));
 
-	// Create active-idle, active-clicked, and matching standby color states. Both hand
-	// composition layers can legally reference the same released swapchain image
-	// in one frame, so the standby state adds no per-frame texture work.
-	for (int state = 0; state < 3; state++) {
+	// Create one idle and one clicked beam texture. Both hand layers may reference
+	// the same released swapchain image, so the inactive hand reuses idle instead
+	// of consuming a third, pixel-identical standby swapchain.
+	for (int state = 0; state < 2; state++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		sci.format = static_cast<int64_t>(laserColorFormat);
@@ -226,8 +226,8 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		beamLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	// Create matching active-idle, active-clicked, and standby dot textures.
-	for (int state = 0; state < 3; state++) {
+	// Create matching shared idle and clicked dot textures.
+	for (int state = 0; state < 2; state++) {
 		XrSwapchainCreateInfo sci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		sci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
 		sci.format = static_cast<int64_t>(laserColorFormat);
@@ -293,12 +293,12 @@ VRMenuLaser::VRMenuLaser(ID3D11Device* dev)
 		dotLayer[i].subImage.imageArrayIndex = 0;
 	}
 
-	OOVR_LOG("Menu laser swapchains: 6 shared active/clicked/standby beam/dot textures; calibration grid is lazy");
+	OOVR_LOG("Menu laser swapchains: 4 shared idle/clicked beam/dot textures; calibration grid is lazy");
 }
 
 VRMenuLaser::~VRMenuLaser()
 {
-	for (int state = 0; state < 3; state++) {
+	for (int state = 0; state < 2; state++) {
 		if (beamChain[state] != XR_NULL_HANDLE)
 			xrDestroySwapchain(beamChain[state]);
 		if (dotChain[state] != XR_NULL_HANDLE)
@@ -896,7 +896,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRMenuLaser::Update(
 
 		// Composition layers are submitted after Update returns, so switching the
 		// selected pre-baked swapchain here affects this same frame.
-		int colorState = side == activeHand ? (triggerState[side] ? 1 : 0) : 2;
+		int colorState = triggerState[side] ? 1 : 0;
 		beamLayer[side].subImage.swapchain = beamChain[colorState];
 		dotLayer[side].subImage.swapchain = dotChain[colorState];
 	}
