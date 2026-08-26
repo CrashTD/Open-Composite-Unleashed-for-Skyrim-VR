@@ -410,6 +410,9 @@ internal sealed class KeyboardDocument
         OpacityControlOffsetY = theme.OpacityControlOffsetY;
         TiltControlOffsetX = theme.TiltControlOffsetX;
         TiltControlOffsetY = theme.TiltControlOffsetY;
+        SizeControlDesign = theme.SizeControlDesign?.Clone() ?? new KeyboardControlDesign();
+        OpacityControlDesign = theme.OpacityControlDesign?.Clone() ?? new KeyboardControlDesign();
+        TiltControlDesign = theme.TiltControlDesign?.Clone() ?? new KeyboardControlDesign();
     }
 
     public static KeyboardDocument Load(string path)

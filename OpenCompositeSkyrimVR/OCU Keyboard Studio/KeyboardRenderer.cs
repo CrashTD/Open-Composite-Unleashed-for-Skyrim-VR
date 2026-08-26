@@ -28,6 +28,9 @@ internal sealed record KeyboardTheme(
     public float OpacityControlOffsetY { get; init; }
     public float TiltControlOffsetX { get; init; }
     public float TiltControlOffsetY { get; init; }
+    public KeyboardControlDesign? SizeControlDesign { get; init; }
+    public KeyboardControlDesign? OpacityControlDesign { get; init; }
+    public KeyboardControlDesign? TiltControlDesign { get; init; }
     public override string ToString() => Name;
 
     public static IReadOnlyList<KeyboardTheme> BuiltIns { get; } =
@@ -47,10 +50,28 @@ internal sealed record KeyboardTheme(
             LockButtonOffsetY = 2,
             SizeControlOffsetX = -1,
             SizeControlOffsetY = 28,
-            OpacityControlOffsetX = 3,
-            OpacityControlOffsetY = 20,
+            OpacityControlOffsetX = 5.071f,
+            OpacityControlOffsetY = 27.894f,
             TiltControlOffsetX = 4,
-            TiltControlOffsetY = 55
+            TiltControlOffsetY = 55,
+            SizeControlDesign = new()
+            {
+                ValueOffsetY = 4.142f
+            },
+            OpacityControlDesign = new()
+            {
+                Width = 89.929f,
+                Height = 101.106f,
+                UpOffsetY = -15.531f,
+                LabelOffsetX = 1.035f,
+                LabelOffsetY = -4.142f,
+                ValueOffsetX = 1.035f,
+                ValueOffsetY = 4.142f
+            },
+            TiltControlDesign = new()
+            {
+                ValueOffsetY = 7.248f
+            }
         },
         new("Sovngarde", "sovngarde-bg.png", false, Color.White, Color.FromArgb(70, 255, 255, 255), Color.White, Color.Transparent, Color.FromArgb(65, 255, 255, 255), true)
     ];

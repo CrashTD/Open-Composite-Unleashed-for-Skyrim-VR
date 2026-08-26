@@ -643,14 +643,31 @@ internal static class StudioSelfTest
             RectangleF dwemerOpacity = renderer.RuntimeControlRectangle(stockDwemerDocument, KeyboardRuntimeControl.Opacity);
             RectangleF dwemerTilt = renderer.RuntimeControlRectangle(stockDwemerDocument, KeyboardRuntimeControl.Tilt);
             if (dwemerSize != new RectangleF(38, 252, 92, 98)
-                || dwemerOpacity != new RectangleF(921, 80, 92, 98)
+                || dwemerOpacity != new RectangleF(923.071f, 87.894f, 89.929f, 101.106f)
                 || dwemerTilt != new RectangleF(922, 325, 92, 98))
                 throw new InvalidDataException("The bundled Dwemer controls do not match their authored runtime slots.");
+            KeyboardControlDesign dwemerSizeDesign = stockDwemerDocument.GetControlDesign(KeyboardRuntimeControl.Size);
+            KeyboardControlDesign dwemerOpacityDesign = stockDwemerDocument.GetControlDesign(KeyboardRuntimeControl.Opacity);
+            KeyboardControlDesign dwemerTiltDesign = stockDwemerDocument.GetControlDesign(KeyboardRuntimeControl.Tilt);
+            if (dwemerSizeDesign.LabelOffsetY != 0 || dwemerSizeDesign.ValueOffsetX != 0 || dwemerSizeDesign.ValueOffsetY != 4.142f
+                || dwemerOpacityDesign.UpOffsetX != 0 || dwemerOpacityDesign.UpOffsetY != -15.531f
+                || dwemerOpacityDesign.DownOffsetX != 0 || dwemerOpacityDesign.DownOffsetY != 0
+                || dwemerOpacityDesign.LabelOffsetX != 1.035f || dwemerOpacityDesign.LabelOffsetY != -4.142f
+                || dwemerOpacityDesign.ValueOffsetX != 1.035f || dwemerOpacityDesign.ValueOffsetY != 4.142f
+                || dwemerTiltDesign.ValueOffsetX != 0 || dwemerTiltDesign.ValueOffsetY != 7.248f)
+                throw new InvalidDataException("The bundled Dwemer arrows and text do not match their authored internal spacing.");
             var themeSwitchedDocument = new KeyboardDocument();
             themeSwitchedDocument.ApplyThemeControlLayout(dwemerTheme);
             if (renderer.RuntimeControlRectangle(themeSwitchedDocument, KeyboardRuntimeControl.Size) != dwemerSize
                 || renderer.RuntimeControlRectangle(themeSwitchedDocument, KeyboardRuntimeControl.Opacity) != dwemerOpacity
-                || renderer.RuntimeControlRectangle(themeSwitchedDocument, KeyboardRuntimeControl.Tilt) != dwemerTilt)
+                || renderer.RuntimeControlRectangle(themeSwitchedDocument, KeyboardRuntimeControl.Tilt) != dwemerTilt
+                || themeSwitchedDocument.SizeControlDesign.ValueOffsetY != dwemerSizeDesign.ValueOffsetY
+                || themeSwitchedDocument.OpacityControlDesign.UpOffsetY != dwemerOpacityDesign.UpOffsetY
+                || themeSwitchedDocument.OpacityControlDesign.LabelOffsetX != dwemerOpacityDesign.LabelOffsetX
+                || themeSwitchedDocument.OpacityControlDesign.LabelOffsetY != dwemerOpacityDesign.LabelOffsetY
+                || themeSwitchedDocument.OpacityControlDesign.ValueOffsetX != dwemerOpacityDesign.ValueOffsetX
+                || themeSwitchedDocument.OpacityControlDesign.ValueOffsetY != dwemerOpacityDesign.ValueOffsetY
+                || themeSwitchedDocument.TiltControlDesign.ValueOffsetY != dwemerTiltDesign.ValueOffsetY)
                 throw new InvalidDataException("Switching to the Dwemer Base Theme did not apply the stock control geometry.");
             string dwemerBaseThemePath = Path.Combine(assets, "dwemer-bg.png");
             renderer.Theme = dwemerTheme;

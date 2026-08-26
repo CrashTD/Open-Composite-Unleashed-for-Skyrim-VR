@@ -32,7 +32,7 @@ key_roundness 2
 key_breathe true 35 2 90
 
 control_offset size -1 28
-control_offset opacity 3 20
+control_offset opacity 5.071 27.894
 control_offset tilt 4 55
 top_offset textbar 0 0
 top_offset mode -1 -9
@@ -43,18 +43,18 @@ top_design lock 117.658 32 0
 control_box size 92 98
 control_part size up 0 0 24 20
 control_part size down 0 0 24 20
-control_text size label 0 -3.34 0.58
-control_text size value 1.252 7.932 0.58
-control_box opacity 92 98
-control_part opacity up 1.035 0 24 20
-control_part opacity down 0 1.035 24 20
-control_text opacity label 0 0 0.58
-control_text opacity value 0.333 9.322 0.58
+control_text size label 0 0 0.58
+control_text size value 0 4.142 0.58
+control_box opacity 89.929 101.106
+control_part opacity up 0 -15.531 24 20
+control_part opacity down 0 0 24 20
+control_text opacity label 1.035 -4.142 0.58
+control_text opacity value 1.035 4.142 0.58
 control_box tilt 92 98
 control_part tilt up 0 0 24 20
 control_part tilt down 0 0 24 20
 control_text tilt label 0 0 0.58
-control_text tilt value 0 11.178 0.58
+control_text tilt value 0 7.248 0.58
 
 key \e \e 0 0.046 1.605 0.948
 .label "ESC"

@@ -19,7 +19,7 @@ Changes since the Nexus build uploaded 22 Aug 2026 at 3:17 PM.
 - Cleaned the packaged `opencomposite.ini` so new installs receive the standard keyboard size, opacity, position, laser-adjustment, and VRIK preset defaults instead of development-machine values.
 - Removed duplicate Keyboard Design entries caused by older managed copies sharing a bundled design name. The current stock design now wins and appears once under its clean name, including `Pug Dragon Keyboard`.
 - Fixed authored settings arrows being visually covered but laser-blocked by invisible keyboard regions. Arrow hit testing now follows the renderer's topmost order, correcting the Dwemer opacity-up triangle that previously responded only when aimed just above it.
-- Fixed Dwemer theme switching in Keyboard Studio so Size, Opacity, and Tilt move into the same authored side-panel slots used by the in-game Dwemer keyboard. The Controls inspector and preview update immediately, and exact runtime geometry is covered by Studio's self-test.
+- Fixed Dwemer theme switching in Keyboard Studio so Size, Opacity, and Tilt move into the same authored side-panel slots used by the in-game Dwemer keyboard. The stock design now also preserves Dwemer's distinct arrow, label, value, and control-box spacing. The Controls inspector and preview update immediately, and exact runtime geometry is covered by Studio's self-test.
 
 - Matched the Configurator's Open Keyboard Studio action to the exact positive-button green used elsewhere and added a one-second diagonal sword-shine sweep every five seconds.
 - Removed pointer-drag stalls by coalescing full 1024x560 preview rendering and deferring inspector-panel rebuilds until the drag is released.
