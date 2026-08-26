@@ -402,6 +402,16 @@ internal sealed class KeyboardDocument
         _ => throw new FormatException($"Unknown runtime control '{name}'.")
     };
 
+    public void ApplyThemeControlLayout(KeyboardTheme theme)
+    {
+        SizeControlOffsetX = theme.SizeControlOffsetX;
+        SizeControlOffsetY = theme.SizeControlOffsetY;
+        OpacityControlOffsetX = theme.OpacityControlOffsetX;
+        OpacityControlOffsetY = theme.OpacityControlOffsetY;
+        TiltControlOffsetX = theme.TiltControlOffsetX;
+        TiltControlOffsetY = theme.TiltControlOffsetY;
+    }
+
     public static KeyboardDocument Load(string path)
     {
         var document = Parse(File.ReadAllText(path, Encoding.UTF8));

@@ -37,6 +37,7 @@ EYE-TRACKED VRS
 
 OCU KEYBOARD STUDIO
 
+- Fixed Dwemer theme switching so Size, Opacity, and Tilt immediately move into the same authored side-panel slots used by the in-game Dwemer keyboard. The preview, Controls inspector, saved layout, and runtime now agree.
 - Added editable/copy-paste hex fields beside every color-wheel swatch. `#RRGGBB` and alpha-preserving `#RRGGBBAA` are both accepted.
 - Fixed the Appearance palette retaining stale colors after switching Keyboard Design or Base Theme. It now shows the loaded design's live palette, color/effect edits create overrides automatically without a gate checkbox, Reset restores the Base Theme, and switching designs warns before unsaved work is discarded.
 - Restored native clipboard and undo behavior inside text and numeric boxes. Exact values such as `1.15` no longer round to `1.20` merely from reselecting a key with Snap enabled.

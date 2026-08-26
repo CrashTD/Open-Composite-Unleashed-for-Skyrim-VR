@@ -639,6 +639,19 @@ internal static class StudioSelfTest
                 || !stockDwemerDocument.CustomStyleEnabled
                 || stockDwemerDocument.Keys.Count < 50)
                 throw new InvalidDataException("The bundled Dwemer design is not the authored stock layout.");
+            RectangleF dwemerSize = renderer.RuntimeControlRectangle(stockDwemerDocument, KeyboardRuntimeControl.Size);
+            RectangleF dwemerOpacity = renderer.RuntimeControlRectangle(stockDwemerDocument, KeyboardRuntimeControl.Opacity);
+            RectangleF dwemerTilt = renderer.RuntimeControlRectangle(stockDwemerDocument, KeyboardRuntimeControl.Tilt);
+            if (dwemerSize != new RectangleF(38, 252, 92, 98)
+                || dwemerOpacity != new RectangleF(921, 80, 92, 98)
+                || dwemerTilt != new RectangleF(922, 325, 92, 98))
+                throw new InvalidDataException("The bundled Dwemer controls do not match their authored runtime slots.");
+            var themeSwitchedDocument = new KeyboardDocument();
+            themeSwitchedDocument.ApplyThemeControlLayout(dwemerTheme);
+            if (renderer.RuntimeControlRectangle(themeSwitchedDocument, KeyboardRuntimeControl.Size) != dwemerSize
+                || renderer.RuntimeControlRectangle(themeSwitchedDocument, KeyboardRuntimeControl.Opacity) != dwemerOpacity
+                || renderer.RuntimeControlRectangle(themeSwitchedDocument, KeyboardRuntimeControl.Tilt) != dwemerTilt)
+                throw new InvalidDataException("Switching to the Dwemer Base Theme did not apply the stock control geometry.");
             string dwemerBaseThemePath = Path.Combine(assets, "dwemer-bg.png");
             renderer.Theme = dwemerTheme;
             using (Bitmap dwemerBaseTheme = new(dwemerBaseThemePath))

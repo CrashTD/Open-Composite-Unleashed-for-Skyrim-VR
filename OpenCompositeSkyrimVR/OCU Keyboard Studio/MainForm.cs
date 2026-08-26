@@ -226,7 +226,7 @@ internal sealed class MainForm : Form
             Margin = Padding.Empty
         };
         Label baseThemeCaption = Caption("Base Theme");
-        const string baseThemeHelp = "The built-in visual foundation: fallback background/colors, plate treatment, Parchment ribbon eligibility, and theme-specific top-button offsets. A custom background and custom colors override most of its visible appearance.";
+        const string baseThemeHelp = "The built-in visual foundation: background/colors, plate treatment, Parchment ribbon eligibility, and the authored positions for PC/VR, Lock, Size, Opacity, and Tilt. A custom background and custom colors override most of its visible appearance.";
         _toolTip.SetToolTip(baseThemeCaption, baseThemeHelp);
         _toolTip.SetToolTip(_themeCombo, baseThemeHelp);
         design.Controls.AddRange([
@@ -716,14 +716,16 @@ internal sealed class MainForm : Form
                 {
                     PushUndo();
                     _document.BaseTheme = configName;
+                    _document.ApplyThemeControlLayout(theme);
                     _document.CustomStyleEnabled = false;
                     _document.CustomStyleInitialized = false;
                     MarkChanged();
-                    SetStatus($"Base Theme applied: {theme.Name}. The Appearance palette was refreshed; Undo restores prior color and effect overrides.");
+                    SetStatus($"Base Theme applied: {theme.Name}. Its runtime control positions and Appearance palette now match the selected theme; Undo restores the prior layout and overrides.");
                 }
             }
             _canvas.RefreshPreview();
             PopulateAppearanceInspector();
+            PopulateControlsInspector();
         };
         _fontCombo.SelectedIndexChanged += (_, _) =>
         {
