@@ -885,6 +885,19 @@ namespace OpenCompositeConfigurator
             // Under MO2 this is strictly read-only - Root Builder owns root
             // deployment and the mod folder is never touched.
             string runtimeStatus = RuntimeInstaller.RunStartupCheck(this, GetConfiguratorDir());
+
+            // Vortex deploys the whole package under SkyrimVR\Data, including
+            // its root payload. RunStartupCheck copies that payload into the
+            // actual game root. Reload after the copy so a first Vortex launch
+            // displays the live INI instead of the pre-deployment defaults.
+            // This branch deliberately does not apply to MO2 mod folders or to
+            // standalone/manual package locations.
+            if (!string.IsNullOrEmpty(GetVortexGameRootDir()))
+            {
+                LoadFromDir();
+                CaptureSavedState();
+            }
+
             if (!string.IsNullOrEmpty(runtimeStatus))
             {
                 _lblStatus.Text = runtimeStatus;
@@ -4177,20 +4190,51 @@ namespace OpenCompositeConfigurator
             return "";
         }
 
+        private string GetVortexGameRootDir()
+        {
+            try
+            {
+                // Vortex deploys this EXE directly into the real Data folder.
+                // MO2 leaves the physical EXE in its mods tree (and may inject
+                // USVFS), while a manual package normally stays outside Data.
+                string exeDir = Path.GetFullPath(GetConfiguratorDir())
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (!string.Equals(Path.GetFileName(exeDir), "Data", StringComparison.OrdinalIgnoreCase))
+                    return "";
+                if (RuntimeInstaller.IsRunningUnderMo2())
+                    return "";
+
+                string gameRoot = Path.GetDirectoryName(exeDir) ?? "";
+                string gameExe = _gameType == "skyrim" ? "SkyrimVR.exe" : "Fallout4VR.exe";
+                return File.Exists(Path.Combine(gameRoot, gameExe)) ? gameRoot : "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
         private IEnumerable<string> GetOpenCompositeIniSavePaths(bool createDirectories)
         {
             if (!IsInstalledModFolderValid())
                 throw new InvalidOperationException(GetInvalidInstallMessage());
 
-            string installedRoot = GetInstalledRootDir();
+            string vortexGameRoot = GetVortexGameRootDir();
+            string targetRoot = string.IsNullOrEmpty(vortexGameRoot)
+                ? GetInstalledRootDir()
+                : vortexGameRoot;
             if (createDirectories)
-                Directory.CreateDirectory(installedRoot);
+                Directory.CreateDirectory(targetRoot);
 
-            return new[] { Path.Combine(installedRoot, "opencomposite.ini") };
+            return new[] { Path.Combine(targetRoot, "opencomposite.ini") };
         }
 
         private string GetOpenCompositeIniLoadPath()
         {
+            string vortexGameRoot = GetVortexGameRootDir();
+            if (!string.IsNullOrEmpty(vortexGameRoot))
+                return Path.Combine(vortexGameRoot, "opencomposite.ini");
+
             string installedRoot = GetInstalledRootDir();
             if (!string.IsNullOrEmpty(installedRoot))
             {
@@ -4204,7 +4248,9 @@ namespace OpenCompositeConfigurator
 
         private string DescribeIniSaveLocations(IReadOnlyCollection<string> savePaths)
         {
-            return "installed OCU mod folder";
+            return string.IsNullOrEmpty(GetVortexGameRootDir())
+                ? "installed OCU mod folder"
+                : "live Skyrim VR game root (Vortex)";
         }
 
         private void BtnValidateBindings_Click(object? sender, EventArgs e)
