@@ -389,7 +389,9 @@ internal sealed class ModernTabControl : TabControl
     {
         DrawMode = TabDrawMode.OwnerDrawFixed;
         SizeMode = TabSizeMode.Fixed;
-        ItemSize = new Size(96, 34);
+        // Five concise inspector tabs fit the fixed right pane without the
+        // WinForms overflow arrow that hides the final tab.
+        ItemSize = new Size(80, 34);
         Padding = new Point(0, 0);
     }
 

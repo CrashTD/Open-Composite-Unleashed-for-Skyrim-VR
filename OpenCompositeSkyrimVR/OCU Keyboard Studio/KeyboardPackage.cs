@@ -49,6 +49,13 @@ internal static class KeyboardPackage
 
         if (HasBackground(document))
             Mo2ModExporter.AddArtwork(archive, document.BackgroundImagePath!, "OCUKeyboardBackground.png");
+        if (HasConsoleInputBackground(document))
+            Mo2ModExporter.AddArtwork(archive, document.ConsoleInputBackgroundImagePath!,
+                KeyboardDocument.ConsoleInputBackgroundPortableName);
+        AddStateArtwork(archive, document.ModeVrArtworkImagePath, KeyboardDocument.ModeVrArtworkPortableName);
+        AddStateArtwork(archive, document.ModePcArtworkImagePath, KeyboardDocument.ModePcArtworkPortableName);
+        AddStateArtwork(archive, document.LockWorldArtworkImagePath, KeyboardDocument.LockWorldArtworkPortableName);
+        AddStateArtwork(archive, document.LockHeadArtworkImagePath, KeyboardDocument.LockHeadArtworkPortableName);
         for (int index = 0; index < document.Sprites.Count; index++)
             Mo2ModExporter.AddArtwork(archive, document.Sprites[index].SourcePath!,
                 KeyboardDocument.SpriteFileName(index));
@@ -161,6 +168,8 @@ internal static class KeyboardPackage
         KeyboardDocument document, string layoutPath, string displayName)
     {
         int artworkCount = (HasBackground(document) ? 1 : 0)
+            + (HasConsoleInputBackground(document) ? 1 : 0)
+            + StateArtworkCount(document)
             + document.Sprites.Count
             + (HasControlArrow(document) ? 1 : 0);
         return new KeyboardPackageImportResult(
@@ -171,6 +180,12 @@ internal static class KeyboardPackage
     {
         if (HasBackground(document))
             RequireFile(document.BackgroundImagePath, "background image");
+        if (HasConsoleInputBackground(document))
+            RequireFile(document.ConsoleInputBackgroundImagePath, "console INPUT panel image");
+        ValidateStateArtwork(document.ModeVrArtworkImagePath, document.ModeVrArtworkFileName, "VR Mode artwork");
+        ValidateStateArtwork(document.ModePcArtworkImagePath, document.ModePcArtworkFileName, "PC Mode artwork");
+        ValidateStateArtwork(document.LockWorldArtworkImagePath, document.LockWorldArtworkFileName, "world/unlocked artwork");
+        ValidateStateArtwork(document.LockHeadArtworkImagePath, document.LockHeadArtworkFileName, "head-locked artwork");
         for (int index = 0; index < document.Sprites.Count; index++)
             RequireFile(document.Sprites[index].SourcePath, $"sprite {index + 1}");
         if (HasControlArrow(document))
@@ -188,6 +203,12 @@ internal static class KeyboardPackage
     {
         if (!string.IsNullOrWhiteSpace(document.BackgroundFileName))
             RequireFile(document.BackgroundImagePath, "packaged background image");
+        if (!string.IsNullOrWhiteSpace(document.ConsoleInputBackgroundFileName))
+            RequireFile(document.ConsoleInputBackgroundImagePath, "packaged console INPUT panel image");
+        ValidateImportedStateArtwork(document.ModeVrArtworkFileName, document.ModeVrArtworkImagePath, "packaged VR Mode artwork");
+        ValidateImportedStateArtwork(document.ModePcArtworkFileName, document.ModePcArtworkImagePath, "packaged PC Mode artwork");
+        ValidateImportedStateArtwork(document.LockWorldArtworkFileName, document.LockWorldArtworkImagePath, "packaged world/unlocked artwork");
+        ValidateImportedStateArtwork(document.LockHeadArtworkFileName, document.LockHeadArtworkImagePath, "packaged head-locked artwork");
         for (int index = 0; index < document.Sprites.Count; index++)
             RequireFile(document.Sprites[index].SourcePath, $"packaged sprite {index + 1}");
         if (!string.IsNullOrWhiteSpace(document.ControlArrowFileName))
@@ -213,8 +234,37 @@ internal static class KeyboardPackage
         => !string.IsNullOrWhiteSpace(document.ControlArrowImagePath)
             || !string.IsNullOrWhiteSpace(document.ControlArrowFileName);
 
+    private static bool HasConsoleInputBackground(KeyboardDocument document)
+        => !string.IsNullOrWhiteSpace(document.ConsoleInputBackgroundImagePath)
+            || !string.IsNullOrWhiteSpace(document.ConsoleInputBackgroundFileName);
+
+    private static int StateArtworkCount(KeyboardDocument document)
+        => (HasStateArtwork(document.ModeVrArtworkImagePath, document.ModeVrArtworkFileName) ? 1 : 0)
+            + (HasStateArtwork(document.ModePcArtworkImagePath, document.ModePcArtworkFileName) ? 1 : 0)
+            + (HasStateArtwork(document.LockWorldArtworkImagePath, document.LockWorldArtworkFileName) ? 1 : 0)
+            + (HasStateArtwork(document.LockHeadArtworkImagePath, document.LockHeadArtworkFileName) ? 1 : 0);
+
+    private static bool HasStateArtwork(string? imagePath, string? fileName)
+        => !string.IsNullOrWhiteSpace(imagePath) || !string.IsNullOrWhiteSpace(fileName);
+
+    private static void AddStateArtwork(ZipArchive archive, string? sourcePath, string portableName)
+        => Mo2ModExporter.AddArtwork(archive, sourcePath, portableName);
+
+    private static void ValidateStateArtwork(string? imagePath, string? fileName, string description)
+    {
+        if (HasStateArtwork(imagePath, fileName))
+            RequireFile(imagePath, description);
+    }
+
+    private static void ValidateImportedStateArtwork(string? fileName, string? imagePath, string description)
+    {
+        if (!string.IsNullOrWhiteSpace(fileName))
+            RequireFile(imagePath, description);
+    }
+
     private static bool HasArtwork(KeyboardDocument document)
-        => HasBackground(document) || document.Sprites.Count > 0 || HasControlArrow(document);
+        => HasBackground(document) || HasConsoleInputBackground(document)
+            || StateArtworkCount(document) > 0 || document.Sprites.Count > 0 || HasControlArrow(document);
 
     private static bool HasCustomFont(KeyboardDocument document)
         => !string.IsNullOrWhiteSpace(document.CustomFontMetadataPath)

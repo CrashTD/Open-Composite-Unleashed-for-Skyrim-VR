@@ -151,7 +151,7 @@ namespace OpenCompositeConfigurator
         private NumericUpDown _nudHapticStrength = null!;
         private CheckBox _chkHiddenMesh = null!;
         private CheckBox _chkInvertShaders = null!;
-        private CheckBox _chkDx10 = null!;
+        private CheckBox _chkPreserveControllerProfileOnSleep = null!;
         private CheckBox _chkAudioSwitch = null!;
         private TextBox _txtAudioDevice = null!;
 
@@ -1299,8 +1299,13 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(_chkInvertShaders);
             y += 24;
 
-            _chkDx10 = MakeCheckBox("DX10 mode (compatibility)", gc1, y);
-            container.Controls.Add(_chkDx10);
+            _chkPreserveControllerProfileOnSleep = MakeCheckBox("Keep controller identity while sleeping", gc1, y);
+            _chkPreserveControllerProfileOnSleep.Width = 320;
+            container.Controls.Add(_chkPreserveControllerProfileOnSleep);
+            new ToolTip { AutoPopDelay = 12000, InitialDelay = 350 }.SetToolTip(
+                _chkPreserveControllerProfileOnSleep,
+                "Prevents a sleeping controller from temporarily changing into Vive wands. " +
+                "This preserves its bindings and model; controller hardware may still enter its normal power-saving state.");
             y += 28;
 
             int generalBottom = y;
@@ -7080,7 +7085,7 @@ namespace OpenCompositeConfigurator
                 _nudCombatHapticStrength.Value = 80m;
                 _chkHiddenMesh.Checked = true;
                 _chkInvertShaders.Checked = false;
-                _chkDx10.Checked = false;
+                _chkPreserveControllerProfileOnSleep.Checked = true;
                 _chkAudioSwitch.Checked = false;
                 _txtAudioDevice.Text = "quest";
 
@@ -7523,7 +7528,8 @@ namespace OpenCompositeConfigurator
                 _nudHapticStrength.Value = (decimal)Math.Clamp(hs, 0f, 1f);
             _chkHiddenMesh.Checked = ParseBool(_ini.Get("", "enableHiddenMeshFix", "true"));
             _chkInvertShaders.Checked = ParseBool(_ini.Get("", "invertUsingShaders", "false"));
-            _chkDx10.Checked = ParseBool(_ini.Get("", "dx10Mode", "false"));
+            _chkPreserveControllerProfileOnSleep.Checked = ParseBool(
+                _ini.Get("", "preserveControllerProfileOnSleep", "true"));
             _chkAudioSwitch.Checked = ParseBool(_ini.Get("", "enableAudioSwitch", "false"));
             _txtAudioDevice.Text = _ini.Get("", "audioDeviceName", "quest");
             if (string.IsNullOrEmpty(_txtAudioDevice.Text)) _txtAudioDevice.Text = "quest";
@@ -7909,7 +7915,10 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "hapticStrength", _nudHapticStrength.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "enableHiddenMeshFix", _chkHiddenMesh.Checked ? "true" : "false");
             _ini.Set("", "invertUsingShaders", _chkInvertShaders.Checked ? "true" : "false");
-            _ini.Set("", "dx10Mode", _chkDx10.Checked ? "true" : "false");
+            // DX10 support is not used by Skyrim VR and is intentionally no longer exposed.
+            _ini.Set("", "dx10Mode", "false");
+            _ini.Set("", "preserveControllerProfileOnSleep",
+                _chkPreserveControllerProfileOnSleep.Checked ? "true" : "false");
             _ini.Set("", "enableAudioSwitch", _chkAudioSwitch.Checked ? "true" : "false");
             _ini.Set("", "audioDeviceName", _txtAudioDevice.Text);
 
@@ -8144,7 +8153,7 @@ namespace OpenCompositeConfigurator
         private static bool ParseBool(string val)
         {
             val = val.Trim().ToLowerInvariant();
-            return val == "true" || val == "on" || val == "enabled";
+            return val == "true" || val == "on" || val == "enabled" || val == "1" || val == "yes";
         }
 
         private static bool TryParseIniFloat(string val, out float parsed)

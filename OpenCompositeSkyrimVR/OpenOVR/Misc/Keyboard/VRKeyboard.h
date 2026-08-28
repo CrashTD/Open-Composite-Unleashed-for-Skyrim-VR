@@ -108,6 +108,11 @@ private:
 	DecodedKeyboardArtwork customKeyboardBg;
 	std::vector<DecodedKeyboardArtwork> customKeyboardSprites;
 	DecodedKeyboardArtwork customControlArrow;
+	DecodedKeyboardArtwork customConsoleInputBg;
+	DecodedKeyboardArtwork customModeVrArtwork;
+	DecodedKeyboardArtwork customModePcArtwork;
+	DecodedKeyboardArtwork customLockWorldArtwork;
+	DecodedKeyboardArtwork customLockHeadArtwork;
 	// Reused CPU surfaces. Breathing effects redraw while the keyboard is open;
 	// retaining these buffers avoids allocating several megabytes every tick.
 	std::vector<uint32_t> keyboardRenderBuffer;

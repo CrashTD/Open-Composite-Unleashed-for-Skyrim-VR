@@ -230,8 +230,10 @@ void SudoFontMeta::BlitTextCentered(const std::wstring& text,
 	int maxY = std::numeric_limits<int>::min();
 	for (wchar_t ch : text) {
 		auto found = chars.find(ch);
-		if (found == chars.end())
+		if (found == chars.end()) {
+			cursor += Width(ch);
 			continue;
+		}
 		const CharInfo& glyph = found->second;
 		if (glyph.PackedWidth > 0 && glyph.PackedHeight > 0) {
 			runs.push_back({ &glyph, cursor });
@@ -240,7 +242,7 @@ void SudoFontMeta::BlitTextCentered(const std::wstring& text,
 			maxX = std::max(maxX, cursor + int(glyph.XOffset) + int(glyph.PackedWidth));
 			maxY = std::max(maxY, int(glyph.YOffset) + int(glyph.PackedHeight));
 		}
-		cursor += glyph.XAdvance;
+		cursor += Width(ch);
 	}
 	if (runs.empty())
 		return;
@@ -320,8 +322,10 @@ void SudoFontMeta::BlitTextGlowCentered(const std::wstring& text,
 	int maxY = std::numeric_limits<int>::min();
 	for (wchar_t ch : text) {
 		auto found = chars.find(ch);
-		if (found == chars.end())
+		if (found == chars.end()) {
+			cursor += Width(ch);
 			continue;
+		}
 		const CharInfo& glyph = found->second;
 		if (glyph.PackedWidth > 0 && glyph.PackedHeight > 0) {
 			runs.push_back({ &glyph, cursor });
@@ -330,7 +334,7 @@ void SudoFontMeta::BlitTextGlowCentered(const std::wstring& text,
 			maxX = std::max(maxX, cursor + int(glyph.XOffset) + int(glyph.PackedWidth));
 			maxY = std::max(maxY, int(glyph.YOffset) + int(glyph.PackedHeight));
 		}
-		cursor += glyph.XAdvance;
+		cursor += Width(ch);
 	}
 	if (runs.empty())
 		return;
@@ -404,11 +408,16 @@ void SudoFontMeta::BlitTextGlowCentered(const std::wstring& text,
 
 int SudoFontMeta::Width(wchar_t ch)
 {
-	// Safety check: return 0 width for characters not in the font
+	// SFN atlases commonly omit the blank space glyph entirely. Text buffers
+	// still contain U+0020, so give it a stable advance derived from the font's
+	// line height. This fixes visible word spacing and caret placement without
+	// changing the SFN, .kb, or .ocukb formats.
 	auto it = chars.find(ch);
-	if (it == chars.end())
-		return 0;
-	return it->second.XAdvance;
+	if (it != chars.end() && it->second.XAdvance > 0)
+		return it->second.XAdvance;
+	if (ch == L' ')
+		return std::max(4, int(lineHeight) / 3);
+	return 0;
 }
 
 int SudoFontMeta::Width(wstring str)

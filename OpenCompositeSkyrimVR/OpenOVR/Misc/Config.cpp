@@ -230,6 +230,7 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(string, logLevel);
 		CFGOPT(bool, enableLayers);
 		CFGOPT(bool, dx10Mode);
+		CFGOPT(bool, preserveControllerProfileOnSleep);
 		CFGOPT(bool, enableAppRequestedCubemap);
 		CFGOPT(bool, enableHiddenMeshFix);
 		CFGOPT(bool, invertUsingShaders);

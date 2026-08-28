@@ -225,9 +225,70 @@ KeyboardLayout::KeyboardLayout(std::vector<char> data)
 		if (line.empty())
 			continue;
 
-		// Comments
-		if (line[0] == '#')
+		// Keyboard Studio uses namespaced comment metadata for optional visual
+		// additions. Older runtimes safely ignore these lines as comments.
+		if (line[0] == '#') {
+			wstring metadata = line;
+			pullstring(metadata); // '#'
+			wstring metadataOp = pullstring(metadata);
+			if (metadataOp == L"ocu_input_fill_color") {
+				parseColorToken(pullstring(metadata), visualStyle.inputFillColor);
+				visualStyle.inputFillOverride = true;
+			} else if (metadataOp == L"ocu_input_outline_enabled") {
+				const wstring value = pullstring(metadata);
+				visualStyle.inputOutlineVisible = value == L"true" || value == L"1" || value == L"yes";
+			} else if (metadataOp == L"ocu_input_outline_color") {
+				parseColorToken(pullstring(metadata), visualStyle.inputOutlineColor);
+				visualStyle.inputOutlineOverride = true;
+			} else if (metadataOp == L"ocu_input_outline_width") {
+				visualStyle.inputOutlineWidth = std::clamp(std::stoi(pullstring(metadata)), 0, 8);
+				visualStyle.inputOutlineOverride = true;
+			} else if (metadataOp == L"ocu_input_title_offset") {
+				visualStyle.inputTitleOffsetX = std::clamp(std::stof(pullstring(metadata)), -2048.0f, 2048.0f);
+				visualStyle.inputTitleOffsetY = std::clamp(std::stof(pullstring(metadata)), -240.0f, 240.0f);
+			} else if (metadataOp == L"ocu_input_text_offset") {
+				visualStyle.inputTextOffsetX = std::clamp(std::stof(pullstring(metadata)), -2048.0f, 2048.0f);
+				visualStyle.inputTextOffsetY = std::clamp(std::stof(pullstring(metadata)), -240.0f, 240.0f);
+			} else if (metadataOp == L"ocu_console_input_background") {
+				consoleInputBackgroundFile = VRKeyboard::CHAR_CONV.to_bytes(pullstring(metadata));
+			} else if (metadataOp == L"ocu_top_state_art") {
+				const wstring slot = pullstring(metadata);
+				const std::string file = VRKeyboard::CHAR_CONV.to_bytes(pullstring(metadata));
+				if (slot == L"mode_vr") modeVrArtworkFile = file;
+				else if (slot == L"mode_pc") modePcArtworkFile = file;
+				else if (slot == L"lock_world") lockWorldArtworkFile = file;
+				else if (slot == L"lock_head") lockHeadArtworkFile = file;
+			} else if (metadataOp == L"ocu_top_state_text") {
+				const wstring slot = pullstring(metadata);
+				const wstring value = pullstring(metadata);
+				const bool enabled = value == L"true" || value == L"1" || value == L"yes";
+				if (slot == L"mode") modeTextOverArtwork = enabled;
+				else if (slot == L"lock") lockTextOverArtwork = enabled;
+			} else if (metadataOp == L"ocu_top_state_art_design") {
+				const wstring slot = pullstring(metadata);
+				const float x = std::clamp(std::stof(pullstring(metadata)), -2048.0f, 2048.0f);
+				const float y = std::clamp(std::stof(pullstring(metadata)), -1120.0f, 1120.0f);
+				const float width = std::clamp(std::stof(pullstring(metadata)), 0.0f, 2048.0f);
+				const float height = std::clamp(std::stof(pullstring(metadata)), 0.0f, 1120.0f);
+				if (slot == L"mode") {
+					modeArtworkOffsetX = x; modeArtworkOffsetY = y;
+					modeArtworkWidth = width; modeArtworkHeight = height;
+				} else if (slot == L"lock") {
+					lockArtworkOffsetX = x; lockArtworkOffsetY = y;
+					lockArtworkWidth = width; lockArtworkHeight = height;
+				}
+			} else if (metadataOp == L"ocu_top_state_text_offset") {
+				const wstring slot = pullstring(metadata);
+				const float x = std::clamp(std::stof(pullstring(metadata)), -2048.0f, 2048.0f);
+				const float y = std::clamp(std::stof(pullstring(metadata)), -1120.0f, 1120.0f);
+				if (slot == L"mode") {
+					modeTextOffsetX = x; modeTextOffsetY = y;
+				} else if (slot == L"lock") {
+					lockTextOffsetX = x; lockTextOffsetY = y;
+				}
+			}
 			continue;
+		}
 
 		wstring op = pullstring(line);
 

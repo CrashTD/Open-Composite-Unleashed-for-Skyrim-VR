@@ -25,6 +25,19 @@ public:
 		uint8_t keyColor[4] = { 62, 190, 143, 205 };
 		uint8_t plateFillColor[4] = { 22, 26, 33, 175 };
 		int plateOutlineWidth = 2;
+		bool inputFillOverride = false;
+		uint8_t inputFillColor[4] = { 14, 17, 22, 235 };
+		// Keyboard Studio stores this optional override in comment metadata so
+		// layouts remain loadable by older OCU builds. Without it, both input
+		// panels continue to follow the ordinary plate outline.
+		bool inputOutlineOverride = false;
+		bool inputOutlineVisible = true;
+		uint8_t inputOutlineColor[4] = { 62, 190, 143, 205 };
+		int inputOutlineWidth = 2;
+		float inputTitleOffsetX = 0;
+		float inputTitleOffsetY = 0;
+		float inputTextOffsetX = 0;
+		float inputTextOffsetY = 0;
 		uint8_t glowColor[4] = { 132, 242, 158, 255 };
 		uint8_t hoverColor[4] = { 132, 242, 158, 255 };
 		bool glowEnabled = true;
@@ -119,6 +132,25 @@ public:
 	const VisualStyle& GetVisualStyle() const { return visualStyle; }
 	const std::string& GetBackgroundFile() const { return background.file; }
 	const ImageLayer& GetBackgroundLayer() const { return background; }
+	const std::string& GetConsoleInputBackgroundFile() const { return consoleInputBackgroundFile; }
+	const std::string& GetModeVrArtworkFile() const { return modeVrArtworkFile; }
+	const std::string& GetModePcArtworkFile() const { return modePcArtworkFile; }
+	const std::string& GetLockWorldArtworkFile() const { return lockWorldArtworkFile; }
+	const std::string& GetLockHeadArtworkFile() const { return lockHeadArtworkFile; }
+	bool GetModeTextOverArtwork() const { return modeTextOverArtwork; }
+	bool GetLockTextOverArtwork() const { return lockTextOverArtwork; }
+	float GetModeArtworkOffsetX() const { return modeArtworkOffsetX; }
+	float GetModeArtworkOffsetY() const { return modeArtworkOffsetY; }
+	float GetModeArtworkWidth() const { return modeArtworkWidth; }
+	float GetModeArtworkHeight() const { return modeArtworkHeight; }
+	float GetModeTextOffsetX() const { return modeTextOffsetX; }
+	float GetModeTextOffsetY() const { return modeTextOffsetY; }
+	float GetLockArtworkOffsetX() const { return lockArtworkOffsetX; }
+	float GetLockArtworkOffsetY() const { return lockArtworkOffsetY; }
+	float GetLockArtworkWidth() const { return lockArtworkWidth; }
+	float GetLockArtworkHeight() const { return lockArtworkHeight; }
+	float GetLockTextOffsetX() const { return lockTextOffsetX; }
+	float GetLockTextOffsetY() const { return lockTextOffsetY; }
 	const std::vector<ImageLayer>& GetSprites() const { return sprites; }
 	float GetSizeControlOffsetX() const { return sizeControlOffsetX; }
 	float GetSizeControlOffsetY() const { return sizeControlOffsetY; }
@@ -174,6 +206,25 @@ private:
 	std::string fontName;
 	VisualStyle visualStyle;
 	ImageLayer background;
+	std::string consoleInputBackgroundFile;
+	std::string modeVrArtworkFile;
+	std::string modePcArtworkFile;
+	std::string lockWorldArtworkFile;
+	std::string lockHeadArtworkFile;
+	bool modeTextOverArtwork = false;
+	bool lockTextOverArtwork = false;
+	float modeArtworkOffsetX = 0;
+	float modeArtworkOffsetY = 0;
+	float modeArtworkWidth = 0;
+	float modeArtworkHeight = 0;
+	float modeTextOffsetX = 0;
+	float modeTextOffsetY = 0;
+	float lockArtworkOffsetX = 0;
+	float lockArtworkOffsetY = 0;
+	float lockArtworkWidth = 0;
+	float lockArtworkHeight = 0;
+	float lockTextOffsetX = 0;
+	float lockTextOffsetY = 0;
 	std::vector<ImageLayer> sprites;
 	float sizeControlOffsetX = 0;
 	float sizeControlOffsetY = 0;

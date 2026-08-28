@@ -94,6 +94,15 @@ internal sealed class KeyboardSprite
 
 internal sealed class KeyboardDocument
 {
+    // Uses the reserved upper end of the existing sprite filename allow-list so
+    // older format-v1 Studio builds can still import new .ocukb packages. They
+    // ignore the metadata comment and harmlessly leave this asset unused.
+    public const string ModeVrArtworkPortableName = "OCUKeyboardSprite9995.png";
+    public const string ModePcArtworkPortableName = "OCUKeyboardSprite9996.png";
+    public const string LockWorldArtworkPortableName = "OCUKeyboardSprite9997.png";
+    public const string LockHeadArtworkPortableName = "OCUKeyboardSprite9998.png";
+    public const string ConsoleInputBackgroundPortableName = "OCUKeyboardSprite9999.png";
+
     public int Width { get; set; } = 15;
     public List<KeyboardKey> Keys { get; } = [];
     public string? SourcePath { get; set; }
@@ -124,6 +133,28 @@ internal sealed class KeyboardDocument
     public Color KeyColor { get; set; } = Color.FromArgb(205, 62, 190, 143);
     public Color PlateFillColor { get; set; } = Color.FromArgb(175, 22, 26, 33);
     public int PlateOutlineWidth { get; set; } = 2;
+    public bool InputFillOverrideEnabled { get; set; }
+    public Color InputFillColor { get; set; } = Color.FromArgb(235, 14, 17, 22);
+    public bool InputOutlineOverrideEnabled { get; set; }
+    public bool InputOutlineVisible { get; set; } = true;
+    public Color InputOutlineColor { get; set; } = Color.FromArgb(205, 62, 190, 143);
+    public int InputOutlineWidth { get; set; } = 2;
+    public float InputTitleOffsetX { get; set; }
+    public float InputTitleOffsetY { get; set; }
+    public float InputTextOffsetX { get; set; }
+    public float InputTextOffsetY { get; set; }
+    public string? ConsoleInputBackgroundImagePath { get; set; }
+    public string? ConsoleInputBackgroundFileName { get; set; }
+    public string? ModeVrArtworkImagePath { get; set; }
+    public string? ModeVrArtworkFileName { get; set; }
+    public string? ModePcArtworkImagePath { get; set; }
+    public string? ModePcArtworkFileName { get; set; }
+    public string? LockWorldArtworkImagePath { get; set; }
+    public string? LockWorldArtworkFileName { get; set; }
+    public string? LockHeadArtworkImagePath { get; set; }
+    public string? LockHeadArtworkFileName { get; set; }
+    public bool ModeTextOverArtwork { get; set; }
+    public bool LockTextOverArtwork { get; set; }
     public Color GlowColor { get; set; } = Color.FromArgb(255, 132, 242, 158);
     public Color HoverColor { get; set; } = Color.FromArgb(255, 132, 242, 158);
     public bool GlowEnabled { get; set; } = true;
@@ -193,11 +224,23 @@ internal sealed class KeyboardDocument
     public float ModeButtonWidth { get; set; }
     public float ModeButtonHeight { get; set; }
     public float ModeButtonFontScale { get; set; }
+    public float ModeArtworkOffsetX { get; set; }
+    public float ModeArtworkOffsetY { get; set; }
+    public float ModeArtworkWidth { get; set; }
+    public float ModeArtworkHeight { get; set; }
+    public float ModeTextOffsetX { get; set; }
+    public float ModeTextOffsetY { get; set; }
     public float LockButtonOffsetX { get; set; }
     public float LockButtonOffsetY { get; set; }
     public float LockButtonWidth { get; set; }
     public float LockButtonHeight { get; set; }
     public float LockButtonFontScale { get; set; }
+    public float LockArtworkOffsetX { get; set; }
+    public float LockArtworkOffsetY { get; set; }
+    public float LockArtworkWidth { get; set; }
+    public float LockArtworkHeight { get; set; }
+    public float LockTextOffsetX { get; set; }
+    public float LockTextOffsetY { get; set; }
     public KeyboardControlDesign SizeControlDesign { get; set; } = new();
     public KeyboardControlDesign OpacityControlDesign { get; set; } = new();
     public KeyboardControlDesign TiltControlDesign { get; set; } = new();
@@ -232,6 +275,28 @@ internal sealed class KeyboardDocument
             KeyColor = KeyColor,
             PlateFillColor = PlateFillColor,
             PlateOutlineWidth = PlateOutlineWidth,
+            InputFillOverrideEnabled = InputFillOverrideEnabled,
+            InputFillColor = InputFillColor,
+            InputOutlineOverrideEnabled = InputOutlineOverrideEnabled,
+            InputOutlineVisible = InputOutlineVisible,
+            InputOutlineColor = InputOutlineColor,
+            InputOutlineWidth = InputOutlineWidth,
+            InputTitleOffsetX = InputTitleOffsetX,
+            InputTitleOffsetY = InputTitleOffsetY,
+            InputTextOffsetX = InputTextOffsetX,
+            InputTextOffsetY = InputTextOffsetY,
+            ConsoleInputBackgroundImagePath = ConsoleInputBackgroundImagePath,
+            ConsoleInputBackgroundFileName = ConsoleInputBackgroundFileName,
+            ModeVrArtworkImagePath = ModeVrArtworkImagePath,
+            ModeVrArtworkFileName = ModeVrArtworkFileName,
+            ModePcArtworkImagePath = ModePcArtworkImagePath,
+            ModePcArtworkFileName = ModePcArtworkFileName,
+            LockWorldArtworkImagePath = LockWorldArtworkImagePath,
+            LockWorldArtworkFileName = LockWorldArtworkFileName,
+            LockHeadArtworkImagePath = LockHeadArtworkImagePath,
+            LockHeadArtworkFileName = LockHeadArtworkFileName,
+            ModeTextOverArtwork = ModeTextOverArtwork,
+            LockTextOverArtwork = LockTextOverArtwork,
             GlowColor = GlowColor,
             HoverColor = HoverColor,
             GlowEnabled = GlowEnabled,
@@ -293,11 +358,23 @@ internal sealed class KeyboardDocument
             ModeButtonWidth = ModeButtonWidth,
             ModeButtonHeight = ModeButtonHeight,
             ModeButtonFontScale = ModeButtonFontScale,
+            ModeArtworkOffsetX = ModeArtworkOffsetX,
+            ModeArtworkOffsetY = ModeArtworkOffsetY,
+            ModeArtworkWidth = ModeArtworkWidth,
+            ModeArtworkHeight = ModeArtworkHeight,
+            ModeTextOffsetX = ModeTextOffsetX,
+            ModeTextOffsetY = ModeTextOffsetY,
             LockButtonOffsetX = LockButtonOffsetX,
             LockButtonOffsetY = LockButtonOffsetY,
             LockButtonWidth = LockButtonWidth,
             LockButtonHeight = LockButtonHeight,
             LockButtonFontScale = LockButtonFontScale,
+            LockArtworkOffsetX = LockArtworkOffsetX,
+            LockArtworkOffsetY = LockArtworkOffsetY,
+            LockArtworkWidth = LockArtworkWidth,
+            LockArtworkHeight = LockArtworkHeight,
+            LockTextOffsetX = LockTextOffsetX,
+            LockTextOffsetY = LockTextOffsetY,
             SizeControlDesign = SizeControlDesign.Clone(),
             OpacityControlDesign = OpacityControlDesign.Clone(),
             TiltControlDesign = TiltControlDesign.Clone()
@@ -319,6 +396,16 @@ internal sealed class KeyboardDocument
             || !string.Equals(CustomFontTexturePath, other.CustomFontTexturePath, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(BackgroundImagePath, other.BackgroundImagePath, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(BackgroundFileName, other.BackgroundFileName, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(ConsoleInputBackgroundImagePath, other.ConsoleInputBackgroundImagePath, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(ConsoleInputBackgroundFileName, other.ConsoleInputBackgroundFileName, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(ModeVrArtworkImagePath, other.ModeVrArtworkImagePath, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(ModeVrArtworkFileName, other.ModeVrArtworkFileName, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(ModePcArtworkImagePath, other.ModePcArtworkImagePath, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(ModePcArtworkFileName, other.ModePcArtworkFileName, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(LockWorldArtworkImagePath, other.LockWorldArtworkImagePath, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(LockWorldArtworkFileName, other.LockWorldArtworkFileName, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(LockHeadArtworkImagePath, other.LockHeadArtworkImagePath, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(LockHeadArtworkFileName, other.LockHeadArtworkFileName, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(ControlArrowImagePath, other.ControlArrowImagePath, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(ControlArrowFileName, other.ControlArrowFileName, StringComparison.OrdinalIgnoreCase)
             || Sprites.Count != other.Sprites.Count)
@@ -426,6 +513,20 @@ internal sealed class KeyboardDocument
             if (File.Exists(candidate))
                 document.BackgroundImagePath = candidate;
         }
+        if (!string.IsNullOrWhiteSpace(document.ConsoleInputBackgroundFileName))
+        {
+            string candidate = Path.Combine(directory, document.ConsoleInputBackgroundFileName);
+            if (File.Exists(candidate))
+                document.ConsoleInputBackgroundImagePath = candidate;
+        }
+        ResolvePortableArtwork(directory, document.ModeVrArtworkFileName,
+            path => document.ModeVrArtworkImagePath = path);
+        ResolvePortableArtwork(directory, document.ModePcArtworkFileName,
+            path => document.ModePcArtworkImagePath = path);
+        ResolvePortableArtwork(directory, document.LockWorldArtworkFileName,
+            path => document.LockWorldArtworkImagePath = path);
+        ResolvePortableArtwork(directory, document.LockHeadArtworkFileName,
+            path => document.LockHeadArtworkImagePath = path);
         if (!string.IsNullOrWhiteSpace(document.OverlayFileName))
         {
             string candidate = Path.Combine(directory, document.OverlayFileName);
@@ -484,6 +585,8 @@ internal sealed class KeyboardDocument
 
         foreach (string rawLine in contents.Replace("\r\n", "\n").Split('\n'))
         {
+            if (TryParseOcuCommentMetadata(document, rawLine))
+                continue;
             if (rawLine.TrimStart().StartsWith('#'))
                 continue;
             List<string> tokens = Tokenize(rawLine);
@@ -622,6 +725,46 @@ internal sealed class KeyboardDocument
         output.AppendLine($"top_button_plates {TopButtonPlatesEnabled.ToString().ToLowerInvariant()}");
         output.AppendLine($"input_bar_plate {InputBarPlateEnabled.ToString().ToLowerInvariant()}");
         output.AppendLine($"parchment_ribbon {ParchmentRibbonEnabled.ToString().ToLowerInvariant()}");
+        if (InputFillOverrideEnabled)
+            output.AppendLine($"# ocu_input_fill_color {FormatColor(InputFillColor)}");
+        if (!InputOutlineVisible)
+            output.AppendLine("# ocu_input_outline_enabled false");
+        if (InputOutlineOverrideEnabled)
+        {
+            // Comment metadata keeps this layout valid in older OCU builds;
+            // those builds ignore it and retain the ordinary plate outline.
+            output.AppendLine($"# ocu_input_outline_color {FormatColor(InputOutlineColor)}");
+            output.AppendLine($"# ocu_input_outline_width {Math.Clamp(InputOutlineWidth, 0, 8)}");
+        }
+        if (Math.Abs(InputTitleOffsetX) > 0.0001f || Math.Abs(InputTitleOffsetY) > 0.0001f)
+            output.AppendLine($"# ocu_input_title_offset {FormatFloat(InputTitleOffsetX)} {FormatFloat(InputTitleOffsetY)}");
+        if (Math.Abs(InputTextOffsetX) > 0.0001f || Math.Abs(InputTextOffsetY) > 0.0001f)
+            output.AppendLine($"# ocu_input_text_offset {FormatFloat(InputTextOffsetX)} {FormatFloat(InputTextOffsetY)}");
+        if (!string.IsNullOrWhiteSpace(ConsoleInputBackgroundImagePath)
+            || !string.IsNullOrWhiteSpace(ConsoleInputBackgroundFileName))
+            output.AppendLine($"# ocu_console_input_background {ConsoleInputBackgroundPortableName}");
+        AppendStateArtworkMetadata(output, "mode_vr", ModeVrArtworkImagePath, ModeVrArtworkFileName,
+            ModeVrArtworkPortableName);
+        AppendStateArtworkMetadata(output, "mode_pc", ModePcArtworkImagePath, ModePcArtworkFileName,
+            ModePcArtworkPortableName);
+        AppendStateArtworkMetadata(output, "lock_world", LockWorldArtworkImagePath, LockWorldArtworkFileName,
+            LockWorldArtworkPortableName);
+        AppendStateArtworkMetadata(output, "lock_head", LockHeadArtworkImagePath, LockHeadArtworkFileName,
+            LockHeadArtworkPortableName);
+        if (ModeTextOverArtwork)
+            output.AppendLine("# ocu_top_state_text mode true");
+        if (LockTextOverArtwork)
+            output.AppendLine("# ocu_top_state_text lock true");
+        if (Math.Abs(ModeArtworkOffsetX) > 0.0001f || Math.Abs(ModeArtworkOffsetY) > 0.0001f
+            || ModeArtworkWidth > 0 || ModeArtworkHeight > 0)
+            output.AppendLine($"# ocu_top_state_art_design mode {FormatFloat(ModeArtworkOffsetX)} {FormatFloat(ModeArtworkOffsetY)} {FormatFloat(ModeArtworkWidth)} {FormatFloat(ModeArtworkHeight)}");
+        if (Math.Abs(LockArtworkOffsetX) > 0.0001f || Math.Abs(LockArtworkOffsetY) > 0.0001f
+            || LockArtworkWidth > 0 || LockArtworkHeight > 0)
+            output.AppendLine($"# ocu_top_state_art_design lock {FormatFloat(LockArtworkOffsetX)} {FormatFloat(LockArtworkOffsetY)} {FormatFloat(LockArtworkWidth)} {FormatFloat(LockArtworkHeight)}");
+        if (Math.Abs(ModeTextOffsetX) > 0.0001f || Math.Abs(ModeTextOffsetY) > 0.0001f)
+            output.AppendLine($"# ocu_top_state_text_offset mode {FormatFloat(ModeTextOffsetX)} {FormatFloat(ModeTextOffsetY)}");
+        if (Math.Abs(LockTextOffsetX) > 0.0001f || Math.Abs(LockTextOffsetY) > 0.0001f)
+            output.AppendLine($"# ocu_top_state_text_offset lock {FormatFloat(LockTextOffsetX)} {FormatFloat(LockTextOffsetY)}");
         output.AppendLine();
 
         if (CustomStyleEnabled)
@@ -1171,6 +1314,184 @@ internal sealed class KeyboardDocument
     }
 
     private static string FormatColor(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}{color.A:X2}";
+
+    private static bool TryParseOcuCommentMetadata(KeyboardDocument document, string rawLine)
+    {
+        string line = rawLine.Trim();
+        const string fillPrefix = "# ocu_input_fill_color ";
+        const string enabledPrefix = "# ocu_input_outline_enabled ";
+        const string colorPrefix = "# ocu_input_outline_color ";
+        const string widthPrefix = "# ocu_input_outline_width ";
+        const string titleOffsetPrefix = "# ocu_input_title_offset ";
+        const string textOffsetPrefix = "# ocu_input_text_offset ";
+        const string backgroundPrefix = "# ocu_console_input_background ";
+        const string stateArtworkPrefix = "# ocu_top_state_art ";
+        const string stateTextPrefix = "# ocu_top_state_text ";
+        const string stateArtworkDesignPrefix = "# ocu_top_state_art_design ";
+        const string stateTextOffsetPrefix = "# ocu_top_state_text_offset ";
+        if (line.StartsWith(fillPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            document.InputFillColor = ParseColor(line[fillPrefix.Length..].Trim());
+            document.InputFillOverrideEnabled = true;
+            return true;
+        }
+        if (line.StartsWith(enabledPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            document.InputOutlineVisible = ParseBool(line[enabledPrefix.Length..].Trim());
+            return true;
+        }
+        if (line.StartsWith(colorPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            document.InputOutlineColor = ParseColor(line[colorPrefix.Length..].Trim());
+            document.InputOutlineOverrideEnabled = true;
+            return true;
+        }
+        if (line.StartsWith(titleOffsetPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            ParseOffset(line[titleOffsetPrefix.Length..], out float x, out float y);
+            document.InputTitleOffsetX = x;
+            document.InputTitleOffsetY = y;
+            return true;
+        }
+        if (line.StartsWith(textOffsetPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            ParseOffset(line[textOffsetPrefix.Length..], out float x, out float y);
+            document.InputTextOffsetX = x;
+            document.InputTextOffsetY = y;
+            return true;
+        }
+        if (line.StartsWith(widthPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            document.InputOutlineWidth = Math.Clamp(
+                int.Parse(line[widthPrefix.Length..].Trim(), CultureInfo.InvariantCulture), 0, 8);
+            document.InputOutlineOverrideEnabled = true;
+            return true;
+        }
+        if (line.StartsWith(backgroundPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string fileName = line[backgroundPrefix.Length..].Trim();
+            if (fileName.Length == 0 || Path.GetFileName(fileName) != fileName
+                || fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+                || fileName.Contains("..", StringComparison.Ordinal))
+                throw new FormatException("Console INPUT background must be a filename beside the keyboard layout.");
+            document.ConsoleInputBackgroundFileName = fileName;
+            return true;
+        }
+        if (line.StartsWith(stateArtworkPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string[] parts = line[stateArtworkPrefix.Length..]
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2)
+                throw new FormatException("Top-state artwork metadata requires a slot and portable PNG filename.");
+            string fileName = ValidatePortableFileName(parts[1], "Top-state artwork");
+            switch (parts[0].ToLowerInvariant())
+            {
+                case "mode_vr": document.ModeVrArtworkFileName = fileName; break;
+                case "mode_pc": document.ModePcArtworkFileName = fileName; break;
+                case "lock_world": document.LockWorldArtworkFileName = fileName; break;
+                case "lock_head": document.LockHeadArtworkFileName = fileName; break;
+                default: throw new FormatException($"Unknown top-state artwork slot '{parts[0]}'.");
+            }
+            return true;
+        }
+        if (line.StartsWith(stateTextPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string[] parts = line[stateTextPrefix.Length..]
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2)
+                throw new FormatException("Top-state text metadata requires 'mode' or 'lock' and a boolean.");
+            bool enabled = ParseBool(parts[1]);
+            if (parts[0].Equals("mode", StringComparison.OrdinalIgnoreCase))
+                document.ModeTextOverArtwork = enabled;
+            else if (parts[0].Equals("lock", StringComparison.OrdinalIgnoreCase))
+                document.LockTextOverArtwork = enabled;
+            else
+                throw new FormatException($"Unknown top-state text slot '{parts[0]}'.");
+            return true;
+        }
+        if (line.StartsWith(stateArtworkDesignPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string[] parts = line[stateArtworkDesignPrefix.Length..]
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 5)
+                throw new FormatException("Top-state artwork design requires 'mode' or 'lock', x, y, width and height.");
+            float x = ParseFloat(parts[1]);
+            float y = ParseFloat(parts[2]);
+            float width = Math.Max(0, ParseFloat(parts[3]));
+            float height = Math.Max(0, ParseFloat(parts[4]));
+            if (parts[0].Equals("mode", StringComparison.OrdinalIgnoreCase))
+            {
+                document.ModeArtworkOffsetX = x; document.ModeArtworkOffsetY = y;
+                document.ModeArtworkWidth = width; document.ModeArtworkHeight = height;
+            }
+            else if (parts[0].Equals("lock", StringComparison.OrdinalIgnoreCase))
+            {
+                document.LockArtworkOffsetX = x; document.LockArtworkOffsetY = y;
+                document.LockArtworkWidth = width; document.LockArtworkHeight = height;
+            }
+            else
+                throw new FormatException($"Unknown top-state artwork design slot '{parts[0]}'.");
+            return true;
+        }
+        if (line.StartsWith(stateTextOffsetPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            string[] parts = line[stateTextOffsetPrefix.Length..]
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 3)
+                throw new FormatException("Top-state text offset requires 'mode' or 'lock', x and y.");
+            float x = ParseFloat(parts[1]);
+            float y = ParseFloat(parts[2]);
+            if (parts[0].Equals("mode", StringComparison.OrdinalIgnoreCase))
+            {
+                document.ModeTextOffsetX = x; document.ModeTextOffsetY = y;
+            }
+            else if (parts[0].Equals("lock", StringComparison.OrdinalIgnoreCase))
+            {
+                document.LockTextOffsetX = x; document.LockTextOffsetY = y;
+            }
+            else
+                throw new FormatException($"Unknown top-state text offset slot '{parts[0]}'.");
+            return true;
+        }
+        return false;
+    }
+
+    private static void ResolvePortableArtwork(string directory, string? fileName, Action<string> apply)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return;
+        string candidate = Path.Combine(directory, fileName);
+        if (File.Exists(candidate))
+            apply(candidate);
+    }
+
+    private static void AppendStateArtworkMetadata(StringBuilder output, string slot,
+        string? imagePath, string? fileName, string portableName)
+    {
+        if (!string.IsNullOrWhiteSpace(imagePath) || !string.IsNullOrWhiteSpace(fileName))
+            output.AppendLine($"# ocu_top_state_art {slot} {portableName}");
+    }
+
+    private static string ValidatePortableFileName(string fileName, string description)
+    {
+        if (fileName.Length == 0 || Path.GetFileName(fileName) != fileName
+            || fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+            || fileName.Contains("..", StringComparison.Ordinal))
+            throw new FormatException($"{description} must be a filename beside the keyboard layout.");
+        return fileName;
+    }
+
+    private static void ParseOffset(string value, out float x, out float y)
+    {
+        string[] parts = value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2
+            || !float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out x)
+            || !float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out y))
+            throw new FormatException($"Invalid INPUT offset '{value}'. Expected two pixel values.");
+        x = Math.Clamp(x, -2048f, 2048f);
+        y = Math.Clamp(y, -240f, 240f);
+    }
+
     public static string SpriteFileName(int index) => $"OCUKeyboardSprite{index + 1:00}.png";
     private static float NormalizeRotation(float value)
     {

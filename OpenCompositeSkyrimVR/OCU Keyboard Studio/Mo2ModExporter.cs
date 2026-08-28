@@ -15,6 +15,16 @@ internal static class Mo2ModExporter
             writer.Write(document.Serialize());
 
         AddArtwork(archive, document.BackgroundImagePath, "root/OCUKeyboardBackground.png");
+        AddArtwork(archive, document.ConsoleInputBackgroundImagePath,
+            $"root/{KeyboardDocument.ConsoleInputBackgroundPortableName}");
+        AddArtwork(archive, document.ModeVrArtworkImagePath,
+            $"root/{KeyboardDocument.ModeVrArtworkPortableName}");
+        AddArtwork(archive, document.ModePcArtworkImagePath,
+            $"root/{KeyboardDocument.ModePcArtworkPortableName}");
+        AddArtwork(archive, document.LockWorldArtworkImagePath,
+            $"root/{KeyboardDocument.LockWorldArtworkPortableName}");
+        AddArtwork(archive, document.LockHeadArtworkImagePath,
+            $"root/{KeyboardDocument.LockHeadArtworkPortableName}");
         for (int index = 0; index < document.Sprites.Count; index++)
             AddArtwork(archive, document.Sprites[index].SourcePath,
                 $"root/{KeyboardDocument.SpriteFileName(index)}");
@@ -28,7 +38,7 @@ internal static class Mo2ModExporter
         readme.WriteLine("===================");
         readme.WriteLine();
         readme.WriteLine("Install this archive as its own mod in Mod Organizer 2 and enable it after Open Composite Unleashed.");
-        readme.WriteLine("OCU automatically loads root\\OCUKeyboard.kb. This design carries its own theme, font, colors, geometry, side controls, and layered PNG artwork without replacing opencomposite.ini.");
+        readme.WriteLine("OCU automatically loads root\\OCUKeyboard.kb. This design carries its own theme, font, colors, geometry, side controls, console INPUT artwork, semantic PC/VR and lock-state artwork, and layered PNG artwork without replacing opencomposite.ini.");
         readme.WriteLine("Disable this mod to return to OCU's embedded keyboard. Restart Skyrim VR after enabling or disabling it.");
         readme.WriteLine($"Design theme: {document.BaseTheme}; font: {document.FontName}.");
         readme.WriteLine();

@@ -42,6 +42,7 @@ namespace OpenCompositeConfigurator
             ["hapticStrength"] = "general",
             ["enableLayers"] = "general",
             ["dx10Mode"] = "general",
+            ["preserveControllerProfileOnSleep"] = "general",
             ["enableHiddenMeshFix"] = "general",
             ["hiddenMeshVerticalScale"] = "general",
             ["invertUsingShaders"] = "general",

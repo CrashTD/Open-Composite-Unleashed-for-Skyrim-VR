@@ -34,7 +34,14 @@ Quick use
    No edit-mode switching is required. The text bar, PC/VR Mode button, and Lock button are independently
    selectable, draggable, and resizable; their laser hit areas follow their saved
    position and plate size. Their font scale is independent and the mouse wheel
-   changes the selected top element's font size. Typing keys may be moved above
+   changes the selected top element's font size. The PC/VR and Lock buttons can
+   each use two semantic PNGs: VR Mode versus PC Mode, and world/unlocked versus
+   head-locked. Studio previews either state. The normal text is an automatic
+   fallback and can optionally remain visible over the art. Their interaction
+   box, current state image, and visible text are separate selectable layers:
+   move/resize the image, move/scale the text, or move/resize the interaction
+   box. Right-click either control to select a fully overlapped layer explicitly.
+   Only the interaction box changes the laser hit area. Typing keys may be moved above
    or left of the original grid—negative X/Y positions are supported by Studio,
    the saved layout, native rendering, and laser hit testing.
    On the Key page, click Assigned key and press the real physical key you want.
@@ -62,7 +69,16 @@ Quick use
    and the input bar have independent plate-visibility switches. In Studio, an
    invisible plate is click-through and only its still-visible text/content can be
    selected. In game, hiding the artwork does not erase the key's assigned action.
-5. On Artwork, place, resize, rotate, fade, pillbox, and change the opacity of a
+5. On Input, the center canvas switches to the exact 1024x120 floating console
+   INPUT panel. Click-drag the INPUT heading or typed-text row to place each one
+   independently, or enter exact X/Y offsets. Give the panel its own inside
+   color, toggle its outline on/off, choose its outline color/width, and add
+   optional PNG or JPEG artwork. With no inside-color override, the panel uses
+   the selected keyboard theme's safe console fill rather than a transparent key
+   plate. It has no hover state or plate-hover glow; font effects still follow
+   the keyboard. The image is composited into the existing console swapchain, so
+   it adds no OpenXR overlay.
+6. On Artwork, place, resize, rotate, fade, pillbox, and change the opacity of a
    custom background. Corner roundness is proportional, so a pill's transparent
    mask readjusts whenever its width or height changes. Add any number of transparent PNG sprites, borders, or
    ribbons by drag/drop, clipboard paste, or the Add button. Drag artwork itself,
@@ -70,16 +86,17 @@ Quick use
    Right-click provides cut/copy/paste/delete and layer ordering. Each sprite may
    have an independently colored procedural glow that breathes without fading
    the PNG itself.
-6. On Controls, select and resize the outer Size, Opacity, and Tilt boxes, then
+7. On Controls, select and resize the outer Size, Opacity, and Tilt boxes, then
    select their arrows, labels, or values as independent children. Built-in
    triangles have independent glow color, strength, radius, and breathing controls.
    Replace the Up triangle with any transparent PNG shape; OCU rotates the same
    image 180 degrees for Down and applies the same glow controls.
-7. Save and Save As use .ocukb, the reusable OCU keyboard-project format. After
+8. Save and Save As use .ocukb, the reusable OCU keyboard-project format. After
    a successful Save, Save disables until something really changes; use Save As
    when you intentionally want a second copy. One
    portable file contains the layout,
-   background, every PNG sprite/ribbon, the custom arrow, and generated custom
+   background, every PNG sprite/ribbon, the custom arrow, all four optional
+   PC/VR/Lock state images, and generated custom
    font files. Other users use Open / Import or drag the .ocukb onto Studio. The
    package is mod-manager-neutral: MO2, Vortex, and manual users import the same
    file, then Install for Next Launch deploys it through their normal OCU path.
@@ -88,12 +105,12 @@ Quick use
    but their artwork must stay beside them and their next Save converts them to
    .ocukb. Vortex does not need to recognize the custom extension itself; Studio
    imports the project and the Configurator performs the guarded deployment.
-8. Export MO2 Mod creates an installable ZIP containing root\OCUKeyboard.kb,
+9. Export MO2 Mod creates an installable ZIP containing root\OCUKeyboard.kb,
    its PNG artwork, and the generated SFN/atlas when a converted font is active.
    The layout carries its exact theme, font, colors, and geometry without
    replacing opencomposite.ini. Send this ZIP to other users;
    they install it after OCU and can disable it to return to their own setup.
-9. Install for Next Launch targets the exact OCU root passed by the Configurator.
+10. Install for Next Launch targets the exact OCU root passed by the Configurator.
    Studio falls back to the OCU installation containing its executable only when
    launched directly. A folder picker appears only for a standalone copy that
    genuinely cannot identify an OCU root. The confirmation names the exact file
@@ -108,7 +125,11 @@ font/outline glow and breathing, key
 geometry, layered artwork, rotation, rounded-boundary edge fades, and nested
 control geometry. Click empty control space for the resizable outer box; click
 an arrow, label glyph, or value glyph to select and move that child alone. The
+renderer supplies a font-relative advance for blank spaces when an SFN atlas has
+no painted U+0020 glyph, so console/input text and its caret keep word spacing.
 text bar and top buttons use the same saved rectangles for drawing and laser hits.
+State-button images are alpha-composited into that same cached keyboard texture;
+they add no OpenXR layer or swapchain.
 Artwork is scaled with premultiplied-alpha bilinear filtering instead of jagged
 nearest-neighbor sampling. The native runtime caches that scaling and rotation
 once when the keyboard opens; enabled breathing refreshes at a capped 20 Hz and

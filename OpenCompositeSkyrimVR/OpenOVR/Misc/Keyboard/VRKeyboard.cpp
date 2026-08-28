@@ -1477,7 +1477,11 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 	{
 		memset(&consoleLayer, 0, sizeof(consoleLayer));
 		consoleLayer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-		consoleLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+		// The CPU renderer writes ordinary (unpremultiplied) RGBA. Advertising
+		// that explicitly prevents transparent light colors from becoming an
+		// opaque white rectangle on runtimes that assume premultiplied input.
+		consoleLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT
+		    | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
 		consoleLayer.space = xr_gbl->floorSpace;
 		consoleLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 		consoleLayer.subImage.swapchain = consoleChain;
@@ -1777,12 +1781,16 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 	if (oovr_global_configuration.KbLayout() != loadedLayoutName) {
 		LoadKeyboardLayout();
 		dirty = true;
+		consoleDirty = true;
 	}
 	// Ten animation samples per second keep the slow glow breathing fluid in VR
 	// while halving full-surface redraws. There is no closed-keyboard cost.
 	if (layout && layout->HasBreathingEffects() && now - lastAnimationRefreshMs >= 100) {
 		lastAnimationRefreshMs = now;
 		dirty = true;
+		const KeyboardLayout::VisualStyle& style = layout->GetVisualStyle();
+		if (consoleActive && style.enabled && style.fontGlowEnabled && style.fontBreatheEnabled)
+			consoleDirty = true;
 	}
 #endif
 
@@ -3339,6 +3347,11 @@ void VRKeyboard::LoadKeyboardArtwork()
 	customKeyboardBg = {};
 	customKeyboardSprites.clear();
 	customControlArrow = {};
+	customConsoleInputBg = {};
+	customModeVrArtwork = {};
+	customModePcArtwork = {};
+	customLockWorldArtwork = {};
+	customLockHeadArtwork = {};
 	if (!layout)
 		return;
 
@@ -3569,6 +3582,64 @@ void VRKeyboard::LoadKeyboardArtwork()
 	arrowPlacement.breathePeriodSeconds = layout->GetControlArrowBreathePeriodSeconds();
 	arrowPlacement.breathePhaseDegrees = layout->GetControlArrowBreathePhaseDegrees();
 	loadPngBesideDll(arrowPlacement, customControlArrow);
+
+	KeyboardLayout::ImageLayer consolePlacement;
+	consolePlacement.file = layout->GetConsoleInputBackgroundFile();
+	consolePlacement.x = 0;
+	consolePlacement.y = 0;
+	consolePlacement.width = float(consoleTexWidth);
+	consolePlacement.height = float(consoleTexHeight);
+	loadPngBesideDll(consolePlacement, customConsoleInputBg);
+	prepareArtwork(customConsoleInputBg);
+
+	// Semantic top-button art is fitted once to the exact authored button
+	// rectangles. Runtime state merely chooses which cached image to composite;
+	// it does not create another OpenXR overlay or swapchain.
+	const int marginH = 120;
+	const int btnH = 32;
+	const int btnY = GRAB_BAR_HEIGHT + 60 - btnH - 4;
+	const auto& modeDesign = layout->GetModeButtonDesign();
+	const auto& lockDesign = layout->GetLockButtonDesign();
+	const int modeBtnW = modeDesign.width > 0 ? std::max(8, int(std::round(modeDesign.width))) : CONSOLE_BTN_WIDTH;
+	const int modeBtnH = modeDesign.height > 0 ? std::max(8, int(std::round(modeDesign.height))) : btnH;
+	const int lockBtnW = lockDesign.width > 0 ? std::max(8, int(std::round(lockDesign.width))) : TOGGLE_BTN_WIDTH;
+	const int lockBtnH = lockDesign.height > 0 ? std::max(8, int(std::round(lockDesign.height))) : btnH;
+	const int modeThemeX = theme ? theme->modeBtnOffX : 0;
+	const int modeThemeY = theme ? theme->modeBtnOffY : 0;
+	const int lockThemeX = theme ? theme->lockBtnOffX : 0;
+	const int lockThemeY = theme ? theme->lockBtnOffY : 0;
+	const int modeBtnX = marginH + modeThemeX + int(std::round(layout->GetModeButtonOffsetX()));
+	const int modeBtnY = btnY + modeThemeY + int(std::round(layout->GetModeButtonOffsetY()));
+	const int lockBtnX = int(texWidth) - marginH - TOGGLE_BTN_WIDTH + lockThemeX
+	    + int(std::round(layout->GetLockButtonOffsetX()));
+	const int lockBtnY = btnY + lockThemeY + int(std::round(layout->GetLockButtonOffsetY()));
+	const int modeArtworkX = modeBtnX + int(std::round(layout->GetModeArtworkOffsetX()));
+	const int modeArtworkY = modeBtnY + int(std::round(layout->GetModeArtworkOffsetY()));
+	const int modeArtworkW = layout->GetModeArtworkWidth() > 0
+	    ? std::max(8, int(std::round(layout->GetModeArtworkWidth()))) : modeBtnW;
+	const int modeArtworkH = layout->GetModeArtworkHeight() > 0
+	    ? std::max(8, int(std::round(layout->GetModeArtworkHeight()))) : modeBtnH;
+	const int lockArtworkX = lockBtnX + int(std::round(layout->GetLockArtworkOffsetX()));
+	const int lockArtworkY = lockBtnY + int(std::round(layout->GetLockArtworkOffsetY()));
+	const int lockArtworkW = layout->GetLockArtworkWidth() > 0
+	    ? std::max(8, int(std::round(layout->GetLockArtworkWidth()))) : lockBtnW;
+	const int lockArtworkH = layout->GetLockArtworkHeight() > 0
+	    ? std::max(8, int(std::round(layout->GetLockArtworkHeight()))) : lockBtnH;
+	auto loadStateArtwork = [&](const std::string& file, int x, int y, int width, int height,
+	                            DecodedKeyboardArtwork& artwork) {
+		KeyboardLayout::ImageLayer placement;
+		placement.file = file;
+		placement.x = float(x);
+		placement.y = float(y);
+		placement.width = float(width);
+		placement.height = float(height);
+		loadPngBesideDll(placement, artwork);
+		prepareArtwork(artwork);
+	};
+	loadStateArtwork(layout->GetModeVrArtworkFile(), modeArtworkX, modeArtworkY, modeArtworkW, modeArtworkH, customModeVrArtwork);
+	loadStateArtwork(layout->GetModePcArtworkFile(), modeArtworkX, modeArtworkY, modeArtworkW, modeArtworkH, customModePcArtwork);
+	loadStateArtwork(layout->GetLockWorldArtworkFile(), lockArtworkX, lockArtworkY, lockArtworkW, lockArtworkH, customLockWorldArtwork);
+	loadStateArtwork(layout->GetLockHeadArtworkFile(), lockArtworkX, lockArtworkY, lockArtworkW, lockArtworkH, customLockHeadArtwork);
 }
 
 void VRKeyboard::Refresh()
@@ -4202,6 +4273,11 @@ void VRKeyboard::Refresh()
 				    modeFill[0], modeFill[1], modeFill[2], modeFill[3]);
 			}
 		}
+		const DecodedKeyboardArtwork& modeArtwork = sendInputOnly
+		    ? customModePcArtwork : customModeVrArtwork;
+		const bool hasModeArtwork = !modeArtwork.pixels.empty();
+		if (hasModeArtwork)
+			compositeArtwork(modeArtwork);
 		bool lowOpacity = !customStyle && T.opacityInkFlip && (s_opacityPercent <= 5);
 		pix_t modeColour = lowOpacity
 		    ? pix_t{ 255, 255, 255, 255 }
@@ -4210,13 +4286,15 @@ void VRKeyboard::Refresh()
 		        : modeHover
 		            ? tp(T.btnInkHover)
 		            : sendInputOnly ? tp(T.btnInkActive) : tp(T.btnInkIdle);
-		if (modeDesign.fontScale > 0) {
+		if ((!hasModeArtwork || layout->GetModeTextOverArtwork()) && modeDesign.fontScale > 0) {
 			drawCenteredText(modeLabel, modeBtnX, modeBtnY, modeBtnW, modeBtnH,
-			    0, 0, modeDesign.fontScale, modeColour, effectiveOutline);
-		} else {
+			    layout->GetModeTextOffsetX(), layout->GetModeTextOffsetY(),
+			    modeDesign.fontScale, modeColour, effectiveOutline);
+		} else if (!hasModeArtwork || layout->GetModeTextOverArtwork()) {
 			int modeTextW = font->Width(modeLabel);
-			int modeTextYOff = (modeBtnH - fontH) / 2 + 4;
-			print(modeBtnX + (modeBtnW - modeTextW) / 2, modeBtnY + modeTextYOff, modeColour, modeLabel, false);
+			int modeTextYOff = (modeBtnH - fontH) / 2 + 4 + int(std::round(layout->GetModeTextOffsetY()));
+			print(modeBtnX + (modeBtnW - modeTextW) / 2 + int(std::round(layout->GetModeTextOffsetX())),
+			    modeBtnY + modeTextYOff, modeColour, modeLabel, false);
 		}
 
 		// ── LOCK button (right) ──
@@ -4232,6 +4310,11 @@ void VRKeyboard::Refresh()
 				    lockFill[0], lockFill[1], lockFill[2], lockFill[3]);
 			}
 		}
+		const DecodedKeyboardArtwork& lockArtwork = headLocked
+		    ? customLockHeadArtwork : customLockWorldArtwork;
+		const bool hasLockArtwork = !lockArtwork.pixels.empty();
+		if (hasLockArtwork)
+			compositeArtwork(lockArtwork);
 		pix_t lockColour = lowOpacity
 		    ? pix_t{ 255, 255, 255, 255 }
 		    : customStyle
@@ -4239,13 +4322,15 @@ void VRKeyboard::Refresh()
 		        : headLocked
 		            ? tp(T.btnInkActive)
 		            : lockHover ? tp(T.btnInkHover) : tp(T.ink);
-		if (lockDesign.fontScale > 0) {
+		if ((!hasLockArtwork || layout->GetLockTextOverArtwork()) && lockDesign.fontScale > 0) {
 			drawCenteredText(L"LOCK", lockBtnX, lockBtnY, lockBtnW, lockBtnH,
-			    0, 0, lockDesign.fontScale, lockColour, effectiveOutline);
-		} else {
+			    layout->GetLockTextOffsetX(), layout->GetLockTextOffsetY(),
+			    lockDesign.fontScale, lockColour, effectiveOutline);
+		} else if (!hasLockArtwork || layout->GetLockTextOverArtwork()) {
 			int lockTextW = font->Width(L"LOCK");
-			int lockTextYOff = (lockBtnH - fontH) / 2 + 4;
-			print(lockBtnX + (lockBtnW - lockTextW) / 2, lockBtnY + lockTextYOff, lockColour, L"LOCK", false);
+			int lockTextYOff = (lockBtnH - fontH) / 2 + 4 + int(std::round(layout->GetLockTextOffsetY()));
+			print(lockBtnX + (lockBtnW - lockTextW) / 2 + int(std::round(layout->GetLockTextOffsetX())),
+			    lockBtnY + lockTextYOff, lockColour, L"LOCK", false);
 		}
 	}
 
@@ -4614,15 +4699,18 @@ void VRKeyboard::Refresh()
 		int textBarW = textBarDesign.width > 0 ? std::max(8, int(std::round(textBarDesign.width))) : (int)desc.Width - 2 * marginH;
 		int textBarH = textBarDesign.height > 0 ? std::max(8, int(std::round(textBarDesign.height))) : keySize;
 		if (VS.inputBarPlateEnabled) {
-			// Faint 1px border. Visibility is independent of the text/caret hit area.
-			fillArea(textBarX, textBarY, textBarW, 1,
-			    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
-			fillArea(textBarX, textBarY + textBarH - 1, textBarW, 1,
-			    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
-			fillArea(textBarX, textBarY, 1, textBarH,
-			    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
-			fillArea(textBarX + textBarW - 1, textBarY, 1, textBarH,
-			    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
+			// Visibility is independent of the text/caret hit area.
+			const int borderWidth = 1;
+			if (borderWidth > 0) {
+				fillArea(textBarX, textBarY, textBarW, borderWidth,
+				    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
+				fillArea(textBarX, textBarY + textBarH - borderWidth, textBarW, borderWidth,
+				    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
+				fillArea(textBarX, textBarY, borderWidth, textBarH,
+				    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
+				fillArea(textBarX + textBarW - borderWidth, textBarY, borderWidth, textBarH,
+				    effectiveTextBarBorder[0], effectiveTextBarBorder[1], effectiveTextBarBorder[2], effectiveTextBarBorder[3]);
+			}
 		}
 
 		if (!sendInputOnly) {
@@ -4715,13 +4803,25 @@ void VRKeyboard::RefreshConsole()
 	const int PAD = 8;
 
 	const KbThemeDef& T = *theme;
+	const KeyboardLayout::VisualStyle& VS = layout->GetVisualStyle();
+	const bool customStyle = VS.enabled;
+	const uint8_t* effectiveConsoleBackground = VS.inputFillOverride ? VS.inputFillColor : T.consoleBg;
+	const bool customInputOutline = VS.inputOutlineOverride;
+	const uint8_t* effectiveConsoleBorder = customInputOutline
+	    ? VS.inputOutlineColor : customStyle ? VS.keyColor : T.consoleBorder;
+	const uint8_t* effectiveConsoleInk = customStyle ? VS.fontColor : T.consoleInk;
+	const uint8_t* effectiveConsoleOutline = customStyle ? VS.fontOutlineColor : T.outline;
+	const uint8_t* effectiveTitleFill = VS.inputFillOverride ? VS.inputFillColor : T.textBarBorder;
 	auto tp = [](const uint8_t c[4]) { return pix_t{ c[0], c[1], c[2], c[3] }; };
 
 	// Fill background — theme console panel color, semi-transparent
 	for (UINT y = 0; y < desc.Height; y++) {
 		for (UINT x = 0; x < desc.Width; x++) {
 			pix_t& p = pixels[x + y * desc.Width];
-			p.r = T.consoleBg[0]; p.g = T.consoleBg[1]; p.b = T.consoleBg[2]; p.a = T.consoleBg[3];
+			p.r = effectiveConsoleBackground[0];
+			p.g = effectiveConsoleBackground[1];
+			p.b = effectiveConsoleBackground[2];
+			p.a = effectiveConsoleBackground[3];
 		}
 	}
 
@@ -4736,11 +4836,35 @@ void VRKeyboard::RefreshConsole()
 				p.r = (uint8_t)(r * af + p.r * (1.0f - af));
 				p.g = (uint8_t)(g * af + p.g * (1.0f - af));
 				p.b = (uint8_t)(b * af + p.b * (1.0f - af));
+				p.a = (uint8_t)std::min(255.0f, a + p.a * (1.0f - af));
 			}
 		}
 	};
 
-	auto printLine = [&](int x, int y, pix_t colour, const std::wstring& txt) {
+	const double animationSeconds = GetTickCount64() / 1000.0;
+	auto breatheMultiplier = [animationSeconds](bool enabled, int minimumPercent,
+	                              float periodSeconds, float phaseDegrees) {
+		if (!enabled)
+			return 1.0;
+		const double period = std::max(0.1, double(periodSeconds));
+		const double angle = animationSeconds * math_pi * 2.0 / period
+		    + double(phaseDegrees) * math_pi / 180.0;
+		const double wave = (std::sin(angle) + 1.0) * 0.5;
+		const double minimum = std::clamp(minimumPercent, 0, 100) / 100.0;
+		return minimum + (1.0 - minimum) * wave;
+	};
+	int effectiveFontGlowStrength = customStyle && VS.fontGlowEnabled
+	    ? std::clamp(VS.fontGlowStrength, 0, 100) : 0;
+	effectiveFontGlowStrength = int(std::round(effectiveFontGlowStrength * breatheMultiplier(
+	    customStyle && VS.fontBreatheEnabled, VS.fontBreatheMinPercent,
+	    VS.fontBreathePeriodSeconds, VS.fontBreathePhaseDegrees)));
+	const int effectiveFontGlowRadius = customStyle ? std::clamp(VS.fontGlowRadius, 1, 8) : 0;
+	const int effectiveFontGlowAlpha = customStyle
+	    ? std::clamp(int(VS.fontGlowColor[3]) * effectiveFontGlowStrength / 100, 0, 255) : 0;
+	static const int TEXT_OUTLINE_X[] = { -2, 2, 0, 0, -1, 1, -1, 1 };
+	static const int TEXT_OUTLINE_Y[] = { 0, 0, -2, 2, -1, -1, 1, 1 };
+
+	auto printRaw = [&](int x, int y, pix_t colour, const std::wstring& txt) {
 		SudoFontMeta::pix_t c = { colour.r, colour.g, colour.b, colour.a };
 		int cx = x;
 		for (size_t i = 0; i < txt.length(); i++) {
@@ -4751,39 +4875,107 @@ void VRKeyboard::RefreshConsole()
 			cx += w;
 		}
 	};
+	auto printLine = [&](int x, int y, pix_t colour, const std::wstring& txt) {
+		if (effectiveFontGlowAlpha > 0) {
+			auto stampGlow = [&](int radius, float alphaScale) {
+				pix_t glow = { VS.fontGlowColor[0], VS.fontGlowColor[1], VS.fontGlowColor[2],
+					uint8_t(std::clamp(int(std::round(effectiveFontGlowAlpha * alphaScale)), 0, 255)) };
+				const int offsetX[] = { -radius, radius, 0, 0, -radius, radius, -radius, radius };
+				const int offsetY[] = { 0, 0, -radius, radius, -radius, -radius, radius, radius };
+				for (int index = 0; index < 8; ++index)
+					printRaw(x + offsetX[index], y + offsetY[index], glow, txt);
+			};
+			const int innerRadius = std::max(1, effectiveFontGlowRadius / 2);
+			stampGlow(effectiveFontGlowRadius,
+			    innerRadius == effectiveFontGlowRadius ? 1.0f : 0.55f);
+			if (innerRadius != effectiveFontGlowRadius)
+				stampGlow(innerRadius, 0.82f);
+		}
+		if (customStyle && VS.labelOutline) {
+			pix_t outline = tp(effectiveConsoleOutline);
+			for (int index = 0; index < 8; ++index)
+				printRaw(x + TEXT_OUTLINE_X[index], y + TEXT_OUTLINE_Y[index], outline, txt);
+		}
+		printRaw(x, y, colour, txt);
+	};
 
 	// Theme border (matches keyboard frame)
-	fillArea(0, 0, desc.Width, BORD, KBT4(consoleBorder));                    // top
-	fillArea(0, desc.Height - BORD, desc.Width, BORD, KBT4(consoleBorder));   // bottom
-	fillArea(0, 0, BORD, desc.Height, KBT4(consoleBorder));                   // left
-	fillArea(desc.Width - BORD, 0, BORD, desc.Height, KBT4(consoleBorder));   // right
-
+	const int consoleBorderWidth = !VS.inputOutlineVisible ? 0 : customInputOutline
+	    ? std::clamp(VS.inputOutlineWidth, 0, 8)
+	    : customStyle ? std::clamp(VS.plateOutlineWidth, 0, 8) : BORD;
 	// Title bar — "INPUT" centered, doubled height so text fits cleanly
-	int titleH = 60;
-	fillArea(BORD, BORD, desc.Width - BORD * 2, titleH, KBT4(textBarBorder));  // subtle strip
-	fillArea(BORD, BORD + titleH, desc.Width - BORD * 2, 2, KBT4(consoleBorder)); // separator
+	const int titleH = 60;
+	fillArea(consoleBorderWidth, consoleBorderWidth,
+	    desc.Width - consoleBorderWidth * 2, titleH,
+	    effectiveTitleFill[0], effectiveTitleFill[1], effectiveTitleFill[2], effectiveTitleFill[3]);
 
-	pix_t titleColour = tp(T.consoleInk);
+	// Optional artwork is composited into this existing console swapchain. It
+	// adds no OpenXR overlay or swapchain and does not consume overlay budget.
+	if (!customConsoleInputBg.pixels.empty()) {
+		const int artworkX = int(std::round(customConsoleInputBg.placement.x));
+		const int artworkY = int(std::round(customConsoleInputBg.placement.y));
+		for (unsigned int y = 0; y < customConsoleInputBg.height; ++y) {
+			const int targetY = artworkY + int(y);
+			if (targetY < 0 || targetY >= int(desc.Height))
+				continue;
+			for (unsigned int x = 0; x < customConsoleInputBg.width; ++x) {
+				const int targetX = artworkX + int(x);
+				if (targetX < 0 || targetX >= int(desc.Width))
+					continue;
+				const size_t source = (size_t(y) * customConsoleInputBg.width + x) * 4;
+				const float alpha = customConsoleInputBg.pixels[source + 3] / 255.0f;
+				if (alpha <= 0.0f)
+					continue;
+				pix_t& target = pixels[targetX + targetY * desc.Width];
+				target.r = uint8_t(customConsoleInputBg.pixels[source + 0] * alpha + target.r * (1.0f - alpha));
+				target.g = uint8_t(customConsoleInputBg.pixels[source + 1] * alpha + target.g * (1.0f - alpha));
+				target.b = uint8_t(customConsoleInputBg.pixels[source + 2] * alpha + target.b * (1.0f - alpha));
+				target.a = uint8_t(std::min(255.0f,
+				    customConsoleInputBg.pixels[source + 3] + target.a * (1.0f - alpha)));
+			}
+		}
+	}
+	if (consoleBorderWidth > 0) {
+		fillArea(0, 0, desc.Width, consoleBorderWidth,
+		    effectiveConsoleBorder[0], effectiveConsoleBorder[1], effectiveConsoleBorder[2], effectiveConsoleBorder[3]);
+		fillArea(0, desc.Height - consoleBorderWidth, desc.Width, consoleBorderWidth,
+		    effectiveConsoleBorder[0], effectiveConsoleBorder[1], effectiveConsoleBorder[2], effectiveConsoleBorder[3]);
+		fillArea(0, 0, consoleBorderWidth, desc.Height,
+		    effectiveConsoleBorder[0], effectiveConsoleBorder[1], effectiveConsoleBorder[2], effectiveConsoleBorder[3]);
+		fillArea(desc.Width - consoleBorderWidth, 0, consoleBorderWidth, desc.Height,
+		    effectiveConsoleBorder[0], effectiveConsoleBorder[1], effectiveConsoleBorder[2], effectiveConsoleBorder[3]);
+		fillArea(consoleBorderWidth, consoleBorderWidth + titleH,
+		    desc.Width - consoleBorderWidth * 2, consoleBorderWidth,
+		    effectiveConsoleBorder[0], effectiveConsoleBorder[1], effectiveConsoleBorder[2], effectiveConsoleBorder[3]);
+	}
+
+	pix_t titleColour = tp(effectiveConsoleInk);
 	int titleTextW = font->Width(L"INPUT");
 	int fontH = (int)font->GetLineHeight();
-	int titleTextY = BORD + (titleH - fontH) / 2;
-	printLine((int)desc.Width / 2 - titleTextW / 2, titleTextY, titleColour, L"INPUT");
+	int titleTextX = (int)desc.Width / 2 - titleTextW / 2
+	    + int(std::round(VS.inputTitleOffsetX));
+	int titleTextY = consoleBorderWidth + (titleH - fontH) / 2
+	    + int(std::round(VS.inputTitleOffsetY));
+	printLine(titleTextX, titleTextY, titleColour, L"INPUT");
 
 	// Input text with blinking cursor — centered vertically in remaining space
-	int contentTop = BORD + titleH + 2;
-	int contentH = (int)desc.Height - contentTop - BORD;
-	int inputY = contentTop + (contentH - fontH) / 2;
-	pix_t textColour = tp(T.consoleInk);
+	int contentTop = consoleBorderWidth + titleH + consoleBorderWidth;
+	int contentH = (int)desc.Height - contentTop - consoleBorderWidth;
+	int inputX = PAD + consoleBorderWidth + int(std::round(VS.inputTextOffsetX));
+	int inputY = contentTop + (contentH - fontH) / 2
+	    + int(std::round(VS.inputTextOffsetY));
+	pix_t textColour = tp(effectiveConsoleInk);
 
-	printLine(PAD + BORD, inputY, textColour, text);
+	printLine(inputX, inputY, textColour, text);
 
 	// Blinking cursor at end of text
 	bool cursorVisible = ((GetTickCount64() / 500) % 2) == 0;
 	if (cursorVisible) {
-		int cursorX = PAD + BORD;
+		int cursorX = inputX;
 		for (size_t i = 0; i < text.size(); i++)
 			cursorX += font->Width(text[i]);
-		fillArea(cursorX, inputY, 2, fontH, KBT4(consoleInk));
+		fillArea(cursorX, inputY, 2, fontH,
+		    effectiveConsoleInk[0], effectiveConsoleInk[1], effectiveConsoleInk[2], effectiveConsoleInk[3]);
 	}
 
 	XrSwapchainImageAcquireInfo acq = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };

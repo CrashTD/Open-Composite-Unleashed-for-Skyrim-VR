@@ -7,6 +7,21 @@ internal sealed record KeyboardDesignChoice(string Name, string Path, bool Built
     public override string ToString() => BuiltIn ? $"{Name} (Built-in)" : Name;
 }
 
+internal enum ConsoleInputPart
+{
+    None,
+    Heading,
+    TypedText
+}
+
+internal enum TopStateArtworkSlot
+{
+    ModeVr,
+    ModePc,
+    LockWorld,
+    LockHead
+}
+
 internal readonly record struct EffectiveKeyboardStyle(
     Color Font,
     Color FontOutline,
@@ -54,10 +69,27 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _topElementWidth = NumberBox(8, 2048, 0, 1);
     private readonly NumericUpDown _topElementHeight = NumberBox(8, 1120, 0, 1);
     private readonly NumericUpDown _topElementFontScale = NumberBox(0.2m, 3, 2, 0.05m);
+    private readonly ComboBox _modeStatePreview = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly ComboBox _lockStatePreview = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly Label _modeVrArtworkName = new() { AutoSize = true, MaximumSize = new Size(300, 0) };
+    private readonly Label _modePcArtworkName = new() { AutoSize = true, MaximumSize = new Size(300, 0) };
+    private readonly Label _lockWorldArtworkName = new() { AutoSize = true, MaximumSize = new Size(300, 0) };
+    private readonly Label _lockHeadArtworkName = new() { AutoSize = true, MaximumSize = new Size(300, 0) };
+    private readonly ModernCheckBox _modeTextOverArtwork = new() { Text = "Show PC/VR text over state images", AutoSize = true };
+    private readonly ModernCheckBox _lockTextOverArtwork = new() { Text = "Show LOCK text over state images", AutoSize = true };
     private readonly ModernCheckBox _keyPlatesEnabled = new() { Text = "Show key plates", AutoSize = true };
     private readonly ModernCheckBox _topButtonPlatesEnabled = new() { Text = "Show PC/VR Mode + Lock plates", AutoSize = true };
     private readonly ModernCheckBox _inputBarPlateEnabled = new() { Text = "Show input bar plate", AutoSize = true };
     private readonly ModernCheckBox _parchmentRibbonEnabled = new() { Text = "Show Parchment spacebar ribbon", AutoSize = true };
+    private readonly PictureBox _consoleInputPreview = new()
+    {
+        Dock = DockStyle.Fill,
+        Height = 72,
+        MinimumSize = new Size(320, 72),
+        BackColor = Color.FromArgb(9, 11, 15),
+        SizeMode = PictureBoxSizeMode.Zoom
+    };
+    private readonly Label _consoleInputBackgroundName = new() { AutoSize = true, MaximumSize = new Size(360, 0) };
     private readonly ModernCheckBox _glowEnabled = new() { Text = "Plate outline glow", AutoSize = true };
     private readonly ModernCheckBox _hoverEnabled = new() { Text = "Hover effect", AutoSize = true };
     private readonly ModernCheckBox _outlineEnabled = new() { Text = "Font outline", AutoSize = true };
@@ -66,6 +98,8 @@ internal sealed class MainForm : Form
     private readonly ColorEntryControl _fontGlowColor = new();
     private readonly ColorEntryControl _keyColor = new();
     private readonly ColorEntryControl _plateFillColor = new();
+    private readonly ColorEntryControl _inputFillColor = new();
+    private readonly ColorEntryControl _inputOutlineColor = new();
     private readonly ColorEntryControl _glowColor = new();
     private readonly ColorEntryControl _hoverColor = new();
     private readonly NumericUpDown _glowStrength = NumberBox(0, 100, 0, 5);
@@ -73,6 +107,12 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _hoverStrength = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _keyRoundness = NumberBox(0, 24, 0, 1);
     private readonly NumericUpDown _plateOutlineWidth = NumberBox(0, 8, 0, 1);
+    private readonly NumericUpDown _inputOutlineWidth = NumberBox(0, 8, 0, 1);
+    private readonly ModernCheckBox _inputOutlineVisible = new() { Text = "Show outline", AutoSize = true, Checked = true };
+    private readonly NumericUpDown _inputTitleX = NumberBox(-2048, 2048, 0, 1);
+    private readonly NumericUpDown _inputTitleY = NumberBox(-240, 240, 0, 1);
+    private readonly NumericUpDown _inputTextX = NumberBox(-2048, 2048, 0, 1);
+    private readonly NumericUpDown _inputTextY = NumberBox(-240, 240, 0, 1);
     private readonly ModernCheckBox _keyBreathe = new() { Text = "Breathing plate glow", AutoSize = true };
     private readonly NumericUpDown _keyBreatheMin = NumberBox(0, 100, 0, 5);
     private readonly NumericUpDown _keyBreathePeriod = NumberBox(0.5m, 10, 2, 0.25m);
@@ -85,6 +125,12 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _fontBreathePeriod = NumberBox(0.5m, 10, 2, 0.25m);
     private readonly NumericUpDown _fontBreathePhase = NumberBox(0, 360, 0, 15);
     private readonly Label _backgroundName = new() { AutoSize = true, MaximumSize = new Size(280, 0) };
+    private ConsoleInputPart _selectedConsoleInputPart;
+    private bool _draggingConsoleInputPart;
+    private PointF _consoleInputDragStart;
+    private float _consoleInputStartX;
+    private float _consoleInputStartY;
+    private KeyboardDocument? _pendingConsoleInputUndo;
     private readonly Label _overlayName = new() { AutoSize = true, MaximumSize = new Size(280, 0) };
     private readonly ListBox _spriteList = new() { Height = 105, Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly NumericUpDown _backgroundX = NumberBox(-2048, 2048, 0, 1);
@@ -297,7 +343,11 @@ internal sealed class MainForm : Form
         _redoButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         historyButtons.Controls.Add(_undoButton, 1, 0);
         historyButtons.Controls.Add(_redoButton, 2, 0);
-        canvasLayout.Controls.Add(_canvas, 0, 0);
+        var previewHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(9, 11, 15) };
+        _consoleInputPreview.Visible = false;
+        previewHost.Controls.Add(_canvas);
+        previewHost.Controls.Add(_consoleInputPreview);
+        canvasLayout.Controls.Add(previewHost, 0, 0);
         canvasLayout.Controls.Add(historyButtons, 0, 1);
         split.Panel1.Controls.Add(canvasLayout);
         split.Panel2.BackColor = Surface;
@@ -317,13 +367,15 @@ internal sealed class MainForm : Form
         _inspectorTabs.Dock = DockStyle.Fill;
         TabPage keyPage = InspectorPage("Key");
         TabPage appearancePage = InspectorPage("Appearance");
+        TabPage inputPage = InspectorPage("Input");
         TabPage artworkPage = InspectorPage("Artwork");
         TabPage controlsPage = InspectorPage("Controls");
         keyPage.Controls.Add(BuildKeyInspector());
         appearancePage.Controls.Add(BuildAppearanceInspector());
+        inputPage.Controls.Add(BuildInputInspector());
         artworkPage.Controls.Add(BuildArtworkInspector());
         controlsPage.Controls.Add(BuildControlsInspector());
-        _inspectorTabs.TabPages.AddRange([keyPage, appearancePage, artworkPage, controlsPage]);
+        _inspectorTabs.TabPages.AddRange([keyPage, appearancePage, inputPage, artworkPage, controlsPage]);
         return _inspectorTabs;
     }
 
@@ -367,10 +419,25 @@ internal sealed class MainForm : Form
         AddWide(inspector, _topElementLabel);
         AddRow(inspector, "Offset X", _topElementX);
         AddRow(inspector, "Offset Y", _topElementY);
-        AddRow(inspector, "Plate width px", _topElementWidth);
-        AddRow(inspector, "Plate height px", _topElementHeight);
+        AddRow(inspector, "Width px", _topElementWidth);
+        AddRow(inspector, "Height px", _topElementHeight);
         AddRow(inspector, "Font size / scale", _topElementFontScale);
-        AddHint(inspector, "Drag visible plate edges to resize. The mouse wheel changes its font size. Saved geometry also moves and resizes the in-game laser hit area.");
+        AddHint(inspector, "PC/VR and Lock are layered controls: select and move the interaction box, state image, or text independently. Only the interaction box changes the in-game laser hit area. Scroll over selected text to resize the font.");
+
+        AddSection(inspector, "PC / VR + LOCK STATE IMAGES");
+        StyleCombo(_modeStatePreview);
+        StyleCombo(_lockStatePreview);
+        StyleCheck(_modeTextOverArtwork);
+        StyleCheck(_lockTextOverArtwork);
+        AddRow(inspector, "Preview mode", _modeStatePreview);
+        AddRow(inspector, "VR Mode image", StateArtworkActions(TopStateArtworkSlot.ModeVr, _modeVrArtworkName));
+        AddRow(inspector, "PC Mode image", StateArtworkActions(TopStateArtworkSlot.ModePc, _modePcArtworkName));
+        AddWide(inspector, _modeTextOverArtwork);
+        AddRow(inspector, "Preview lock", _lockStatePreview);
+        AddRow(inspector, "World image", StateArtworkActions(TopStateArtworkSlot.LockWorld, _lockWorldArtworkName));
+        AddRow(inspector, "Head-lock image", StateArtworkActions(TopStateArtworkSlot.LockHead, _lockHeadArtworkName));
+        AddWide(inspector, _lockTextOverArtwork);
+        AddHint(inspector, "Each PNG switches with the real in-game state. Click its picture or visible text to move that layer independently; right-click the control to select its interaction box explicitly. The picture and text remain visual-only and create no extra OpenXR overlay.");
 
         AddSection(inspector, "GRID COLUMN COUNT");
         AddRow(inspector, "Columns across", _layoutWidth);
@@ -432,6 +499,41 @@ internal sealed class MainForm : Form
         AddWide(inspector, _outlineEnabled);
         AddRow(inspector, "Key roundness", _keyRoundness);
         AddHint(inspector, "Font and plate glows have independent colors and breathing cycles. Their base font and outline stay readable while the halo breathes.");
+        return inspector;
+    }
+
+    private Control BuildInputInspector()
+    {
+        var inspector = InspectorTable();
+        AddSection(inspector, "CONSOLE INPUT PANEL");
+        AddHint(inspector, "Selecting this tab replaces the center keyboard preview with the exact 1024x120 floating INPUT panel used by Skyrim's console. Click and drag the INPUT heading or typed-text row directly in the preview to place them independently.");
+
+        AddSection(inspector, "INPUT PANEL IMAGE");
+        var imageActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
+        imageActions.Controls.Add(ActionButton("Choose image", (_, _) => ChooseConsoleInputBackground(), compact: true));
+        imageActions.Controls.Add(ActionButton("Clear", (_, _) => ClearConsoleInputBackground(), compact: true));
+        AddWide(inspector, imageActions);
+        _consoleInputBackgroundName.ForeColor = TextMuted;
+        AddWide(inspector, _consoleInputBackgroundName);
+        AddHint(inspector, "The image is scaled once to the panel's exact 1024x120 texture and composited into its existing swapchain. Transparent PNG is recommended; this does not add an OpenXR overlay.");
+
+        AddSection(inspector, "INPUT APPEARANCE");
+        AddRow(inspector, "Inside color", _inputFillColor);
+        AddWide(inspector, ActionButton("Use keyboard theme fill", (_, _) => ResetInputFill(), compact: true));
+        StyleCheck(_inputOutlineVisible);
+        AddWide(inspector, _inputOutlineVisible);
+        AddRow(inspector, "Outline", _inputOutlineColor);
+        AddRow(inspector, "Outline width", _inputOutlineWidth);
+        AddWide(inspector, ActionButton("Use default INPUT border", (_, _) => ResetInputOutline(), compact: true));
+        AddHint(inspector, "Inside color and outline belong only to the floating console INPUT panel. The font and its effects still follow the keyboard design.");
+
+        AddSection(inspector, "TEXT POSITION");
+        AddRow(inspector, "INPUT heading X", _inputTitleX);
+        AddRow(inspector, "INPUT heading Y", _inputTitleY);
+        AddRow(inspector, "Typed text X", _inputTextX);
+        AddRow(inspector, "Typed text Y", _inputTextY);
+        AddWide(inspector, ActionButton("Center/reset text positions", (_, _) => ResetInputTextPositions(), compact: true));
+        AddHint(inspector, "These are pixel offsets from OCU's exact runtime positions. Dragging either text region updates the same values.");
         return inspector;
     }
 
@@ -589,11 +691,15 @@ internal sealed class MainForm : Form
         _fontCombo.Items.AddRange(_fonts.Cast<object>().ToArray());
         _themeCombo.Items.AddRange(KeyboardTheme.BuiltIns.Cast<object>().ToArray());
         _stateCombo.Items.AddRange(Enum.GetNames<KeyboardPreviewState>());
+        _modeStatePreview.Items.AddRange(["VR Mode", "PC Mode"]);
+        _lockStatePreview.Items.AddRange(["World / Unlocked", "Head-Locked"]);
         int parchmentTheme = KeyboardTheme.BuiltIns.ToList().FindIndex(theme => ThemeConfigName(theme) == "parchment");
         _themeCombo.SelectedIndex = parchmentTheme >= 0 ? parchmentTheme : 0;
         int parchmentFont = _fonts.FindIndex(font => font.ConfigName == "parchment");
         _fontCombo.SelectedIndex = parchmentFont >= 0 ? parchmentFont : 0;
         _stateCombo.SelectedIndex = 0;
+        _modeStatePreview.SelectedIndex = 0;
+        _lockStatePreview.SelectedIndex = 0;
 
         SudoFont font = LoadSelectedFont();
         _renderer = new KeyboardRenderer(_assetsDirectory, font)
@@ -618,16 +724,19 @@ internal sealed class MainForm : Form
 
     private void WireEvents()
     {
+        _inspectorTabs.SelectedIndexChanged += (_, _) => UpdatePreviewMode();
         _canvas.SelectionChanged += (_, _) =>
         {
             if (!_canvas.HasMultipleSelection)
                 _inspectorTabs.SelectedIndex = _canvas.SelectionKind switch
                 {
-                    CanvasSelectionKind.Sprite or CanvasSelectionKind.Background => 2,
+                    CanvasSelectionKind.Sprite or CanvasSelectionKind.Background => 3,
                     CanvasSelectionKind.Control or CanvasSelectionKind.ControlUpArrow or CanvasSelectionKind.ControlLabel
-                        or CanvasSelectionKind.ControlValue or CanvasSelectionKind.ControlDownArrow => 3,
+                        or CanvasSelectionKind.ControlValue or CanvasSelectionKind.ControlDownArrow => 4,
                     CanvasSelectionKind.KeyContent or CanvasSelectionKind.KeyPlate => 0,
-                    CanvasSelectionKind.TopTextBar or CanvasSelectionKind.TopMode or CanvasSelectionKind.TopLock => 0,
+                    CanvasSelectionKind.TopTextBar or CanvasSelectionKind.TopMode or CanvasSelectionKind.TopModeArtwork
+                        or CanvasSelectionKind.TopModeText or CanvasSelectionKind.TopLock
+                        or CanvasSelectionKind.TopLockArtwork or CanvasSelectionKind.TopLockText => 0,
                     _ => _inspectorTabs.SelectedIndex
                 };
             if (_canvas.HasMultipleSelection)
@@ -645,6 +754,7 @@ internal sealed class MainForm : Form
         {
             PopulateInspector();
             PopulateAppearanceInspector();
+            PopulateInputInspector();
             PopulateArtworkInspector();
             PopulateControlsInspector();
             UpdateTitle();
@@ -725,6 +835,7 @@ internal sealed class MainForm : Form
             }
             _canvas.RefreshPreview();
             PopulateAppearanceInspector();
+            PopulateInputInspector();
             PopulateControlsInspector();
         };
         _fontCombo.SelectedIndexChanged += (_, _) =>
@@ -751,6 +862,7 @@ internal sealed class MainForm : Form
                     SetStatus($"Design font: {_fontCombo.SelectedItem}. Shared exports carry this exact selection.");
                 }
                 _canvas.RefreshPreview();
+                RefreshConsoleInputPreview();
             }
             catch (Exception exception)
             {
@@ -765,6 +877,24 @@ internal sealed class MainForm : Form
             _canvas.RefreshPreview();
             PopulateInspector();
         };
+        _modeStatePreview.SelectedIndexChanged += (_, _) =>
+        {
+            if (_renderer is null)
+                return;
+            _renderer.PreviewPcMode = _modeStatePreview.SelectedIndex == 1;
+            _canvas.RefreshPreview();
+        };
+        _lockStatePreview.SelectedIndexChanged += (_, _) =>
+        {
+            if (_renderer is null)
+                return;
+            _renderer.PreviewHeadLocked = _lockStatePreview.SelectedIndex == 1;
+            _canvas.RefreshPreview();
+        };
+        _modeTextOverArtwork.CheckedChanged += (_, _) => ApplyDocumentChange(
+            document => document.ModeTextOverArtwork = _modeTextOverArtwork.Checked);
+        _lockTextOverArtwork.CheckedChanged += (_, _) => ApplyDocumentChange(
+            document => document.LockTextOverArtwork = _lockTextOverArtwork.Checked);
         _pressedCheck.CheckedChanged += (_, _) =>
         {
             if (_renderer is not null)
@@ -787,6 +917,13 @@ internal sealed class MainForm : Form
         _hoverStrength.ValueChanged += (_, _) => ApplyStyleChange(document => document.HoverStrength = (int)_hoverStrength.Value);
         _keyRoundness.ValueChanged += (_, _) => ApplyStyleChange(document => document.KeyRoundness = (int)_keyRoundness.Value);
         _plateOutlineWidth.ValueChanged += (_, _) => ApplyStyleChange(document => document.PlateOutlineWidth = (int)_plateOutlineWidth.Value);
+        _inputOutlineVisible.CheckedChanged += (_, _) => ApplyInputPanelChange(
+            document => document.InputOutlineVisible = _inputOutlineVisible.Checked);
+        _inputOutlineWidth.ValueChanged += (_, _) => ApplyInputOutlineChange(document => document.InputOutlineWidth = (int)_inputOutlineWidth.Value);
+        _inputTitleX.ValueChanged += (_, _) => ApplyInputPanelChange(document => document.InputTitleOffsetX = (float)_inputTitleX.Value);
+        _inputTitleY.ValueChanged += (_, _) => ApplyInputPanelChange(document => document.InputTitleOffsetY = (float)_inputTitleY.Value);
+        _inputTextX.ValueChanged += (_, _) => ApplyInputPanelChange(document => document.InputTextOffsetX = (float)_inputTextX.Value);
+        _inputTextY.ValueChanged += (_, _) => ApplyInputPanelChange(document => document.InputTextOffsetY = (float)_inputTextY.Value);
         _keyBreathe.CheckedChanged += (_, _) => ApplyStyleChange(document => document.KeyBreatheEnabled = _keyBreathe.Checked);
         _keyBreatheMin.ValueChanged += (_, _) => ApplyStyleChange(document => document.KeyBreatheMinPercent = (int)_keyBreatheMin.Value);
         _keyBreathePeriod.ValueChanged += (_, _) => ApplyStyleChange(document => document.KeyBreathePeriodSeconds = (float)_keyBreathePeriod.Value);
@@ -800,8 +937,19 @@ internal sealed class MainForm : Form
         WireVisualColor(_fontGlowColor, "Font glow color and transparency", () => EffectiveStyle().FontGlow, color => _document.FontGlowColor = color);
         WireVisualColor(_plateFillColor, "Plate fill color and transparency", () => EffectiveStyle().PlateFill, color => _document.PlateFillColor = color);
         WireVisualColor(_keyColor, "Plate outline color and transparency", () => EffectiveStyle().PlateOutline, color => _document.KeyColor = color);
+        WireInputFillColor();
+        WireInputOutlineColor();
         WireVisualColor(_glowColor, "Glow color", () => EffectiveStyle().PlateGlow, color => _document.GlowColor = color);
         WireVisualColor(_hoverColor, "Hover color", () => EffectiveStyle().Hover, color => _document.HoverColor = color);
+
+        _consoleInputPreview.MouseDown += ConsoleInputPreviewMouseDown;
+        _consoleInputPreview.MouseMove += ConsoleInputPreviewMouseMove;
+        _consoleInputPreview.MouseUp += ConsoleInputPreviewMouseUp;
+        _consoleInputPreview.MouseLeave += (_, _) =>
+        {
+            if (!_draggingConsoleInputPart)
+                _consoleInputPreview.Cursor = Cursors.Default;
+        };
 
         _backgroundX.ValueChanged += (_, _) => ApplyDocumentChange(document => document.BackgroundX = (float)_backgroundX.Value);
         _backgroundY.ValueChanged += (_, _) => ApplyDocumentChange(document => document.BackgroundY = (float)_backgroundY.Value);
@@ -946,6 +1094,7 @@ internal sealed class MainForm : Form
         apply(_document);
         MarkChanged();
         PopulateAppearanceInspector();
+        PopulateInputInspector();
         PopulateArtworkInspector();
         PopulateControlsInspector();
     }
@@ -979,6 +1128,7 @@ internal sealed class MainForm : Form
         apply(_document);
         MarkChanged();
         PopulateAppearanceInspector();
+        PopulateInputInspector();
     }
 
     private void ResetStyleToBaseTheme()
@@ -997,7 +1147,155 @@ internal sealed class MainForm : Form
         _document.CustomStyleInitialized = false;
         MarkChanged();
         PopulateAppearanceInspector();
+        PopulateInputInspector();
         SetStatus($"Colors and effects reset to the {ActiveTheme().Name} Base Theme. Undo restores the overrides.");
+    }
+
+    private Color EffectiveInputOutlineColor()
+        => _document.InputOutlineOverrideEnabled
+            ? _document.InputOutlineColor
+            : _document.CustomStyleEnabled ? _document.KeyColor : KeyboardRenderer.ConsoleBorderForTheme(ActiveTheme());
+
+    private int EffectiveInputOutlineWidth()
+        => _document.InputOutlineOverrideEnabled
+            ? _document.InputOutlineWidth
+            : _document.CustomStyleEnabled ? _document.PlateOutlineWidth : 2;
+
+    private Color EffectiveInputFillColor()
+        => _document.InputFillOverrideEnabled
+            ? _document.InputFillColor : KeyboardRenderer.ConsoleBackgroundForTheme(ActiveTheme());
+
+    private void ApplyInputPanelChange(Action<KeyboardDocument> apply)
+    {
+        if (_updatingEditor)
+            return;
+        PushUndo();
+        apply(_document);
+        MarkChanged();
+        PopulateInputInspector();
+    }
+
+    private void EnsureInputFillOverride()
+    {
+        if (_document.InputFillOverrideEnabled)
+            return;
+        _document.InputFillColor = KeyboardRenderer.ConsoleBackgroundForTheme(ActiveTheme());
+        _document.InputFillOverrideEnabled = true;
+    }
+
+    private void WireInputFillColor()
+    {
+        _inputFillColor.SwatchClicked += (_, _) =>
+        {
+            using var dialog = new ColorWheelDialog("INPUT inside color and transparency", EffectiveInputFillColor());
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+            PushUndo();
+            EnsureInputFillOverride();
+            _document.InputFillColor = dialog.SelectedColor;
+            MarkChanged();
+            PopulateInputInspector();
+        };
+        _inputFillColor.ColorCommitted += color =>
+        {
+            if (_updatingEditor)
+                return;
+            PushUndo();
+            EnsureInputFillOverride();
+            _document.InputFillColor = color;
+            MarkChanged();
+            PopulateInputInspector();
+        };
+    }
+
+    private void ResetInputFill()
+    {
+        if (_updatingEditor)
+            return;
+        if (!_document.InputFillOverrideEnabled)
+        {
+            SetStatus("Console INPUT is already using its keyboard theme fill.");
+            return;
+        }
+        PushUndo();
+        _document.InputFillOverrideEnabled = false;
+        MarkChanged();
+        PopulateInputInspector();
+        SetStatus("Console INPUT inside color reset to the keyboard theme fill.");
+    }
+
+    private void EnsureInputOutlineOverride()
+    {
+        if (_document.InputOutlineOverrideEnabled)
+            return;
+        _document.InputOutlineColor = _document.CustomStyleEnabled
+            ? _document.KeyColor : KeyboardRenderer.ConsoleBorderForTheme(ActiveTheme());
+        _document.InputOutlineWidth = _document.CustomStyleEnabled
+            ? _document.PlateOutlineWidth : 2;
+        _document.InputOutlineOverrideEnabled = true;
+    }
+
+    private void ApplyInputOutlineChange(Action<KeyboardDocument> apply)
+    {
+        if (_updatingEditor)
+            return;
+        PushUndo();
+        EnsureInputOutlineOverride();
+        apply(_document);
+        MarkChanged();
+        PopulateInputInspector();
+    }
+
+    private void WireInputOutlineColor()
+    {
+        _inputOutlineColor.SwatchClicked += (_, _) =>
+        {
+            using var dialog = new ColorWheelDialog("Input outline color and transparency", EffectiveInputOutlineColor());
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+            PushUndo();
+            EnsureInputOutlineOverride();
+            _document.InputOutlineColor = dialog.SelectedColor;
+            MarkChanged();
+            PopulateInputInspector();
+        };
+        _inputOutlineColor.ColorCommitted += color => ApplyInputOutlineChange(
+            document => document.InputOutlineColor = color);
+    }
+
+    private void ResetInputOutline()
+    {
+        if (_updatingEditor)
+            return;
+        if (!_document.InputOutlineOverrideEnabled)
+        {
+            SetStatus("Console INPUT is already using its default border.");
+            return;
+        }
+        PushUndo();
+        _document.InputOutlineOverrideEnabled = false;
+        MarkChanged();
+        PopulateInputInspector();
+        SetStatus("Console INPUT border reset to its theme/custom-style default.");
+    }
+
+    private void ResetInputTextPositions()
+    {
+        if (_updatingEditor)
+            return;
+        if (Math.Abs(_document.InputTitleOffsetX) < 0.001f
+            && Math.Abs(_document.InputTitleOffsetY) < 0.001f
+            && Math.Abs(_document.InputTextOffsetX) < 0.001f
+            && Math.Abs(_document.InputTextOffsetY) < 0.001f)
+            return;
+        PushUndo();
+        _document.InputTitleOffsetX = 0;
+        _document.InputTitleOffsetY = 0;
+        _document.InputTextOffsetX = 0;
+        _document.InputTextOffsetY = 0;
+        MarkChanged();
+        PopulateInputInspector();
+        SetStatus("Console INPUT heading and typed text returned to their runtime defaults.");
     }
 
     private void ApplyTopElementChange(float x, float y)
@@ -1005,11 +1303,20 @@ internal sealed class MainForm : Form
         if (_updatingEditor || _canvas.SelectedTopElement is not KeyboardTopElement element)
             return;
         PushUndo();
-        switch (element)
+        switch (_canvas.SelectionKind)
         {
-            case KeyboardTopElement.TextBar: _document.TextBarOffsetX = x; _document.TextBarOffsetY = y; break;
-            case KeyboardTopElement.Mode: _document.ModeButtonOffsetX = x; _document.ModeButtonOffsetY = y; break;
-            case KeyboardTopElement.Lock: _document.LockButtonOffsetX = x; _document.LockButtonOffsetY = y; break;
+            case CanvasSelectionKind.TopModeArtwork: _document.ModeArtworkOffsetX = x; _document.ModeArtworkOffsetY = y; break;
+            case CanvasSelectionKind.TopLockArtwork: _document.LockArtworkOffsetX = x; _document.LockArtworkOffsetY = y; break;
+            case CanvasSelectionKind.TopModeText: _document.ModeTextOffsetX = x; _document.ModeTextOffsetY = y; break;
+            case CanvasSelectionKind.TopLockText: _document.LockTextOffsetX = x; _document.LockTextOffsetY = y; break;
+            default:
+                switch (element)
+                {
+                    case KeyboardTopElement.TextBar: _document.TextBarOffsetX = x; _document.TextBarOffsetY = y; break;
+                    case KeyboardTopElement.Mode: _document.ModeButtonOffsetX = x; _document.ModeButtonOffsetY = y; break;
+                    case KeyboardTopElement.Lock: _document.LockButtonOffsetX = x; _document.LockButtonOffsetY = y; break;
+                }
+                break;
         }
         MarkChanged();
         PopulateInspector();
@@ -1023,17 +1330,28 @@ internal sealed class MainForm : Form
         float width = (float)_topElementWidth.Value;
         float height = (float)_topElementHeight.Value;
         float scale = (float)_topElementFontScale.Value;
-        switch (element)
+        switch (_canvas.SelectionKind)
         {
-            case KeyboardTopElement.TextBar:
-                _document.TextBarWidth = width; _document.TextBarHeight = height;
-                _document.TextBarFontScale = scale; break;
-            case KeyboardTopElement.Mode:
-                _document.ModeButtonWidth = width; _document.ModeButtonHeight = height;
+            case CanvasSelectionKind.TopModeArtwork:
+                _document.ModeArtworkWidth = width; _document.ModeArtworkHeight = height; break;
+            case CanvasSelectionKind.TopLockArtwork:
+                _document.LockArtworkWidth = width; _document.LockArtworkHeight = height; break;
+            case CanvasSelectionKind.TopModeText:
                 _document.ModeButtonFontScale = scale; break;
-            case KeyboardTopElement.Lock:
-                _document.LockButtonWidth = width; _document.LockButtonHeight = height;
+            case CanvasSelectionKind.TopLockText:
                 _document.LockButtonFontScale = scale; break;
+            default:
+                switch (element)
+                {
+                    case KeyboardTopElement.TextBar:
+                        _document.TextBarWidth = width; _document.TextBarHeight = height;
+                        _document.TextBarFontScale = scale; break;
+                    case KeyboardTopElement.Mode:
+                        _document.ModeButtonWidth = width; _document.ModeButtonHeight = height; break;
+                    case KeyboardTopElement.Lock:
+                        _document.LockButtonWidth = width; _document.LockButtonHeight = height; break;
+                }
+                break;
         }
         MarkChanged();
         PopulateInspector();
@@ -1344,6 +1662,7 @@ internal sealed class MainForm : Form
         _canvas.ReplaceDocument(_document, preserveCanvasSelection);
         PopulateInspector();
         PopulateAppearanceInspector();
+        PopulateInputInspector();
         PopulateArtworkInspector();
         PopulateControlsInspector();
         _canvas.RefreshPreview();
@@ -1382,6 +1701,163 @@ internal sealed class MainForm : Form
         finally
         {
             _updatingEditor = false;
+        }
+        RefreshConsoleInputPreview();
+    }
+
+    private void RefreshConsoleInputPreview()
+    {
+        if (_renderer is null || _consoleInputPreview.IsDisposed)
+            return;
+        Image? previous = _consoleInputPreview.Image;
+        Bitmap preview = _renderer.RenderConsolePreview(_document);
+        Rectangle selection = _selectedConsoleInputPart switch
+        {
+            ConsoleInputPart.Heading => _renderer.ConsoleTitleBounds(_document),
+            ConsoleInputPart.TypedText => _renderer.ConsoleTextBounds(_document),
+            _ => Rectangle.Empty
+        };
+        if (!selection.IsEmpty)
+        {
+            selection.Inflate(7, 5);
+            using Graphics graphics = Graphics.FromImage(preview);
+            using var pen = new Pen(AccentBright, 2)
+            {
+                DashStyle = System.Drawing.Drawing2D.DashStyle.Dash
+            };
+            graphics.DrawRectangle(pen, selection);
+        }
+        _consoleInputPreview.Image = preview;
+        previous?.Dispose();
+    }
+
+    private bool TryConsolePreviewPoint(Point clientPoint, out PointF texturePoint)
+    {
+        const float textureWidth = 1024f;
+        const float textureHeight = 120f;
+        float scale = Math.Min(_consoleInputPreview.ClientSize.Width / textureWidth,
+            _consoleInputPreview.ClientSize.Height / textureHeight);
+        if (scale <= 0)
+        {
+            texturePoint = default;
+            return false;
+        }
+        float displayedWidth = textureWidth * scale;
+        float displayedHeight = textureHeight * scale;
+        float left = (_consoleInputPreview.ClientSize.Width - displayedWidth) * 0.5f;
+        float top = (_consoleInputPreview.ClientSize.Height - displayedHeight) * 0.5f;
+        if (clientPoint.X < left || clientPoint.Y < top
+            || clientPoint.X >= left + displayedWidth || clientPoint.Y >= top + displayedHeight)
+        {
+            texturePoint = default;
+            return false;
+        }
+        texturePoint = new PointF((clientPoint.X - left) / scale, (clientPoint.Y - top) / scale);
+        return true;
+    }
+
+    private void ConsoleInputPreviewMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || _renderer is null
+            || !TryConsolePreviewPoint(e.Location, out PointF point))
+            return;
+
+        Rectangle title = _renderer.ConsoleTitleBounds(_document);
+        Rectangle typed = _renderer.ConsoleTextBounds(_document);
+        title.Inflate(12, 10);
+        typed.Inflate(12, 10);
+        _selectedConsoleInputPart = title.Contains(Point.Round(point))
+            ? ConsoleInputPart.Heading
+            : typed.Contains(Point.Round(point)) ? ConsoleInputPart.TypedText
+            : point.Y < 60 ? ConsoleInputPart.Heading : ConsoleInputPart.TypedText;
+        _draggingConsoleInputPart = true;
+        _consoleInputDragStart = point;
+        _pendingConsoleInputUndo = _document.Clone();
+        if (_selectedConsoleInputPart == ConsoleInputPart.Heading)
+        {
+            _consoleInputStartX = _document.InputTitleOffsetX;
+            _consoleInputStartY = _document.InputTitleOffsetY;
+        }
+        else
+        {
+            _consoleInputStartX = _document.InputTextOffsetX;
+            _consoleInputStartY = _document.InputTextOffsetY;
+        }
+        _consoleInputPreview.Capture = true;
+        _consoleInputPreview.Cursor = Cursors.SizeAll;
+        RefreshConsoleInputPreview();
+        SetStatus(_selectedConsoleInputPart == ConsoleInputPart.Heading
+            ? "Dragging the INPUT heading."
+            : "Dragging the console's typed-text row.");
+    }
+
+    private void ConsoleInputPreviewMouseMove(object? sender, MouseEventArgs e)
+    {
+        if (!TryConsolePreviewPoint(e.Location, out PointF point))
+        {
+            if (!_draggingConsoleInputPart)
+                _consoleInputPreview.Cursor = Cursors.Default;
+            return;
+        }
+        _consoleInputPreview.Cursor = Cursors.SizeAll;
+        if (!_draggingConsoleInputPart || (e.Button & MouseButtons.Left) == 0)
+            return;
+
+        float x = Math.Clamp(_consoleInputStartX + point.X - _consoleInputDragStart.X, -2048f, 2048f);
+        float y = Math.Clamp(_consoleInputStartY + point.Y - _consoleInputDragStart.Y, -240f, 240f);
+        if (_selectedConsoleInputPart == ConsoleInputPart.Heading)
+        {
+            _document.InputTitleOffsetX = x;
+            _document.InputTitleOffsetY = y;
+        }
+        else
+        {
+            _document.InputTextOffsetX = x;
+            _document.InputTextOffsetY = y;
+        }
+        _document.IsDirty = true;
+        _redo.Clear();
+        UpdateHistoryControls();
+        UpdateTitle();
+        PopulateInputInspector();
+    }
+
+    private void ConsoleInputPreviewMouseUp(object? sender, MouseEventArgs e)
+    {
+        if (!_draggingConsoleInputPart || e.Button != MouseButtons.Left)
+            return;
+        _draggingConsoleInputPart = false;
+        _consoleInputPreview.Capture = false;
+        if (_pendingConsoleInputUndo is not null)
+        {
+            if (!_pendingConsoleInputUndo.IsEquivalentForHistory(_document))
+                PushUndo(_pendingConsoleInputUndo);
+            else
+                _document.IsDirty = _pendingConsoleInputUndo.IsDirty;
+        }
+        _pendingConsoleInputUndo = null;
+        UpdateHistoryControls();
+        UpdateTitle();
+        PopulateInputInspector();
+        SetStatus(_selectedConsoleInputPart == ConsoleInputPart.Heading
+            ? "INPUT heading position saved in the keyboard design."
+            : "Typed-text position saved in the keyboard design.");
+    }
+
+    private void UpdatePreviewMode()
+    {
+        bool showInput = _inspectorTabs.SelectedIndex == 2;
+        _consoleInputPreview.Visible = showInput;
+        _canvas.Visible = !showInput;
+        if (showInput)
+        {
+            RefreshConsoleInputPreview();
+            _consoleInputPreview.BringToFront();
+            SetStatus("Console INPUT preview: exact 1024x120 runtime panel. Choose another tab to return to the keyboard canvas.");
+        }
+        else
+        {
+            _canvas.BringToFront();
         }
     }
 
@@ -1431,36 +1907,59 @@ internal sealed class MainForm : Form
     private void PopulateTopElementInspectorFields()
     {
         KeyboardTopElement? topElement = _canvas.HasMultipleSelection ? null : _canvas.SelectedTopElement;
-        _topElementLabel.Text = topElement switch
+        CanvasSelectionKind selectionKind = _canvas.SelectionKind;
+        _topElementLabel.Text = selectionKind switch
         {
-            KeyboardTopElement.TextBar => "Text bar",
-            KeyboardTopElement.Mode => "PC / VR Mode",
-            KeyboardTopElement.Lock => "Lock",
+            CanvasSelectionKind.TopTextBar => "Text bar",
+            CanvasSelectionKind.TopMode => "PC / VR Mode — interaction box",
+            CanvasSelectionKind.TopModeArtwork => "PC / VR Mode — state image",
+            CanvasSelectionKind.TopModeText => "PC / VR Mode — text",
+            CanvasSelectionKind.TopLock => "Lock / Unlock — interaction box",
+            CanvasSelectionKind.TopLockArtwork => "Lock / Unlock — state image",
+            CanvasSelectionKind.TopLockText => "Lock / Unlock — text",
             _ => "Click a top-bar element"
         };
-        (float topX, float topY) = topElement switch
+        (float topX, float topY) = selectionKind switch
         {
-            KeyboardTopElement.TextBar => (_document.TextBarOffsetX, _document.TextBarOffsetY),
-            KeyboardTopElement.Mode => (_document.ModeButtonOffsetX, _document.ModeButtonOffsetY),
-            KeyboardTopElement.Lock => (_document.LockButtonOffsetX, _document.LockButtonOffsetY),
+            CanvasSelectionKind.TopTextBar => (_document.TextBarOffsetX, _document.TextBarOffsetY),
+            CanvasSelectionKind.TopMode => (_document.ModeButtonOffsetX, _document.ModeButtonOffsetY),
+            CanvasSelectionKind.TopModeArtwork => (_document.ModeArtworkOffsetX, _document.ModeArtworkOffsetY),
+            CanvasSelectionKind.TopModeText => (_document.ModeTextOffsetX, _document.ModeTextOffsetY),
+            CanvasSelectionKind.TopLock => (_document.LockButtonOffsetX, _document.LockButtonOffsetY),
+            CanvasSelectionKind.TopLockArtwork => (_document.LockArtworkOffsetX, _document.LockArtworkOffsetY),
+            CanvasSelectionKind.TopLockText => (_document.LockTextOffsetX, _document.LockTextOffsetY),
             _ => (0, 0)
         };
         _topElementX.Value = ClampDecimal((decimal)topX, _topElementX);
         _topElementY.Value = ClampDecimal((decimal)topY, _topElementY);
-        float topWidth = topElement is KeyboardTopElement selected && _renderer is not null
-            ? _renderer.TopElementWidth(_document, selected) : 8;
-        float topHeight = topElement is KeyboardTopElement selectedHeight && _renderer is not null
-            ? _renderer.TopElementHeight(_document, selectedHeight) : 8;
+        bool artworkSelected = selectionKind is CanvasSelectionKind.TopModeArtwork or CanvasSelectionKind.TopLockArtwork;
+        bool textSelected = selectionKind is CanvasSelectionKind.TopModeText or CanvasSelectionKind.TopLockText;
+        RectangleF artworkRectangle = artworkSelected && topElement is KeyboardTopElement artworkElement && _renderer is not null
+            ? _renderer.TopStateArtworkRectangle(_document, artworkElement) : RectangleF.Empty;
+        float topWidth = artworkSelected ? artworkRectangle.Width
+            : topElement is KeyboardTopElement selected && _renderer is not null
+                ? _renderer.TopElementWidth(_document, selected) : 8;
+        float topHeight = artworkSelected ? artworkRectangle.Height
+            : topElement is KeyboardTopElement selectedHeight && _renderer is not null
+                ? _renderer.TopElementHeight(_document, selectedHeight) : 8;
         float topFontScale = topElement is KeyboardTopElement selectedScale && _renderer is not null
             ? _renderer.TopElementFontScale(_document, selectedScale) : 1;
         _topElementWidth.Value = ClampDecimal((decimal)topWidth, _topElementWidth);
         _topElementHeight.Value = ClampDecimal((decimal)topHeight, _topElementHeight);
         _topElementFontScale.Value = ClampDecimal((decimal)topFontScale, _topElementFontScale);
-        foreach (Control control in new Control[]
-        {
-            _topElementX, _topElementY, _topElementWidth, _topElementHeight, _topElementFontScale
-        })
-            control.Enabled = topElement is not null;
+        _topElementX.Enabled = topElement is not null;
+        _topElementY.Enabled = topElement is not null;
+        _topElementWidth.Enabled = topElement is not null && !textSelected;
+        _topElementHeight.Enabled = topElement is not null && !textSelected;
+        _topElementFontScale.Enabled = selectionKind == CanvasSelectionKind.TopTextBar || textSelected;
+        _modeStatePreview.SelectedIndex = _renderer?.PreviewPcMode == true ? 1 : 0;
+        _lockStatePreview.SelectedIndex = _renderer?.PreviewHeadLocked == true ? 1 : 0;
+        _modeTextOverArtwork.Checked = _document.ModeTextOverArtwork;
+        _lockTextOverArtwork.Checked = _document.LockTextOverArtwork;
+        PopulateStateArtworkName(_modeVrArtworkName, _document.ModeVrArtworkImagePath, "Text fallback");
+        PopulateStateArtworkName(_modePcArtworkName, _document.ModePcArtworkImagePath, "Text fallback");
+        PopulateStateArtworkName(_lockWorldArtworkName, _document.LockWorldArtworkImagePath, "Text fallback");
+        PopulateStateArtworkName(_lockHeadArtworkName, _document.LockHeadArtworkImagePath, "Text fallback");
     }
 
     private void PopulateAppearanceInspector()
@@ -1535,6 +2034,36 @@ internal sealed class MainForm : Form
         {
             _updatingEditor = false;
         }
+        RefreshConsoleInputPreview();
+    }
+
+    private void PopulateInputInspector()
+    {
+        _updatingEditor = true;
+        try
+        {
+            _consoleInputBackgroundName.Text = string.IsNullOrWhiteSpace(_document.ConsoleInputBackgroundImagePath)
+                ? "Theme fill (no custom image)"
+                : Path.GetFileName(_document.ConsoleInputBackgroundImagePath);
+            _consoleInputBackgroundName.ForeColor = TextMuted;
+            SetSwatch(_inputFillColor, EffectiveInputFillColor());
+            _inputOutlineVisible.Checked = _document.InputOutlineVisible;
+            _inputOutlineWidth.Value = ClampDecimal(EffectiveInputOutlineWidth(), _inputOutlineWidth);
+            SetSwatch(_inputOutlineColor, EffectiveInputOutlineColor());
+            _inputTitleX.Value = ClampDecimal((decimal)_document.InputTitleOffsetX, _inputTitleX);
+            _inputTitleY.Value = ClampDecimal((decimal)_document.InputTitleOffsetY, _inputTitleY);
+            _inputTextX.Value = ClampDecimal((decimal)_document.InputTextOffsetX, _inputTextX);
+            _inputTextY.Value = ClampDecimal((decimal)_document.InputTextOffsetY, _inputTextY);
+            _inputFillColor.Enabled = true;
+            _inputOutlineColor.Enabled = true;
+            _inputOutlineWidth.Enabled = _document.InputOutlineVisible;
+            _inputOutlineColor.Enabled = _document.InputOutlineVisible;
+        }
+        finally
+        {
+            _updatingEditor = false;
+        }
+        RefreshConsoleInputPreview();
     }
 
     private void PopulateArtworkInspector()
@@ -1810,6 +2339,97 @@ internal sealed class MainForm : Form
         }
     }
 
+    private Control StateArtworkActions(TopStateArtworkSlot slot, Label nameLabel)
+    {
+        nameLabel.ForeColor = TextMuted;
+        nameLabel.Margin = new Padding(4, 7, 3, 0);
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            WrapContents = true,
+            Margin = Padding.Empty
+        };
+        actions.Controls.Add(ActionButton("Choose PNG", (_, _) => ChooseStateArtwork(slot), compact: true));
+        actions.Controls.Add(ActionButton("Use text", (_, _) => ClearStateArtwork(slot), compact: true));
+        actions.Controls.Add(nameLabel);
+        return actions;
+    }
+
+    private void ChooseStateArtwork(TopStateArtworkSlot slot)
+    {
+        using var dialog = PngArtworkDialog($"Choose PNG artwork for {DescribeStateArtworkSlot(slot)}");
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+        PushUndo();
+        SetStateArtwork(slot, dialog.FileName, StateArtworkPortableName(slot));
+        MarkChanged();
+        PopulateInspector();
+        SetStatus($"{DescribeStateArtworkSlot(slot)} artwork selected. It will travel with .ocukb and MO2 exports.");
+    }
+
+    private void ClearStateArtwork(TopStateArtworkSlot slot)
+    {
+        (string? path, string? fileName) = GetStateArtwork(slot);
+        if (string.IsNullOrWhiteSpace(path) && string.IsNullOrWhiteSpace(fileName))
+            return;
+        PushUndo();
+        SetStateArtwork(slot, null, null);
+        MarkChanged();
+        PopulateInspector();
+        SetStatus($"{DescribeStateArtworkSlot(slot)} returned to the ordinary text fallback.");
+    }
+
+    private (string? path, string? fileName) GetStateArtwork(TopStateArtworkSlot slot) => slot switch
+    {
+        TopStateArtworkSlot.ModeVr => (_document.ModeVrArtworkImagePath, _document.ModeVrArtworkFileName),
+        TopStateArtworkSlot.ModePc => (_document.ModePcArtworkImagePath, _document.ModePcArtworkFileName),
+        TopStateArtworkSlot.LockWorld => (_document.LockWorldArtworkImagePath, _document.LockWorldArtworkFileName),
+        _ => (_document.LockHeadArtworkImagePath, _document.LockHeadArtworkFileName)
+    };
+
+    private void SetStateArtwork(TopStateArtworkSlot slot, string? path, string? fileName)
+    {
+        switch (slot)
+        {
+            case TopStateArtworkSlot.ModeVr:
+                _document.ModeVrArtworkImagePath = path;
+                _document.ModeVrArtworkFileName = fileName;
+                break;
+            case TopStateArtworkSlot.ModePc:
+                _document.ModePcArtworkImagePath = path;
+                _document.ModePcArtworkFileName = fileName;
+                break;
+            case TopStateArtworkSlot.LockWorld:
+                _document.LockWorldArtworkImagePath = path;
+                _document.LockWorldArtworkFileName = fileName;
+                break;
+            case TopStateArtworkSlot.LockHead:
+                _document.LockHeadArtworkImagePath = path;
+                _document.LockHeadArtworkFileName = fileName;
+                break;
+        }
+    }
+
+    private static string StateArtworkPortableName(TopStateArtworkSlot slot) => slot switch
+    {
+        TopStateArtworkSlot.ModeVr => KeyboardDocument.ModeVrArtworkPortableName,
+        TopStateArtworkSlot.ModePc => KeyboardDocument.ModePcArtworkPortableName,
+        TopStateArtworkSlot.LockWorld => KeyboardDocument.LockWorldArtworkPortableName,
+        _ => KeyboardDocument.LockHeadArtworkPortableName
+    };
+
+    private static string DescribeStateArtworkSlot(TopStateArtworkSlot slot) => slot switch
+    {
+        TopStateArtworkSlot.ModeVr => "VR Mode",
+        TopStateArtworkSlot.ModePc => "PC Mode",
+        TopStateArtworkSlot.LockWorld => "world/unlocked",
+        _ => "head-locked"
+    };
+
+    private static void PopulateStateArtworkName(Label label, string? imagePath, string fallback)
+        => label.Text = string.IsNullOrWhiteSpace(imagePath) ? fallback : Path.GetFileName(imagePath);
+
     private void ChooseBackground()
     {
         using var dialog = BackgroundArtworkDialog("Choose a custom keyboard background");
@@ -1853,6 +2473,43 @@ internal sealed class MainForm : Form
         _document.BackgroundBreatheEnabled = false;
         MarkChanged();
         PopulateArtworkInspector();
+    }
+
+    private void ChooseConsoleInputBackground()
+    {
+        using var dialog = BackgroundArtworkDialog("Choose artwork for the console INPUT panel");
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+        string extension = Path.GetExtension(dialog.FileName);
+        if (extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase))
+        {
+            DialogResult warning = MessageBox.Show(this,
+                "JPEG has no transparency and may show compression artifacts. PNG is strongly recommended for INPUT panel artwork.\n\nKeyboard Studio will convert this JPEG to PNG when you Save, Install, or export a mod. Continue?",
+                "JPEG artwork warning", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            if (warning != DialogResult.OK)
+                return;
+        }
+        PushUndo();
+        _document.ConsoleInputBackgroundImagePath = dialog.FileName;
+        _document.ConsoleInputBackgroundFileName = KeyboardDocument.ConsoleInputBackgroundPortableName;
+        MarkChanged();
+        PopulateInputInspector();
+        _inspectorTabs.SelectedIndex = 2;
+        SetStatus("Console INPUT artwork selected. It is scaled to 1024x120 and uses the panel's existing swapchain.");
+    }
+
+    private void ClearConsoleInputBackground()
+    {
+        if (string.IsNullOrWhiteSpace(_document.ConsoleInputBackgroundImagePath)
+            && string.IsNullOrWhiteSpace(_document.ConsoleInputBackgroundFileName))
+            return;
+        PushUndo();
+        _document.ConsoleInputBackgroundImagePath = null;
+        _document.ConsoleInputBackgroundFileName = null;
+        MarkChanged();
+        PopulateInputInspector();
+        SetStatus("Console INPUT artwork cleared; the panel is using its theme fill.");
     }
 
     private void ChooseOverlay()
@@ -2277,6 +2934,16 @@ internal sealed class MainForm : Form
         if (string.IsNullOrWhiteSpace(directory))
             return;
         CopyArtwork(_document.BackgroundImagePath, Path.Combine(directory, "OCUKeyboardBackground.png"));
+        CopyArtwork(_document.ConsoleInputBackgroundImagePath,
+            Path.Combine(directory, KeyboardDocument.ConsoleInputBackgroundPortableName));
+        CopyArtwork(_document.ModeVrArtworkImagePath,
+            Path.Combine(directory, KeyboardDocument.ModeVrArtworkPortableName));
+        CopyArtwork(_document.ModePcArtworkImagePath,
+            Path.Combine(directory, KeyboardDocument.ModePcArtworkPortableName));
+        CopyArtwork(_document.LockWorldArtworkImagePath,
+            Path.Combine(directory, KeyboardDocument.LockWorldArtworkPortableName));
+        CopyArtwork(_document.LockHeadArtworkImagePath,
+            Path.Combine(directory, KeyboardDocument.LockHeadArtworkPortableName));
         for (int index = 0; index < _document.Sprites.Count; index++)
             CopyArtwork(_document.Sprites[index].SourcePath,
                 Path.Combine(directory, KeyboardDocument.SpriteFileName(index)));

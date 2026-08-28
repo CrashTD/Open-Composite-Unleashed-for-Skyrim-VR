@@ -94,9 +94,13 @@ internal sealed class KeyboardRenderer
     public int SelectedKeyId { get; set; } = -1;
     public bool Pressed { get; set; }
     public bool ShowGrid { get; set; } = true;
+    public bool PreviewPcMode { get; set; }
+    public bool PreviewHeadLocked { get; set; }
     public double AnimationTimeSeconds { get; set; }
     private PreparedArtwork? _backgroundCache;
+    private PreparedArtwork? _consoleBackgroundCache;
     private readonly Dictionary<Guid, PreparedArtwork> _spriteCache = [];
+    private readonly Dictionary<string, PreparedArtwork> _stateArtworkCache = new(StringComparer.Ordinal);
     private Bitmap? _spacebarImage;
     private string? _spacebarImagePath;
 
@@ -170,28 +174,74 @@ internal sealed class KeyboardRenderer
     public bool IsPointOnTopElementContent(KeyboardDocument document, KeyboardTopElement element, PointF point)
     {
         RectangleF rectangle = TopElementRectangle(document, element);
-        string text = element switch
-        {
-            KeyboardTopElement.TextBar => "OCU Keyboard Studio Preview",
-            KeyboardTopElement.Mode => "PC MODE",
-            _ => "LOCK"
-        };
+        string text = TopElementText(element);
         float scale = TopElementFontScale(document, element);
-        return Font.HitTestText(text, rectangle, 0, 0, scale, point);
+        GetTopTextOffsets(document, element, out float offsetX, out float offsetY);
+        return Font.HitTestText(text, rectangle, offsetX, offsetY, scale, point);
     }
 
     public RectangleF TopElementContentRectangle(KeyboardDocument document, KeyboardTopElement element)
     {
         RectangleF rectangle = TopElementRectangle(document, element);
-        string text = element switch
-        {
-            KeyboardTopElement.TextBar => "OCU Keyboard Studio Preview",
-            KeyboardTopElement.Mode => "PC MODE",
-            _ => "LOCK"
-        };
+        string text = TopElementText(element);
         float scale = TopElementFontScale(document, element);
-        RectangleF visible = Font.VisibleTextRectangle(text, rectangle, 0, 0, scale);
+        GetTopTextOffsets(document, element, out float offsetX, out float offsetY);
+        RectangleF visible = Font.VisibleTextRectangle(text, rectangle, offsetX, offsetY, scale);
         return visible.IsEmpty ? RectangleF.Empty : RectangleF.Inflate(visible, 2, 2);
+    }
+
+    public RectangleF TopStateArtworkRectangle(KeyboardDocument document, KeyboardTopElement element)
+    {
+        RectangleF button = TopElementRectangle(document, element);
+        if (element == KeyboardTopElement.TextBar)
+            return RectangleF.Empty;
+        float offsetX = element == KeyboardTopElement.Mode ? document.ModeArtworkOffsetX : document.LockArtworkOffsetX;
+        float offsetY = element == KeyboardTopElement.Mode ? document.ModeArtworkOffsetY : document.LockArtworkOffsetY;
+        float authoredWidth = element == KeyboardTopElement.Mode ? document.ModeArtworkWidth : document.LockArtworkWidth;
+        float authoredHeight = element == KeyboardTopElement.Mode ? document.ModeArtworkHeight : document.LockArtworkHeight;
+        return new RectangleF(button.Left + offsetX, button.Top + offsetY,
+            authoredWidth > 0 ? authoredWidth : button.Width,
+            authoredHeight > 0 ? authoredHeight : button.Height);
+    }
+
+    public bool HasTopStateArtwork(KeyboardDocument document, KeyboardTopElement element)
+    {
+        string? path = TopStateArtworkPath(document, element);
+        return !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+    }
+
+    public bool IsTopStateTextVisible(KeyboardDocument document, KeyboardTopElement element)
+    {
+        if (element == KeyboardTopElement.TextBar)
+            return true;
+        bool artwork = HasTopStateArtwork(document, element);
+        return !artwork || (element == KeyboardTopElement.Mode
+            ? document.ModeTextOverArtwork : document.LockTextOverArtwork);
+    }
+
+    private string TopElementText(KeyboardTopElement element) => element switch
+    {
+        KeyboardTopElement.TextBar => "OCU Keyboard Studio Preview",
+        KeyboardTopElement.Mode => PreviewPcMode ? "PC MODE" : "VR MODE",
+        _ => "LOCK"
+    };
+
+    private string? TopStateArtworkPath(KeyboardDocument document, KeyboardTopElement element) => element switch
+    {
+        KeyboardTopElement.Mode => PreviewPcMode
+            ? document.ModePcArtworkImagePath : document.ModeVrArtworkImagePath,
+        KeyboardTopElement.Lock => PreviewHeadLocked
+            ? document.LockHeadArtworkImagePath : document.LockWorldArtworkImagePath,
+        _ => null
+    };
+
+    private static void GetTopTextOffsets(KeyboardDocument document, KeyboardTopElement element,
+        out float offsetX, out float offsetY)
+    {
+        offsetX = element == KeyboardTopElement.Mode ? document.ModeTextOffsetX
+            : element == KeyboardTopElement.Lock ? document.LockTextOffsetX : 0;
+        offsetY = element == KeyboardTopElement.Mode ? document.ModeTextOffsetY
+            : element == KeyboardTopElement.Lock ? document.LockTextOffsetY : 0;
     }
 
     public bool HasVisibleKeyContent(KeyboardDocument document, KeyboardKey key)
@@ -284,6 +334,71 @@ internal sealed class KeyboardRenderer
 
     public Bitmap RenderBackgroundExact(KeyboardDocument document)
         => CreateBackground(document).ToBitmap();
+
+    public Bitmap RenderConsolePreview(KeyboardDocument document, string sampleText = "player.setav speedmult 100")
+    {
+        const int width = 1024;
+        const int height = 120;
+        const int titleHeight = 60;
+        var surface = new PixelSurface(width, height);
+        Color background = InputFill(document);
+        Color border = InputOutline(document);
+        Color titleFill = document.InputFillOverrideEnabled
+            ? document.InputFillColor : ConsoleTitleFillForTheme(Theme);
+        int borderWidth = InputOutlineWidth(document, 2);
+
+        surface.FillRounded(new Rectangle(0, 0, width, height), 0, background);
+        surface.FillRounded(new Rectangle(borderWidth, borderWidth,
+            width - borderWidth * 2, titleHeight), 0, titleFill);
+        if (!string.IsNullOrWhiteSpace(document.ConsoleInputBackgroundImagePath)
+            && File.Exists(document.ConsoleInputBackgroundImagePath))
+        {
+            string signature = ArtworkSignature(document.ConsoleInputBackgroundImagePath,
+                width, height, 0, 0);
+            if (_consoleBackgroundCache is null || _consoleBackgroundCache.Signature != signature)
+                _consoleBackgroundCache = new PreparedArtwork(signature,
+                    PrepareArtwork(document.ConsoleInputBackgroundImagePath, width, height, 0, 0));
+            surface.BlendSurface(_consoleBackgroundCache.Surface, 0, 0, 100);
+        }
+        if (borderWidth > 0)
+        {
+            surface.StrokeRounded(new Rectangle(0, 0, width, height), 0, borderWidth, border);
+            surface.FillRounded(new Rectangle(borderWidth, borderWidth + titleHeight,
+                width - borderWidth * 2, borderWidth), 0, border);
+        }
+
+        Rectangle titleBounds = ConsoleTitleBounds(document);
+        Rectangle textBounds = ConsoleTextBounds(document, sampleText);
+        Color ink = document.CustomStyleEnabled ? document.FontColor : ConsoleInkForTheme(Theme);
+        DrawStyledTextAt(surface, document, "INPUT", titleBounds.X, titleBounds.Y, 1, ink);
+        DrawStyledTextAt(surface, document, sampleText, textBounds.X, textBounds.Y, 1, ink);
+        return surface.ToBitmap();
+    }
+
+    internal Rectangle ConsoleTitleBounds(KeyboardDocument document)
+    {
+        const int width = 1024;
+        const int titleHeight = 60;
+        int borderWidth = InputOutlineWidth(document, 2);
+        return new Rectangle(
+            (width - Font.Width("INPUT")) / 2 + (int)Math.Round(document.InputTitleOffsetX),
+            borderWidth + (titleHeight - Font.LineHeight) / 2 + (int)Math.Round(document.InputTitleOffsetY),
+            Math.Max(1, Font.Width("INPUT")), Math.Max(1, Font.LineHeight));
+    }
+
+    internal Rectangle ConsoleTextBounds(KeyboardDocument document, string sampleText = "player.setav speedmult 100")
+    {
+        const int height = 120;
+        const int titleHeight = 60;
+        const int padding = 8;
+        int borderWidth = InputOutlineWidth(document, 2);
+        int contentTop = borderWidth + titleHeight + borderWidth;
+        int contentHeight = height - contentTop - borderWidth;
+        return new Rectangle(
+            padding + borderWidth + (int)Math.Round(document.InputTextOffsetX),
+            contentTop + (contentHeight - Font.LineHeight) / 2 + (int)Math.Round(document.InputTextOffsetY),
+            Math.Max(1, Font.Width(sampleText)), Math.Max(1, Font.LineHeight));
+    }
 
     private PixelSurface CreateBackground(KeyboardDocument document)
     {
@@ -473,6 +588,48 @@ internal sealed class KeyboardRenderer
 
     private Color Ink(KeyboardDocument document) => document.CustomStyleEnabled ? document.FontColor : Theme.Ink;
     private Color KeyAccent(KeyboardDocument document) => document.CustomStyleEnabled ? document.KeyColor : Theme.Accent;
+    internal static Color ConsoleBorderForTheme(KeyboardTheme theme) => theme.Name switch
+    {
+        "Parchment" => Color.FromArgb(220, 60, 40, 20),
+        "SkyUI Dark" => Color.FromArgb(80, 255, 255, 255),
+        "Dwemer" => Color.FromArgb(220, 190, 140, 70),
+        "Sovngarde" => Color.FromArgb(85, 255, 255, 255),
+        _ => Color.FromArgb(190, theme.Accent.R, theme.Accent.G, theme.Accent.B)
+    };
+
+    internal static Color ConsoleBackgroundForTheme(KeyboardTheme theme) => theme.Name switch
+    {
+        "Parchment" => Color.FromArgb(200, 220, 195, 160),
+        "SkyUI Dark" => Color.FromArgb(215, 12, 12, 12),
+        "Dwemer" => Color.FromArgb(225, 38, 30, 20),
+        "Sovngarde" => Color.FromArgb(215, 10, 14, 30),
+        _ => Color.FromArgb(235, 14, 17, 22)
+    };
+
+    private static Color ConsoleTitleFillForTheme(KeyboardTheme theme) => theme.Name switch
+    {
+        "Parchment" => Color.FromArgb(100, 80, 55, 25),
+        "SkyUI Dark" => Color.FromArgb(70, 255, 255, 255),
+        "Dwemer" => Color.FromArgb(0, 190, 140, 70),
+        "Sovngarde" => Color.FromArgb(75, 255, 255, 255),
+        _ => Color.FromArgb(175, theme.Accent.R, theme.Accent.G, theme.Accent.B)
+    };
+
+    private static Color ConsoleInkForTheme(KeyboardTheme theme) => theme.Name switch
+    {
+        "Parchment" => Color.FromArgb(255, 30, 15, 5),
+        _ => theme.Ink
+    };
+
+    private Color InputOutline(KeyboardDocument document) => document.InputOutlineOverrideEnabled
+        ? document.InputOutlineColor
+        : document.CustomStyleEnabled ? document.KeyColor : ConsoleBorderForTheme(Theme);
+    private int InputOutlineWidth(KeyboardDocument document, int themeFallback) =>
+        !document.InputOutlineVisible ? 0 : document.InputOutlineOverrideEnabled
+            ? Math.Clamp(document.InputOutlineWidth, 0, 8)
+            : document.CustomStyleEnabled ? Math.Clamp(document.PlateOutlineWidth, 0, 8) : themeFallback;
+    private Color InputFill(KeyboardDocument document) => document.InputFillOverrideEnabled
+        ? document.InputFillColor : ConsoleBackgroundForTheme(Theme);
     private Color PlateFill(KeyboardDocument document) => document.CustomStyleEnabled ? document.PlateFillColor : Theme.KeyIdle;
     private Color Glow(KeyboardDocument document) => document.CustomStyleEnabled ? document.GlowColor : Theme.Bright;
     private Color Hover(KeyboardDocument document) => document.CustomStyleEnabled ? document.HoverColor : Theme.Bright;
@@ -480,6 +637,20 @@ internal sealed class KeyboardRenderer
 
     private void DrawStyledText(PixelSurface surface, KeyboardDocument document, string text, Rectangle box,
         float offsetX, float offsetY, float scale, Color color)
+    {
+        (Color? outline, Color? glow, int glowRadius) = TextEffects(document);
+        Font.DrawTextCentered(surface, text, box, offsetX, offsetY, scale, color,
+            outline, glow, glowRadius);
+    }
+
+    private void DrawStyledTextAt(PixelSurface surface, KeyboardDocument document, string text,
+        float x, float y, float scale, Color color)
+    {
+        (Color? outline, Color? glow, int glowRadius) = TextEffects(document);
+        Font.DrawTextAt(surface, text, x, y, scale, color, outline, glow, glowRadius);
+    }
+
+    private (Color? Outline, Color? Glow, int GlowRadius) TextEffects(KeyboardDocument document)
     {
         Color? outline = Outline(document)
             ? document.CustomStyleEnabled ? document.FontOutlineColor : Color.FromArgb(220, 8, 11, 15)
@@ -497,8 +668,7 @@ internal sealed class KeyboardRenderer
             glow = Color.FromArgb(alpha, document.FontGlowColor);
             glowRadius = Math.Clamp(document.FontGlowRadius, 1, 8);
         }
-        Font.DrawTextCentered(surface, text, box, offsetX, offsetY, scale, color,
-            outline, glow, glowRadius);
+        return (outline, glow, glowRadius);
     }
 
     private void DrawTopControls(PixelSurface surface, KeyboardDocument document)
@@ -508,18 +678,49 @@ internal sealed class KeyboardRenderer
         Rectangle textBar = Rectangle.Round(TopElementRectangle(document, KeyboardTopElement.TextBar));
         if (document.TopButtonPlatesEnabled)
         {
-            DrawPlate(surface, document, mode, false);
-            DrawPlate(surface, document, lockButton, false);
+            Color? activeModeFill = document.CustomStyleEnabled
+                ? Color.FromArgb(Math.Clamp(document.KeyColor.A / 2, 36, 140), document.KeyColor)
+                : null;
+            DrawPlate(surface, document, mode, PreviewPcMode, PreviewPcMode ? activeModeFill : null);
+            DrawPlate(surface, document, lockButton, PreviewHeadLocked,
+                PreviewHeadLocked ? activeModeFill : null);
         }
-        DrawStyledText(surface, document, "PC MODE", mode, 0, 0,
-            TopElementFontScale(document, KeyboardTopElement.Mode), Ink(document));
-        DrawStyledText(surface, document, "LOCK", lockButton, 0, 0,
-            TopElementFontScale(document, KeyboardTopElement.Lock), Ink(document));
+        string? modeArtwork = TopStateArtworkPath(document, KeyboardTopElement.Mode);
+        string? lockArtwork = TopStateArtworkPath(document, KeyboardTopElement.Lock);
+        Rectangle modeArtworkRectangle = Rectangle.Round(TopStateArtworkRectangle(document, KeyboardTopElement.Mode));
+        Rectangle lockArtworkRectangle = Rectangle.Round(TopStateArtworkRectangle(document, KeyboardTopElement.Lock));
+        bool drewModeArtwork = DrawStateArtwork(surface, modeArtwork, modeArtworkRectangle, "mode");
+        bool drewLockArtwork = DrawStateArtwork(surface, lockArtwork, lockArtworkRectangle, "lock");
+        if (!drewModeArtwork || document.ModeTextOverArtwork)
+            DrawStyledText(surface, document, PreviewPcMode ? "PC MODE" : "VR MODE", mode,
+                document.ModeTextOffsetX, document.ModeTextOffsetY,
+                TopElementFontScale(document, KeyboardTopElement.Mode), Ink(document));
+        if (!drewLockArtwork || document.LockTextOverArtwork)
+            DrawStyledText(surface, document, "LOCK", lockButton,
+                document.LockTextOffsetX, document.LockTextOffsetY,
+                TopElementFontScale(document, KeyboardTopElement.Lock), Ink(document));
         if (document.InputBarPlateEnabled)
             DrawPlate(surface, document, textBar, false);
         Color ink = Ink(document);
         DrawStyledText(surface, document, "OCU Keyboard Studio Preview", textBar, 0, 0,
             TopElementFontScale(document, KeyboardTopElement.TextBar), Color.FromArgb(170, ink));
+    }
+
+    private bool DrawStateArtwork(PixelSurface surface, string? path, Rectangle rectangle, string cacheSlot)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)
+            || rectangle.Width <= 0 || rectangle.Height <= 0)
+            return false;
+        string signature = ArtworkSignature(path, rectangle.Width, rectangle.Height, 0, 0);
+        if (!_stateArtworkCache.TryGetValue(cacheSlot, out PreparedArtwork? cached)
+            || cached.Signature != signature)
+        {
+            cached = new PreparedArtwork(signature,
+                PrepareArtwork(path, rectangle.Width, rectangle.Height, 0, 0));
+            _stateArtworkCache[cacheSlot] = cached;
+        }
+        surface.BlendSurface(cached.Surface, rectangle.X, rectangle.Y, 100);
+        return true;
     }
 
     private void DrawKeyPlate(PixelSurface surface, KeyboardDocument document, Rectangle rectangle, bool active, bool selected)
@@ -564,11 +765,14 @@ internal sealed class KeyboardRenderer
     private int EffectiveRoundness(KeyboardDocument document, Rectangle rectangle)
         => Math.Min(document.CustomStyleEnabled ? document.KeyRoundness : 14, rectangle.Height / 2);
 
-    private void DrawPlate(PixelSurface surface, KeyboardDocument document, Rectangle rectangle, bool hot)
+    private void DrawPlate(PixelSurface surface, KeyboardDocument document, Rectangle rectangle, bool hot,
+        Color? fillOverride = null, Color? borderOverride = null, int? outlineWidthOverride = null)
     {
-        Color border = KeyAccent(document);
+        Color border = borderOverride ?? KeyAccent(document);
         int roundness = Theme.Modern || document.CustomStyleEnabled ? EffectiveRoundness(document, rectangle) : 2;
-        int outlineWidth = document.CustomStyleEnabled ? document.PlateOutlineWidth : 1;
+        int outlineWidth = Math.Min(
+            outlineWidthOverride ?? (document.CustomStyleEnabled ? document.PlateOutlineWidth : 1),
+            Math.Max(0, Math.Min(rectangle.Width, rectangle.Height) / 2));
         if (outlineWidth > 0)
             surface.StrokeRounded(rectangle, roundness, outlineWidth, border);
         Rectangle inner = Rectangle.Inflate(rectangle, -outlineWidth, -outlineWidth);
@@ -576,7 +780,7 @@ internal sealed class KeyboardRenderer
             ? Color.FromArgb(Math.Clamp(document.HoverStrength * 2, 0, 200), Hover(document))
             : Theme.KeyHot;
         surface.FillRounded(inner, Theme.Modern || document.CustomStyleEnabled ? Math.Max(0, roundness - 1) : 1,
-            hot ? hotColor : PlateFill(document));
+            hot ? hotColor : (fillOverride ?? PlateFill(document)));
     }
 
     private void DrawKeyContent(PixelSurface surface, KeyboardDocument document, KeyboardKey key, Rectangle rectangle, bool selected)

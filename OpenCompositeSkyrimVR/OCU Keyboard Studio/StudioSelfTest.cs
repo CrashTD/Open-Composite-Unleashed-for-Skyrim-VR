@@ -11,6 +11,8 @@ internal static class StudioSelfTest
             var document = KeyboardDocument.Load(layoutPath);
             if (document.Keys.Count < 60)
                 throw new InvalidDataException($"Expected the full OCU layout, got only {document.Keys.Count} keys.");
+            if (document.InputOutlineOverrideEnabled)
+                throw new InvalidDataException("A legacy keyboard unexpectedly enabled the optional input-outline override.");
             KeyboardKey numberThree = document.Keys.Single(key => key.Character == '3');
             if (numberThree.ShiftCharacter != '#')
                 throw new InvalidDataException("The bundled number row does not map Shift+3 to #.");
@@ -45,6 +47,16 @@ internal static class StudioSelfTest
             document.KeyColor = Color.FromArgb(190, 62, 190, 143);
             document.PlateFillColor = Color.FromArgb(90, 12, 18, 24);
             document.PlateOutlineWidth = 3;
+            document.InputFillOverrideEnabled = true;
+            document.InputFillColor = Color.FromArgb(210, 24, 31, 42);
+            document.InputOutlineOverrideEnabled = true;
+            document.InputOutlineVisible = false;
+            document.InputOutlineColor = Color.FromArgb(255, 17, 99, 203);
+            document.InputOutlineWidth = 5;
+            document.InputTitleOffsetX = 17;
+            document.InputTitleOffsetY = -3;
+            document.InputTextOffsetX = 23;
+            document.InputTextOffsetY = 4;
             document.GlowRadius = 6;
             document.KeyRoundness = 24;
             document.KeyBreatheEnabled = true;
@@ -107,11 +119,23 @@ internal static class StudioSelfTest
             document.ModeButtonWidth = 240;
             document.ModeButtonHeight = 40;
             document.ModeButtonFontScale = 0.9f;
+            document.ModeArtworkOffsetX = 7;
+            document.ModeArtworkOffsetY = -4;
+            document.ModeArtworkWidth = 218;
+            document.ModeArtworkHeight = 34;
+            document.ModeTextOffsetX = -9;
+            document.ModeTextOffsetY = 3;
             document.LockButtonOffsetX = -11;
             document.LockButtonOffsetY = 6;
             document.LockButtonWidth = 140;
             document.LockButtonHeight = 36;
             document.LockButtonFontScale = 1.1f;
+            document.LockArtworkOffsetX = -5;
+            document.LockArtworkOffsetY = 2;
+            document.LockArtworkWidth = 126;
+            document.LockArtworkHeight = 30;
+            document.LockTextOffsetX = 6;
+            document.LockTextOffsetY = -2;
             document.SizeControlDesign.Width = 128;
             document.SizeControlDesign.Height = 116;
             document.SizeControlDesign.UpOffsetX = 11;
@@ -141,6 +165,27 @@ internal static class StudioSelfTest
             document.ControlArrowBreathePhaseDegrees = 45;
 
             Directory.CreateDirectory(outputDirectory);
+            string consoleInputArtwork = Path.Combine(outputDirectory, "self-test-console-input.png");
+            using (var consoleImage = new Bitmap(1024, 120))
+            using (Graphics graphics = Graphics.FromImage(consoleImage))
+            using (var brush = new SolidBrush(Color.FromArgb(255, 210, 35, 180)))
+            {
+                graphics.Clear(Color.Transparent);
+                graphics.FillRectangle(brush, 80, 10, 160, 32);
+                consoleImage.Save(consoleInputArtwork, System.Drawing.Imaging.ImageFormat.Png);
+            }
+            document.ConsoleInputBackgroundImagePath = consoleInputArtwork;
+            document.ConsoleInputBackgroundFileName = KeyboardDocument.ConsoleInputBackgroundPortableName;
+            document.ModeVrArtworkImagePath = Path.Combine(assets, "spacebar.png");
+            document.ModeVrArtworkFileName = KeyboardDocument.ModeVrArtworkPortableName;
+            document.ModePcArtworkImagePath = Path.Combine(assets, "dwemer-spacebar.png");
+            document.ModePcArtworkFileName = KeyboardDocument.ModePcArtworkPortableName;
+            document.LockWorldArtworkImagePath = consoleInputArtwork;
+            document.LockWorldArtworkFileName = KeyboardDocument.LockWorldArtworkPortableName;
+            document.LockHeadArtworkImagePath = Path.Combine(assets, "skyui-bg.png");
+            document.LockHeadArtworkFileName = KeyboardDocument.LockHeadArtworkPortableName;
+            document.ModeTextOverArtwork = true;
+            document.LockTextOverArtwork = true;
             string hostFixture = Path.Combine(outputDirectory, "ocu-host-fixture");
             string hostedStudio = Path.Combine(hostFixture, "OCU Keyboard Studio");
             string hostedRoot = Path.Combine(hostFixture, "root");
@@ -159,6 +204,41 @@ internal static class StudioSelfTest
                 throw new InvalidDataException("Studio did not parse Configurator's explicit OCU root handoff.");
             string roundTrip = Path.Combine(outputDirectory, "keyboard-studio-roundtrip.kb");
             document.Save(roundTrip);
+            File.Copy(consoleInputArtwork,
+                Path.Combine(outputDirectory, KeyboardDocument.ConsoleInputBackgroundPortableName), overwrite: true);
+            File.Copy(document.ModeVrArtworkImagePath,
+                Path.Combine(outputDirectory, KeyboardDocument.ModeVrArtworkPortableName), overwrite: true);
+            File.Copy(document.ModePcArtworkImagePath,
+                Path.Combine(outputDirectory, KeyboardDocument.ModePcArtworkPortableName), overwrite: true);
+            File.Copy(document.LockWorldArtworkImagePath,
+                Path.Combine(outputDirectory, KeyboardDocument.LockWorldArtworkPortableName), overwrite: true);
+            File.Copy(document.LockHeadArtworkImagePath,
+                Path.Combine(outputDirectory, KeyboardDocument.LockHeadArtworkPortableName), overwrite: true);
+            string serializedRoundTrip = File.ReadAllText(roundTrip);
+            if (!serializedRoundTrip.Contains("# ocu_input_fill_color #181F2AD2", StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains("# ocu_input_outline_enabled false", StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains("# ocu_input_outline_color #1163CBFF", StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains("# ocu_input_outline_width 5", StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains("# ocu_input_title_offset 17 -3", StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains("# ocu_input_text_offset 23 4", StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains(
+                    $"# ocu_console_input_background {KeyboardDocument.ConsoleInputBackgroundPortableName}",
+                    StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains(
+                    $"# ocu_top_state_art mode_vr {KeyboardDocument.ModeVrArtworkPortableName}",
+                    StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains(
+                    $"# ocu_top_state_art mode_pc {KeyboardDocument.ModePcArtworkPortableName}",
+                    StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains(
+                    $"# ocu_top_state_art lock_world {KeyboardDocument.LockWorldArtworkPortableName}",
+                    StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains(
+                    $"# ocu_top_state_art lock_head {KeyboardDocument.LockHeadArtworkPortableName}",
+                    StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains("# ocu_top_state_text mode true", StringComparison.Ordinal)
+                || !serializedRoundTrip.Contains("# ocu_top_state_text lock true", StringComparison.Ordinal))
+                throw new InvalidDataException("Input-outline metadata is not stored as backward-compatible layout comments.");
             KeyboardDocument loaded = KeyboardDocument.Load(roundTrip);
             KeyboardDocument historyClone = loaded.Clone();
             if (!loaded.IsEquivalentForHistory(historyClone))
@@ -184,6 +264,21 @@ internal static class StudioSelfTest
                 || loaded.ParchmentRibbonEnabled
                 || loaded.KeyRoundness != 24
                 || loaded.PlateOutlineWidth != 3 || loaded.PlateFillColor.A != 90
+                || !loaded.InputFillOverrideEnabled || loaded.InputFillColor.ToArgb() != document.InputFillColor.ToArgb()
+                || !loaded.InputOutlineOverrideEnabled || loaded.InputOutlineVisible || loaded.InputOutlineWidth != 5
+                || loaded.InputOutlineColor.R != 17 || loaded.InputOutlineColor.G != 99
+                || loaded.InputOutlineColor.B != 203 || loaded.InputOutlineColor.A != 255
+                || Math.Abs(loaded.InputTitleOffsetX - 17) > 0.001f
+                || Math.Abs(loaded.InputTitleOffsetY + 3) > 0.001f
+                || Math.Abs(loaded.InputTextOffsetX - 23) > 0.001f
+                || Math.Abs(loaded.InputTextOffsetY - 4) > 0.001f
+                || string.IsNullOrWhiteSpace(loaded.ConsoleInputBackgroundImagePath)
+                || !File.Exists(loaded.ConsoleInputBackgroundImagePath)
+                || string.IsNullOrWhiteSpace(loaded.ModeVrArtworkImagePath) || !File.Exists(loaded.ModeVrArtworkImagePath)
+                || string.IsNullOrWhiteSpace(loaded.ModePcArtworkImagePath) || !File.Exists(loaded.ModePcArtworkImagePath)
+                || string.IsNullOrWhiteSpace(loaded.LockWorldArtworkImagePath) || !File.Exists(loaded.LockWorldArtworkImagePath)
+                || string.IsNullOrWhiteSpace(loaded.LockHeadArtworkImagePath) || !File.Exists(loaded.LockHeadArtworkImagePath)
+                || !loaded.ModeTextOverArtwork || !loaded.LockTextOverArtwork
                 || loaded.FontOutlineColor.R != 31 || loaded.FontOutlineColor.A != 210
                 || loaded.FontGlowColor.B != 255 || !loaded.FontGlowEnabled
                 || loaded.FontGlowStrength != 68 || loaded.FontGlowRadius != 5
@@ -207,9 +302,15 @@ internal static class StudioSelfTest
                 || loaded.ModeButtonOffsetX != 19 || loaded.ModeButtonOffsetY != 8
                 || loaded.ModeButtonWidth != 240 || loaded.ModeButtonHeight != 40
                 || Math.Abs(loaded.ModeButtonFontScale - 0.9f) > 0.001f
+                || loaded.ModeArtworkOffsetX != 7 || loaded.ModeArtworkOffsetY != -4
+                || loaded.ModeArtworkWidth != 218 || loaded.ModeArtworkHeight != 34
+                || loaded.ModeTextOffsetX != -9 || loaded.ModeTextOffsetY != 3
                 || loaded.LockButtonOffsetX != -11 || loaded.LockButtonOffsetY != 6
                 || loaded.LockButtonWidth != 140 || loaded.LockButtonHeight != 36
                 || Math.Abs(loaded.LockButtonFontScale - 1.1f) > 0.001f
+                || loaded.LockArtworkOffsetX != -5 || loaded.LockArtworkOffsetY != 2
+                || loaded.LockArtworkWidth != 126 || loaded.LockArtworkHeight != 30
+                || loaded.LockTextOffsetX != 6 || loaded.LockTextOffsetY != -2
                 || loaded.SizeControlDesign.Width != 128 || loaded.SizeControlDesign.Height != 116
                 || loaded.SizeControlDesign.UpOffsetX != 11 || loaded.SizeControlDesign.UpOffsetY != -3
                 || loaded.SizeControlDesign.UpWidth != 31 || loaded.SizeControlDesign.UpHeight != 23
@@ -247,6 +348,65 @@ internal static class StudioSelfTest
                 Theme = KeyboardTheme.BuiltIns.Single(theme => theme.Name == "Modern Green"),
                 SelectedKeyId = -1
             };
+            if (renderer.Font.Width("A A") <= renderer.Font.Width("AA"))
+                throw new InvalidDataException("A missing SFN space glyph still collapses word spacing to zero pixels.");
+
+            renderer.AnimationTimeSeconds = 0;
+            renderer.PreviewPcMode = false;
+            renderer.PreviewHeadLocked = false;
+            using Bitmap vrWorldState = renderer.Render(loaded);
+            renderer.PreviewPcMode = true;
+            using Bitmap pcWorldState = renderer.Render(loaded);
+            renderer.PreviewHeadLocked = true;
+            using Bitmap pcHeadState = renderer.Render(loaded);
+            using var vrWorldBytes = new MemoryStream();
+            using var pcWorldBytes = new MemoryStream();
+            using var pcHeadBytes = new MemoryStream();
+            vrWorldState.Save(vrWorldBytes, System.Drawing.Imaging.ImageFormat.Png);
+            pcWorldState.Save(pcWorldBytes, System.Drawing.Imaging.ImageFormat.Png);
+            pcHeadState.Save(pcHeadBytes, System.Drawing.Imaging.ImageFormat.Png);
+            if (vrWorldBytes.ToArray().SequenceEqual(pcWorldBytes.ToArray())
+                || pcWorldBytes.ToArray().SequenceEqual(pcHeadBytes.ToArray()))
+                throw new InvalidDataException("Semantic PC/VR or lock-state artwork did not change the Studio preview.");
+            renderer.PreviewPcMode = false;
+            renderer.PreviewHeadLocked = false;
+
+            using (Bitmap consolePreview = renderer.RenderConsolePreview(loaded))
+            {
+                if (consolePreview.Width != 1024 || consolePreview.Height != 120)
+                    throw new InvalidDataException("Console input preview does not match the runtime panel dimensions.");
+                Color consoleBackground = consolePreview.GetPixel(20, 110);
+                if (consoleBackground.ToArgb() != loaded.InputFillColor.ToArgb())
+                    throw new InvalidDataException("Console input preview ignored its independent inside color.");
+                Color inputBorder = consolePreview.GetPixel(0, consolePreview.Height / 2);
+                if (inputBorder.ToArgb() == loaded.InputOutlineColor.ToArgb())
+                    throw new InvalidDataException("Console input preview drew an outline after it was switched off.");
+                Color artworkPixel = consolePreview.GetPixel(100, 20);
+                if (artworkPixel.R < 150 || artworkPixel.B < 120)
+                    throw new InvalidDataException("Console input preview did not composite the custom INPUT panel artwork.");
+            }
+            KeyboardDocument outlinedConsole = loaded.Clone();
+            outlinedConsole.InputOutlineVisible = true;
+            using (Bitmap outlinedConsolePreview = renderer.RenderConsolePreview(outlinedConsole))
+            {
+                Color inputBorder = outlinedConsolePreview.GetPixel(0, outlinedConsolePreview.Height / 2);
+                if (inputBorder.ToArgb() != loaded.InputOutlineColor.ToArgb())
+                    throw new InvalidDataException("Console input preview ignored the enabled input-outline color.");
+            }
+            KeyboardDocument alternateConsoleInk = loaded.Clone();
+            alternateConsoleInk.FontColor = Color.FromArgb(255, 255, 30, 40);
+            using Bitmap originalConsoleInk = renderer.RenderConsolePreview(loaded);
+            using Bitmap changedConsoleInk = renderer.RenderConsolePreview(alternateConsoleInk);
+            bool consoleInkChanged = false;
+            for (int y = 0; y < originalConsoleInk.Height && !consoleInkChanged; y++)
+                for (int x = 0; x < originalConsoleInk.Width; x++)
+                    if (originalConsoleInk.GetPixel(x, y).ToArgb() != changedConsoleInk.GetPixel(x, y).ToArgb())
+                    {
+                        consoleInkChanged = true;
+                        break;
+                    }
+            if (!consoleInkChanged)
+                throw new InvalidDataException("Console input preview ignored the custom keyboard font color.");
 
             var plateTest = new KeyboardDocument
             {
@@ -356,6 +516,27 @@ internal static class StudioSelfTest
                 || Math.Abs(renderer.TopElementFontScale(loaded, KeyboardTopElement.Mode) - 0.9f) > 0.001f
                 || Math.Abs(renderer.TopElementFontScale(loaded, KeyboardTopElement.Lock) - 1.1f) > 0.001f)
                 throw new InvalidDataException("Movable/resizable top-bar geometry did not survive round trip.");
+            RectangleF modeArtwork = renderer.TopStateArtworkRectangle(loaded, KeyboardTopElement.Mode);
+            RectangleF lockArtwork = renderer.TopStateArtworkRectangle(loaded, KeyboardTopElement.Lock);
+            if (Math.Abs(modeArtwork.Left - (modeButton.Left + 7)) > 0.001f
+                || Math.Abs(modeArtwork.Top - (modeButton.Top - 4)) > 0.001f
+                || Math.Abs(modeArtwork.Width - 218) > 0.001f || Math.Abs(modeArtwork.Height - 34) > 0.001f
+                || Math.Abs(lockArtwork.Left - (lockButton.Left - 5)) > 0.001f
+                || Math.Abs(lockArtwork.Top - (lockButton.Top + 2)) > 0.001f
+                || Math.Abs(lockArtwork.Width - 126) > 0.001f || Math.Abs(lockArtwork.Height - 30) > 0.001f)
+                throw new InvalidDataException("Top-state artwork did not keep its independent transform.");
+            KeyboardDocument centeredTopText = loaded.Clone();
+            centeredTopText.ModeTextOffsetX = centeredTopText.ModeTextOffsetY = 0;
+            centeredTopText.LockTextOffsetX = centeredTopText.LockTextOffsetY = 0;
+            RectangleF centeredModeText = renderer.TopElementContentRectangle(centeredTopText, KeyboardTopElement.Mode);
+            RectangleF movedModeText = renderer.TopElementContentRectangle(loaded, KeyboardTopElement.Mode);
+            RectangleF centeredLockText = renderer.TopElementContentRectangle(centeredTopText, KeyboardTopElement.Lock);
+            RectangleF movedLockText = renderer.TopElementContentRectangle(loaded, KeyboardTopElement.Lock);
+            if (Math.Abs((movedModeText.Left - centeredModeText.Left) + 9) > 0.01f
+                || Math.Abs((movedModeText.Top - centeredModeText.Top) - 3) > 0.01f
+                || Math.Abs((movedLockText.Left - centeredLockText.Left) - 6) > 0.01f
+                || Math.Abs((movedLockText.Top - centeredLockText.Top) + 2) > 0.01f)
+                throw new InvalidDataException("Top-state text did not keep its independent offset.");
             KeyboardDocument visibleTopPlates = loaded.Clone();
             visibleTopPlates.TopButtonPlatesEnabled = true;
             visibleTopPlates.InputBarPlateEnabled = true;
@@ -536,6 +717,11 @@ internal static class StudioSelfTest
             {
                 if (archive.GetEntry("root/OCUKeyboard.kb") is null
                     || archive.GetEntry("root/OCUKeyboardBackground.png") is null
+                    || archive.GetEntry($"root/{KeyboardDocument.ConsoleInputBackgroundPortableName}") is null
+                    || archive.GetEntry($"root/{KeyboardDocument.ModeVrArtworkPortableName}") is null
+                    || archive.GetEntry($"root/{KeyboardDocument.ModePcArtworkPortableName}") is null
+                    || archive.GetEntry($"root/{KeyboardDocument.LockWorldArtworkPortableName}") is null
+                    || archive.GetEntry($"root/{KeyboardDocument.LockHeadArtworkPortableName}") is null
                     || archive.GetEntry("root/OCUKeyboardSprite01.png") is null
                     || archive.GetEntry("root/OCUKeyboardSprite02.png") is null
                     || archive.GetEntry("root/OCUKeyboardControlArrow.png") is null
@@ -555,6 +741,11 @@ internal static class StudioSelfTest
                 if (archive.GetEntry("manifest.json") is null
                     || archive.GetEntry("keyboard.kb") is null
                     || archive.GetEntry("OCUKeyboardBackground.png") is null
+                    || archive.GetEntry(KeyboardDocument.ConsoleInputBackgroundPortableName) is null
+                    || archive.GetEntry(KeyboardDocument.ModeVrArtworkPortableName) is null
+                    || archive.GetEntry(KeyboardDocument.ModePcArtworkPortableName) is null
+                    || archive.GetEntry(KeyboardDocument.LockWorldArtworkPortableName) is null
+                    || archive.GetEntry(KeyboardDocument.LockHeadArtworkPortableName) is null
                     || archive.GetEntry("OCUKeyboardSprite01.png") is null
                     || archive.GetEntry("OCUKeyboardSprite02.png") is null
                     || archive.GetEntry("OCUKeyboardControlArrow.png") is null)
@@ -564,8 +755,41 @@ internal static class StudioSelfTest
             KeyboardPackageImportResult importedPackage = KeyboardPackage.Import(portablePackage, portableLibrary);
             KeyboardDocument importedDocument = KeyboardDocument.Load(importedPackage.LayoutPath);
             if (importedPackage.DisplayName != "Portable Test Keyboard"
-                || importedPackage.ArtworkCount != 4
+                || importedPackage.ArtworkCount != 9
                 || importedDocument.Sprites.Count != 2
+                || !importedDocument.InputFillOverrideEnabled
+                || importedDocument.InputFillColor.ToArgb() != loaded.InputFillColor.ToArgb()
+                || !importedDocument.InputOutlineOverrideEnabled
+                || importedDocument.InputOutlineVisible
+                || importedDocument.InputOutlineColor.ToArgb() != loaded.InputOutlineColor.ToArgb()
+                || importedDocument.InputOutlineWidth != loaded.InputOutlineWidth
+                || Math.Abs(importedDocument.InputTitleOffsetX - loaded.InputTitleOffsetX) > 0.001f
+                || Math.Abs(importedDocument.InputTitleOffsetY - loaded.InputTitleOffsetY) > 0.001f
+                || Math.Abs(importedDocument.InputTextOffsetX - loaded.InputTextOffsetX) > 0.001f
+                || Math.Abs(importedDocument.InputTextOffsetY - loaded.InputTextOffsetY) > 0.001f
+                || string.IsNullOrWhiteSpace(importedDocument.ConsoleInputBackgroundImagePath)
+                || !File.Exists(importedDocument.ConsoleInputBackgroundImagePath)
+                || string.IsNullOrWhiteSpace(importedDocument.ModeVrArtworkImagePath)
+                || !File.Exists(importedDocument.ModeVrArtworkImagePath)
+                || string.IsNullOrWhiteSpace(importedDocument.ModePcArtworkImagePath)
+                || !File.Exists(importedDocument.ModePcArtworkImagePath)
+                || string.IsNullOrWhiteSpace(importedDocument.LockWorldArtworkImagePath)
+                || !File.Exists(importedDocument.LockWorldArtworkImagePath)
+                || string.IsNullOrWhiteSpace(importedDocument.LockHeadArtworkImagePath)
+                || !File.Exists(importedDocument.LockHeadArtworkImagePath)
+                || !importedDocument.ModeTextOverArtwork || !importedDocument.LockTextOverArtwork
+                || importedDocument.ModeArtworkOffsetX != loaded.ModeArtworkOffsetX
+                || importedDocument.ModeArtworkOffsetY != loaded.ModeArtworkOffsetY
+                || importedDocument.ModeArtworkWidth != loaded.ModeArtworkWidth
+                || importedDocument.ModeArtworkHeight != loaded.ModeArtworkHeight
+                || importedDocument.ModeTextOffsetX != loaded.ModeTextOffsetX
+                || importedDocument.ModeTextOffsetY != loaded.ModeTextOffsetY
+                || importedDocument.LockArtworkOffsetX != loaded.LockArtworkOffsetX
+                || importedDocument.LockArtworkOffsetY != loaded.LockArtworkOffsetY
+                || importedDocument.LockArtworkWidth != loaded.LockArtworkWidth
+                || importedDocument.LockArtworkHeight != loaded.LockArtworkHeight
+                || importedDocument.LockTextOffsetX != loaded.LockTextOffsetX
+                || importedDocument.LockTextOffsetY != loaded.LockTextOffsetY
                 || string.IsNullOrWhiteSpace(importedDocument.BackgroundImagePath)
                 || !File.Exists(importedDocument.BackgroundImagePath)
                 || importedDocument.Sprites.Any(sprite => string.IsNullOrWhiteSpace(sprite.SourcePath) || !File.Exists(sprite.SourcePath))
@@ -695,7 +919,7 @@ internal static class StudioSelfTest
                 throw new InvalidDataException("Marquee selection intersection/containment behavior failed.");
 
             File.WriteAllText(Path.Combine(outputDirectory, "keyboard-studio-self-test.txt"),
-                $"PASS\nKeys={loaded.Keys.Count}\nTheme=modern_green\nFont=ocu_nordic\nPreview=1024x560\nCustomStyle=True\nCustomStyleSeed=VisibleBaseTheme+RestorePriorValues\nStockDwemer=LatestAuthoredDesign\nStockPugDragon=BundledArtworkDesign\nDwemerBaseTheme=AuthoredStockBackground1024x560\nCanvasZoom=WheelZoomUnlessTextSelected+MiddlePan\nKeyPlates=False\nPlateLayers=Fill+OutlineRing+OutsideGlowIndependent\nParchmentRibbon=Selectable+Movable+Resizable+Removable\nOcuTarget=ContainingModRootAutoDetected\nTopPlates=ModeLock+InputBarIndependent\nArtwork=MovableBackground+2Sprites+ControlArrow\nControls=NestedSelectableBoxes\nControlFontHit=PaintedGlyphPixelsOnly\nControlArrowGlow=BuiltInOrPng+Breathing\nArrowKeys=IndependentMove+Resize\nTopBar=TextBar+Mode+LockMove+PlateResize+FontScale\nKeyPosition=NegativeGridCoordinatesSupported\nGridControl=ColumnCountDensity\nHistory=NoOpFiltered+VisualChangesDetected\nMarqueeSelection=VisibleItems+Additive+GroupMove\nDragPreview=Coalesced16ms+InspectorOnRelease\nBackgroundFeather=RoundedPillBoundary\nHighDpiArtwork=PixelSized\nTextEffects=OutlineColor+FontGlow+IndependentBreathing\nTTFImport=ExistingKeysOnly+NewKeyRebuild\nCustomFontExport=SFN+PNG\nBreathing=Keys+Font+Sprite+Arrow\nAnimationPreviewAverageMs={averageAnimationFrameMs:F2}\nSampling=PremultipliedBilinear\nJpegBackground=TranscodedToPng\nMO2Archive=root/OCUKeyboard.kb\nPortablePackage=.ocukb+ArtworkRoundTrip+StableResave+TraversalGuard\n");
+                $"PASS\nKeys={loaded.Keys.Count}\nTheme=modern_green\nFont=ocu_nordic\nPreview=1024x560\nCustomStyle=True\nCustomStyleSeed=VisibleBaseTheme+RestorePriorValues\nStockDwemer=LatestAuthoredDesign\nStockPugDragon=BundledArtworkDesign\nDwemerBaseTheme=AuthoredStockBackground1024x560\nCanvasZoom=WheelZoomUnlessTextSelected+MiddlePan\nKeyPlates=False\nPlateLayers=Fill+OutlineRing+OutsideGlowIndependent\nParchmentRibbon=Selectable+Movable+Resizable+Removable\nOcuTarget=ContainingModRootAutoDetected\nTopPlates=ModeLock+InputBarIndependent\nTopStateArtwork=ModeVR+ModePC+LockWorld+LockHead+TextFallback\nArtwork=MovableBackground+2Sprites+ControlArrow\nControls=NestedSelectableBoxes\nControlFontHit=PaintedGlyphPixelsOnly\nControlArrowGlow=BuiltInOrPng+Breathing\nArrowKeys=IndependentMove+Resize\nTopBar=TextBar+Mode+LockMove+PlateResize+FontScale\nKeyPosition=NegativeGridCoordinatesSupported\nGridControl=ColumnCountDensity\nHistory=NoOpFiltered+VisualChangesDetected\nMarqueeSelection=VisibleItems+Additive+GroupMove\nDragPreview=Coalesced16ms+InspectorOnRelease\nBackgroundFeather=RoundedPillBoundary\nHighDpiArtwork=PixelSized\nTextEffects=OutlineColor+FontGlow+IndependentBreathing\nSpaceAdvance=MissingSFNGlyphFallback\nTTFImport=ExistingKeysOnly+NewKeyRebuild\nCustomFontExport=SFN+PNG\nBreathing=Keys+Font+Sprite+Arrow\nAnimationPreviewAverageMs={averageAnimationFrameMs:F2}\nSampling=PremultipliedBilinear\nJpegBackground=TranscodedToPng\nMO2Archive=root/OCUKeyboard.kb\nPortablePackage=FormatV1+.ocukb+ArtworkRoundTrip+StableResave+TraversalGuard\n");
             return 0;
         }
         catch (Exception exception)

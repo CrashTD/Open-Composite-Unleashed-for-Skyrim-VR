@@ -2490,6 +2490,28 @@ bool XrBackend::UpdateInteractionProfile()
 				continue;
 			}
 
+			// SteamVR can temporarily report the generic Vive controller profile while
+			// a sleeping controller is disappearing or waking. Rebuilding an already
+			// valid Quest/Index/PSVR controller from that transient report changes its
+			// bindings and render model into Vive wands. Keep the last valid identity
+			// and retry until the runtime restores the real interaction profile.
+			const InteractionProfile* currentProfile =
+			    info.controller ? info.controller->GetInteractionProfile() : nullptr;
+			const bool temporaryViveFallback = currentProfile
+			    && currentProfile->GetPath() != "/interaction_profiles/htc/vive_controller"
+			    && matchedProfile->GetPath() == "/interaction_profiles/htc/vive_controller";
+			if (oovr_global_configuration.PreserveControllerProfileOnSleep() && temporaryViveFallback) {
+				allHandsResolved = false;
+				if (!interactionProfileStateReported[info.index]
+				    || lastReportedInteractionProfiles[info.index] != state.interactionProfile) {
+					OOVR_LOGF("%s - Ignoring temporary Vive interaction profile while the controller sleeps; preserving %s",
+					    info.pathstr, currentProfile->GetPath().c_str());
+				}
+				lastReportedInteractionProfiles[info.index] = state.interactionProfile;
+				interactionProfileStateReported[info.index] = true;
+				continue;
+			}
+
 			const bool profileChanged = !info.controller
 			    || info.controller->GetInteractionProfile() != matchedProfile;
 			if (profileChanged) {
@@ -2513,6 +2535,16 @@ bool XrBackend::UpdateInteractionProfile()
 			interactionProfileStateReported[info.index] = true;
 		} else {
 			allHandsResolved = false;
+			if (oovr_global_configuration.PreserveControllerProfileOnSleep() && info.controller) {
+				if (!interactionProfileStateReported[info.index]
+				    || lastReportedInteractionProfiles[info.index] != XR_NULL_PATH) {
+					OOVR_LOGF("%s - Controller interaction profile temporarily unavailable; preserving %s while OCU retries",
+					    info.pathstr, info.controller->GetInteractionProfile()->GetPath().c_str());
+				}
+				lastReportedInteractionProfiles[info.index] = XR_NULL_PATH;
+				interactionProfileStateReported[info.index] = true;
+				continue;
+			}
 			if (!interactionProfileStateReported[info.index]
 			    || lastReportedInteractionProfiles[info.index] != XR_NULL_PATH) {
 				OOVR_LOGF("%s - No interaction profile detected; OCU will retry after input focus", info.pathstr);

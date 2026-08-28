@@ -19,6 +19,7 @@ public:
 	const std::string& LogLevel() const { return logLevel; }
 	inline bool EnableLayers() const { return enableLayers; }
 	inline bool DX10Mode() const { return dx10Mode; }
+	inline bool PreserveControllerProfileOnSleep() const { return preserveControllerProfileOnSleep; }
 	inline bool EnableAppRequestedCubemap() const { return enableAppRequestedCubemap; }
 	inline bool EnableHiddenMeshFix() const { return enableHiddenMeshFix; }
 	inline bool InvertUsingShaders() const { return invertUsingShaders; }
@@ -296,6 +297,7 @@ private:
 	bool enableLayers = true;
 
 	bool dx10Mode = false;
+	bool preserveControllerProfileOnSleep = true;
 	bool enableAppRequestedCubemap = true;
 	bool enableHiddenMeshFix = true;
 	bool invertUsingShaders = false;

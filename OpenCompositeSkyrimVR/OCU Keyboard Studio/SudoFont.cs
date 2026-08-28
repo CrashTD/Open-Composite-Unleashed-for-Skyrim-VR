@@ -370,7 +370,18 @@ internal sealed class SudoFont
         _atlasAlpha = ReadAlpha(atlas);
     }
 
-    public int Width(string text) => text.Sum(character => _glyphs.TryGetValue(character, out Glyph glyph) ? glyph.XAdvance : 0);
+    private int Advance(char character)
+    {
+        if (_glyphs.TryGetValue(character, out Glyph glyph) && glyph.XAdvance > 0)
+            return glyph.XAdvance;
+        // OCU's bundled SFN atlases intentionally carry no painted glyph for a
+        // blank. Keep word spacing and caret placement even when U+0020 is not
+        // present in the atlas; this is a renderer fallback, not a file-format
+        // addition, so existing .kb and .ocukb designs remain unchanged.
+        return character == ' ' ? Math.Max(4, LineHeight / 3) : 0;
+    }
+
+    public int Width(string text) => text.Sum(Advance);
 
     public bool ContainsGlyph(char character) => _glyphs.ContainsKey(character);
 
@@ -420,7 +431,10 @@ internal sealed class SudoFont
         foreach (char character in text)
         {
             if (!_glyphs.TryGetValue(character, out Glyph glyph))
+            {
+                cursor += Advance(character);
                 continue;
+            }
             float glyphLeft = originX + (cursor + glyph.XOffset) * scale;
             float glyphTop = originY + glyph.YOffset * scale;
             if (point.X >= glyphLeft && point.X < glyphLeft + glyph.PackedWidth * scale
@@ -431,7 +445,7 @@ internal sealed class SudoFont
                 if (SampleAlpha(glyph, sourceX, sourceY) >= 48)
                     return true;
             }
-            cursor += glyph.XAdvance;
+            cursor += Advance(character);
         }
         return false;
     }
@@ -446,7 +460,10 @@ internal sealed class SudoFont
         foreach (char character in text)
         {
             if (!_glyphs.TryGetValue(character, out Glyph glyph))
+            {
+                cursor += Advance(character);
                 continue;
+            }
             if (glyph.PackedWidth > 0 && glyph.PackedHeight > 0)
             {
                 minX = Math.Min(minX, cursor + glyph.XOffset);
@@ -454,7 +471,7 @@ internal sealed class SudoFont
                 maxX = Math.Max(maxX, cursor + glyph.XOffset + glyph.PackedWidth);
                 maxY = Math.Max(maxY, glyph.YOffset + glyph.PackedHeight);
             }
-            cursor += glyph.XAdvance;
+            cursor += Advance(character);
         }
         return minX != int.MaxValue;
     }
@@ -480,7 +497,10 @@ internal sealed class SudoFont
         foreach (char character in text)
         {
             if (!_glyphs.TryGetValue(character, out Glyph glyph))
+            {
+                cursor += Advance(character);
                 continue;
+            }
             if (glyph.PackedWidth > 0 && glyph.PackedHeight > 0)
             {
                 runs.Add((glyph, cursor));
@@ -489,7 +509,7 @@ internal sealed class SudoFont
                 maxX = Math.Max(maxX, cursor + glyph.XOffset + glyph.PackedWidth);
                 maxY = Math.Max(maxY, glyph.YOffset + glyph.PackedHeight);
             }
-            cursor += glyph.XAdvance;
+            cursor += Advance(character);
         }
         if (runs.Count == 0)
             return;
@@ -509,6 +529,43 @@ internal sealed class SudoFont
                 DrawGlowRing(surface, runs, originX, originY, scale, glow, innerRadius, 0.82f);
         }
 
+        if (outlineColor is Color outline && outline.A > 0)
+        {
+            (int X, int Y)[] stamps = [(-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, -1), (-1, 1), (1, 1)];
+            foreach ((int x, int y) in stamps)
+                DrawRuns(surface, runs, originX + x, originY + y, scale, outline);
+        }
+        DrawRuns(surface, runs, originX, originY, scale, color);
+    }
+
+    public void DrawTextAt(PixelSurface surface, string text, float originX, float originY,
+        float scale, Color color, Color? outlineColor, Color? glowColor, int glowRadius)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+        scale = Math.Clamp(scale, 0.25f, 3f);
+
+        var runs = new List<(Glyph Glyph, int Cursor)>();
+        int cursor = 0;
+        foreach (char character in text)
+        {
+            if (_glyphs.TryGetValue(character, out Glyph glyph)
+                && glyph.PackedWidth > 0 && glyph.PackedHeight > 0)
+                runs.Add((glyph, cursor));
+            cursor += Advance(character);
+        }
+        if (runs.Count == 0)
+            return;
+
+        if (glowColor is Color glow && glow.A > 0 && glowRadius > 0)
+        {
+            int outerRadius = Math.Clamp(glowRadius, 1, 8);
+            int innerRadius = Math.Max(1, outerRadius / 2);
+            DrawGlowRing(surface, runs, originX, originY, scale, glow, outerRadius,
+                innerRadius == outerRadius ? 1f : 0.55f);
+            if (innerRadius != outerRadius)
+                DrawGlowRing(surface, runs, originX, originY, scale, glow, innerRadius, 0.82f);
+        }
         if (outlineColor is Color outline && outline.A > 0)
         {
             (int X, int Y)[] stamps = [(-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, -1), (-1, 1), (1, 1)];

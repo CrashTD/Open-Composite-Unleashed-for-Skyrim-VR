@@ -4909,22 +4909,24 @@ namespace
 			const bool newLaserRelease = s_clickArmed && releaseSeq != s_lastReleaseSeq;
 
 			// Keep the OpenXR ray and plane pose at the headset's full refresh rate, but
-			// do not make Scaleform rediscover the same object tree for every duplicate
-			// stationary sample. A moving pointer is sampled at 45-60 Hz depending on
-			// headset refresh, a resting pointer gets a 20 Hz keepalive, and every button
-			// edge bypasses the limiter. Clicks therefore remain frame-immediate while
-			// the expensive idle-menu path loses most of its redundant work.
+			// make Scaleform input strictly change-driven. The old 20 Hz stationary
+			// keepalive repeatedly walked complex menu trees even though neither the ray
+			// nor the hovered control had changed. Moving hover is capped at ~30 Hz;
+			// menu transitions and every physical button edge bypass the limiter. A
+			// click therefore probes the current point immediately, while a resting ray
+			// performs no Scaleform work at all.
 			const float semanticDx = targetX - s_semanticProbe.x;
 			const float semanticDy = targetY - s_semanticProbe.y;
 			const bool semanticMoved = !s_semanticProbe.valid ||
 			    semanticDx * semanticDx + semanticDy * semanticDy >= 2.25f;
-			const ULONGLONG semanticIntervalMs = semanticMoved ? 16 : 50;
+			constexpr ULONGLONG kMovingScaleformIntervalMs = 33;
 			const bool semanticProbeDue = menuSemanticInputReady && laserMovie &&
 			    (!s_semanticProbe.valid ||
 			        s_semanticProbe.menuGeneration != s_planeGeneration ||
 			        s_semanticProbe.movie != laserMovie.get() ||
 			        newLaserPress || newLaserRelease ||
-			        semanticNow - s_semanticProbe.tick >= semanticIntervalMs);
+			        (semanticMoved &&
+			            semanticNow - s_semanticProbe.tick >= kMovingScaleformIntervalMs));
 			if (semanticProbeDue) {
 				const auto semanticStarted = std::chrono::steady_clock::now();
 				SemanticProbeCache next;
@@ -5249,10 +5251,12 @@ namespace
 			const float gfxDriveDy = targetY - s_lastGfxDriveY;
 			const bool gfxPointerMoved = !s_gfxMousePrimed ||
 			    gfxDriveDx * gfxDriveDx + gfxDriveDy * gfxDriveDy >= 2.25f;
-			const ULONGLONG gfxDriveIntervalMs = gfxPointerMoved ? 16 : 50;
+			const bool activeScaleformDrag = s_raceSliderDragging ||
+			    s_verticalScrollBarDragging || s_pressedMovieUsesSculpt;
 			const bool gfxDriveDue = !s_gfxMousePrimed || newLaserPress || newLaserRelease ||
-			    s_mouseHeld || s_raceSliderDragging || s_verticalScrollBarDragging ||
-			    semanticNow - s_lastGfxDriveTick >= gfxDriveIntervalMs;
+			    activeScaleformDrag ||
+			    (gfxPointerMoved &&
+			        semanticNow - s_lastGfxDriveTick >= kMovingScaleformIntervalMs);
 			if (laserMovie && gfxDriveDue) {
 				// Hover is authoritative. Do not synthesize a Down-arrow to prime
 				// list focus; it can move selection away from the pointed-at row.
@@ -8441,6 +8445,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	SKSE::log::info("  VR keyboard bridge + Scaleform char injection + menu state tracking");
 	SKSE::log::info("  + Render target bridge (MV + depth) for FSR 2/3 integration");
 	SKSE::log::info("  + Laser cursor pump v2 (Scaleform-free: uiNode plane + BSInputEventQueue)");
+	SKSE::log::info("  + Event-driven Scaleform laser input (30 Hz moving, zero idle probes)");
 
 	auto messaging = SKSE::GetMessagingInterface();
 	if (!messaging || !messaging->RegisterListener(OnMessage)) {
