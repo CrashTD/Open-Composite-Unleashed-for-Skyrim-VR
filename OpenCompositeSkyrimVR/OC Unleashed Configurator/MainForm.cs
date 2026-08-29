@@ -2278,16 +2278,17 @@ namespace OpenCompositeConfigurator
             {
                 Text = "(click a button)",
                 Location = new Point(splitX + 65, y + 2),
-                Size = new Size(120, 20),
+                Size = new Size(150, 20),
                 ForeColor = Color.FromArgb(255, 200, 40),
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                AutoEllipsis = true
             };
             container.Controls.Add(_lblCtrlButton);
 
-            container.Controls.Add(MakeLabel("Action:", splitX + 200, y + 2, 50));
+            container.Controls.Add(MakeLabel("Action:", splitX + 225, y + 2, 50));
             _cmbCtrlAction = new ComboBox
             {
-                Location = new Point(splitX + 250, y),
+                Location = new Point(splitX + 280, y),
                 Width = 200,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(50, 50, 55),

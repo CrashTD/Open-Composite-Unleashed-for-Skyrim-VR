@@ -147,6 +147,75 @@ internal sealed class KeyboardCanvas : Control
     public CanvasSelectionState CaptureSelection() => new(
         _selectionKind, _selectedKeyId, _selectedSpriteId, SelectedControl, SelectedControlPart);
 
+    public void SelectTopInteractionBox(KeyboardTopElement element)
+        => SetSelection(CanvasKindForTopElement(element));
+
+    public bool SelectTopStateArtwork(KeyboardTopElement element)
+    {
+        if (_document is null || _renderer is null || !_renderer.HasTopStateArtwork(_document, element))
+            return false;
+        SetSelection(element == KeyboardTopElement.Mode
+            ? CanvasSelectionKind.TopModeArtwork
+            : CanvasSelectionKind.TopLockArtwork);
+        return true;
+    }
+
+    public bool SelectTopText(KeyboardTopElement element)
+    {
+        if (_document is null || _renderer is null || !_renderer.IsTopStateTextVisible(_document, element))
+            return false;
+        SetSelection(element == KeyboardTopElement.Mode
+            ? CanvasSelectionKind.TopModeText
+            : CanvasSelectionKind.TopLockText);
+        return true;
+    }
+
+    public bool HasTopStateArtwork(KeyboardTopElement element)
+        => _document is not null && HasAnyTopStateArtwork(_document, element);
+
+    public void SetTopInteractionOffsetsPreservingVisuals(KeyboardTopElement element, float x, float y)
+    {
+        if (_document is null || _renderer is null)
+            return;
+        SetTopInteractionGeometryPreservingVisuals(element, x, y,
+            _renderer.TopElementWidth(_document, element),
+            _renderer.TopElementHeight(_document, element));
+    }
+
+    public void SetTopInteractionSizePreservingVisuals(KeyboardTopElement element, float width, float height)
+    {
+        if (_document is null)
+            return;
+        GetTopElementOffsets(_document, element, out float x, out float y);
+        SetTopInteractionGeometryPreservingVisuals(element, x, y, width, height);
+    }
+
+    public bool FitTopArtworkToInteractionBox(KeyboardTopElement element)
+    {
+        if (_document is null || _renderer is null || !HasAnyTopStateArtwork(_document, element))
+            return false;
+        RectangleF button = _renderer.TopElementRectangle(_document, element);
+        SetTopArtworkOffsets(element, 0, 0);
+        SetTopArtworkSize(element, button.Width, button.Height);
+        return true;
+    }
+
+    public bool FitTopInteractionBoxToArtwork(KeyboardTopElement element)
+    {
+        if (_document is null || _renderer is null || !HasAnyTopStateArtwork(_document, element))
+            return false;
+        RectangleF oldButton = _renderer.TopElementRectangle(_document, element);
+        RectangleF artwork = _renderer.TopStateArtworkRectangle(_document, element);
+        PointF textAnchor = CaptureTopTextAnchor(_document, oldButton, element);
+        GetTopElementOffsets(_document, element, out float x, out float y);
+        SetTopElementOffsets(element, x + artwork.Left - oldButton.Left, y + artwork.Top - oldButton.Top);
+        SetTopElementSize(element, artwork.Width, artwork.Height);
+        SetTopArtworkOffsets(element, 0, 0);
+        SetTopArtworkSize(element, artwork.Width, artwork.Height);
+        RestoreTopTextAnchor(textAnchor, element);
+        return true;
+    }
+
     public void ReplaceDocument(KeyboardDocument? value, bool preserveSelection)
     {
         CanvasSelectionState previous = CaptureSelection();
@@ -407,6 +476,15 @@ internal sealed class KeyboardCanvas : Control
         if (e.Button != MouseButtons.Left) return;
         CanvasDragOperation operation = HitSelectionHandle(e.Location);
         if (operation != CanvasDragOperation.None) { BeginDrag(texturePoint, operation); return; }
+        // A decorative sprite may deliberately sit inside a MODE/LOCK interaction
+        // box. Once selected (including by right-click), keep that sprite authoritative
+        // for a direct drag instead of letting the top control steal the next click.
+        if (_selectionKind == CanvasSelectionKind.Sprite && SelectedSprite is KeyboardSprite selectedSprite
+            && SpriteRectangle(selectedSprite).Contains(texturePoint))
+        {
+            BeginDrag(texturePoint, CanvasDragOperation.Move);
+            return;
+        }
         if (_multiSelection.Count > 1 && MultiSelectionHitTest(texturePoint) is CanvasSelectionState grouped)
         {
             ApplyPrimarySelection(grouped, preserveMultiSelection: true);
@@ -502,28 +580,50 @@ internal sealed class KeyboardCanvas : Control
     {
         if (_document is null || e.Delta == 0) return;
         float factor = e.Delta > 0 ? 1.05f : 0.95f;
-        if (!HasSelectedText())
+        if (HasSelectedText())
         {
-            ZoomViewAt(e.Location, e.Delta > 0 ? 1.12f : 1f / 1.12f);
+            PerformEdit(() =>
+            {
+                if (_selectionKind == CanvasSelectionKind.KeyContent && SelectedKey is KeyboardKey key)
+                    key.LabelScale = MathF.Round(Math.Clamp(key.LabelScale * factor, 0.25f, 3f) * 20f) / 20f;
+                else if (_selectionKind is CanvasSelectionKind.ControlLabel or CanvasSelectionKind.ControlValue)
+                {
+                    KeyboardControlDesign design = _document.GetControlDesign(SelectedControl);
+                    if (_selectionKind == CanvasSelectionKind.ControlLabel)
+                        design.LabelScale = MathF.Round(Math.Clamp(design.LabelScale * factor, 0.2f, 3f) * 100f) / 100f;
+                    else
+                        design.ValueScale = MathF.Round(Math.Clamp(design.ValueScale * factor, 0.2f, 3f) * 100f) / 100f;
+                }
+                else if ((_selectionKind == CanvasSelectionKind.TopTextBar || IsTopTextSelection(_selectionKind))
+                    && SelectedTopElement is KeyboardTopElement topElement && _renderer is not null)
+                    SetTopElementFontScale(topElement, MathF.Round(Math.Clamp(
+                        _renderer.TopElementFontScale(_document, topElement) * factor, 0.2f, 3f) * 100f) / 100f);
+            });
             return;
         }
-        PerformEdit(() =>
+
+        if (IsTopArtworkSelection(_selectionKind)
+            && SelectedTopElement is KeyboardTopElement artworkElement && _renderer is not null)
         {
-            if (_selectionKind == CanvasSelectionKind.KeyContent && SelectedKey is KeyboardKey key)
-                key.LabelScale = MathF.Round(Math.Clamp(key.LabelScale * factor, 0.25f, 3f) * 20f) / 20f;
-            else if (_selectionKind is CanvasSelectionKind.ControlLabel or CanvasSelectionKind.ControlValue)
+            PerformEdit(() => ScaleTopArtworkFromCenter(artworkElement, factor));
+            return;
+        }
+
+        if (_selectionKind == CanvasSelectionKind.Sprite && SelectedSprite is KeyboardSprite sprite)
+        {
+            PerformEdit(() =>
             {
-                KeyboardControlDesign design = _document.GetControlDesign(SelectedControl);
-                if (_selectionKind == CanvasSelectionKind.ControlLabel)
-                    design.LabelScale = MathF.Round(Math.Clamp(design.LabelScale * factor, 0.2f, 3f) * 100f) / 100f;
-                else
-                    design.ValueScale = MathF.Round(Math.Clamp(design.ValueScale * factor, 0.2f, 3f) * 100f) / 100f;
-            }
-            else if ((_selectionKind == CanvasSelectionKind.TopTextBar || IsTopTextSelection(_selectionKind))
-                && SelectedTopElement is KeyboardTopElement topElement && _renderer is not null)
-                SetTopElementFontScale(topElement, MathF.Round(Math.Clamp(
-                    _renderer.TopElementFontScale(_document, topElement) * factor, 0.2f, 3f) * 100f) / 100f);
-        });
+                float width = Math.Clamp(sprite.Width * factor, 8f, 2048f);
+                float height = Math.Clamp(sprite.Height * factor, 8f, 1120f);
+                sprite.X -= (width - sprite.Width) / 2f;
+                sprite.Y -= (height - sprite.Height) / 2f;
+                sprite.Width = width;
+                sprite.Height = height;
+            });
+            return;
+        }
+
+        ZoomViewAt(e.Location, e.Delta > 0 ? 1.12f : 1f / 1.12f);
     }
 
     private bool HasSelectedText()
@@ -738,9 +838,13 @@ internal sealed class KeyboardCanvas : Control
                 case CanvasSelectionKind.Control:
                     SetControlOffsets(SelectedControl, MathF.Round(_dragStartControlX + dx), MathF.Round(_dragStartControlY + dy)); return;
                 case CanvasSelectionKind.TopTextBar:
+                    SetTopElementOffsets(SelectedTopElement, MathF.Round(_dragStartTopX + dx), MathF.Round(_dragStartTopY + dy)); return;
                 case CanvasSelectionKind.TopMode:
                 case CanvasSelectionKind.TopLock:
-                    SetTopElementOffsets(SelectedTopElement, MathF.Round(_dragStartTopX + dx), MathF.Round(_dragStartTopY + dy)); return;
+                    if (SelectedTopElement is KeyboardTopElement movingTop)
+                        SetTopInteractionOffsetsPreservingVisuals(movingTop,
+                            MathF.Round(_dragStartTopX + dx), MathF.Round(_dragStartTopY + dy));
+                    return;
                 case CanvasSelectionKind.TopModeArtwork:
                 case CanvasSelectionKind.TopLockArtwork:
                     SetTopArtworkOffsets(SelectedTopElement, MathF.Round(_dragStartTopPartX + dx), MathF.Round(_dragStartTopPartY + dy)); return;
@@ -1145,13 +1249,17 @@ internal sealed class KeyboardCanvas : Control
         RectangleF group = _renderer.TopElementRectangle(_document, element);
         RectangleF artwork = _renderer.TopStateArtworkRectangle(_document, element);
         RectangleF text = _renderer.TopElementContentRectangle(_document, element);
+        bool visibleTextHit = _renderer.IsTopStateTextVisible(_document, element)
+            && _renderer.IsPointOnTopElementContent(_document, element, point);
 
-        // Preserve the selected layer so click-drag remains predictable when the
-        // state picture, label and interaction rectangle overlap.
-        if (_selectionKind == groupKind && group.Contains(point)) return groupKind;
+        // Painted text must be able to take authority even while the larger
+        // interaction box is selected. Otherwise the parent rectangle consumes
+        // every click and its PC/VR or LOCK label can never be selected directly.
+        // Empty space still preserves the selected hit box for predictable drags.
         if (_selectionKind == textKind && text.Contains(point)) return textKind;
+        if (visibleTextHit) return textKind;
+        if (_selectionKind == groupKind && group.Contains(point)) return groupKind;
         if (_selectionKind == artworkKind && artwork.Contains(point)) return artworkKind;
-        if (_renderer.IsTopStateTextVisible(_document, element) && text.Contains(point)) return textKind;
         if (_renderer.HasTopStateArtwork(_document, element) && artwork.Contains(point)) return artworkKind;
         if (_document.TopButtonPlatesEnabled && group.Contains(point)) return groupKind;
         return CanvasSelectionKind.None;
@@ -1282,11 +1390,17 @@ internal sealed class KeyboardCanvas : Control
     {
         if (_document is null)
             return;
-        SetTopElementSize(element,
-            Math.Max(8, rectangle.Width), Math.Max(8, rectangle.Height));
-        SetTopElementOffsets(element,
-            _dragStartTopX + rectangle.Left - _dragStartRectangle.Left,
-            _dragStartTopY + rectangle.Top - _dragStartRectangle.Top);
+        float width = Math.Max(8, rectangle.Width);
+        float height = Math.Max(8, rectangle.Height);
+        float x = _dragStartTopX + rectangle.Left - _dragStartRectangle.Left;
+        float y = _dragStartTopY + rectangle.Top - _dragStartRectangle.Top;
+        if (element is KeyboardTopElement.Mode or KeyboardTopElement.Lock)
+            SetTopInteractionGeometryPreservingVisuals(element, x, y, width, height);
+        else
+        {
+            SetTopElementSize(element, width, height);
+            SetTopElementOffsets(element, x, y);
+        }
     }
 
     private void ResizeTopArtwork(KeyboardTopElement element, RectangleF rectangle)
@@ -1296,6 +1410,20 @@ internal sealed class KeyboardCanvas : Control
         RectangleF button = _renderer.TopElementRectangle(_document, element);
         SetTopArtworkOffsets(element, rectangle.Left - button.Left, rectangle.Top - button.Top);
         SetTopArtworkSize(element, Math.Max(8, rectangle.Width), Math.Max(8, rectangle.Height));
+    }
+
+    private void ScaleTopArtworkFromCenter(KeyboardTopElement element, float factor)
+    {
+        if (_document is null || _renderer is null)
+            return;
+        RectangleF current = _renderer.TopStateArtworkRectangle(_document, element);
+        RectangleF button = _renderer.TopElementRectangle(_document, element);
+        float width = Math.Clamp(current.Width * factor, 8f, 2048f);
+        float height = Math.Clamp(current.Height * factor, 8f, 1120f);
+        float left = current.Left - (width - current.Width) / 2f;
+        float top = current.Top - (height - current.Height) / 2f;
+        SetTopArtworkOffsets(element, left - button.Left, top - button.Top);
+        SetTopArtworkSize(element, width, height);
     }
 
     private void ResizeVisualKeyContent(KeyboardKey key, RectangleF rectangle)
@@ -1577,6 +1705,62 @@ internal sealed class KeyboardCanvas : Control
             case KeyboardTopElement.Mode: _document.ModeButtonWidth = width; _document.ModeButtonHeight = height; break;
             case KeyboardTopElement.Lock: _document.LockButtonWidth = width; _document.LockButtonHeight = height; break;
         }
+    }
+
+    private void SetTopInteractionGeometryPreservingVisuals(KeyboardTopElement element,
+        float x, float y, float width, float height)
+    {
+        if (_document is null || _renderer is null)
+            return;
+        if (element == KeyboardTopElement.TextBar)
+        {
+            SetTopElementOffsets(element, x, y);
+            SetTopElementSize(element, width, height);
+            return;
+        }
+
+        RectangleF oldButton = _renderer.TopElementRectangle(_document, element);
+        RectangleF oldArtwork = _renderer.TopStateArtworkRectangle(_document, element);
+        bool preserveArtwork = HasAnyTopStateArtwork(_document, element);
+        PointF textAnchor = CaptureTopTextAnchor(_document, oldButton, element);
+
+        SetTopElementOffsets(element, x, y);
+        SetTopElementSize(element, Math.Max(8, width), Math.Max(8, height));
+
+        RectangleF newButton = _renderer.TopElementRectangle(_document, element);
+        if (preserveArtwork)
+        {
+            SetTopArtworkOffsets(element, oldArtwork.Left - newButton.Left, oldArtwork.Top - newButton.Top);
+            SetTopArtworkSize(element, oldArtwork.Width, oldArtwork.Height);
+        }
+        RestoreTopTextAnchor(textAnchor, element);
+    }
+
+    private static bool HasAnyTopStateArtwork(KeyboardDocument document, KeyboardTopElement element)
+        => element == KeyboardTopElement.Mode
+            ? !string.IsNullOrWhiteSpace(document.ModeVrArtworkImagePath)
+                || !string.IsNullOrWhiteSpace(document.ModePcArtworkImagePath)
+            : element == KeyboardTopElement.Lock
+                && (!string.IsNullOrWhiteSpace(document.LockWorldArtworkImagePath)
+                    || !string.IsNullOrWhiteSpace(document.LockHeadArtworkImagePath));
+
+    private static PointF CaptureTopTextAnchor(KeyboardDocument document, RectangleF button,
+        KeyboardTopElement element)
+    {
+        float offsetX = element == KeyboardTopElement.Mode ? document.ModeTextOffsetX : document.LockTextOffsetX;
+        float offsetY = element == KeyboardTopElement.Mode ? document.ModeTextOffsetY : document.LockTextOffsetY;
+        return new PointF(button.Left + button.Width / 2f + offsetX,
+            button.Top + button.Height / 2f + offsetY);
+    }
+
+    private void RestoreTopTextAnchor(PointF anchor, KeyboardTopElement element)
+    {
+        if (_document is null || _renderer is null)
+            return;
+        RectangleF button = _renderer.TopElementRectangle(_document, element);
+        SetTopTextOffsets(element,
+            anchor.X - (button.Left + button.Width / 2f),
+            anchor.Y - (button.Top + button.Height / 2f));
     }
 
     private void SetTopElementFontScale(KeyboardTopElement element, float scale)

@@ -525,6 +525,69 @@ internal static class StudioSelfTest
                 || Math.Abs(lockArtwork.Top - (lockButton.Top + 2)) > 0.001f
                 || Math.Abs(lockArtwork.Width - 126) > 0.001f || Math.Abs(lockArtwork.Height - 30) > 0.001f)
                 throw new InvalidDataException("Top-state artwork did not keep its independent transform.");
+            using (var layerSelectionCanvas = new KeyboardCanvas { Renderer = renderer, Document = loaded })
+            {
+                layerSelectionCanvas.SelectTopInteractionBox(KeyboardTopElement.Mode);
+                if (layerSelectionCanvas.SelectionKind != CanvasSelectionKind.TopMode)
+                    throw new InvalidDataException("Mode interaction-box layer could not be selected explicitly.");
+                if (!layerSelectionCanvas.SelectTopStateArtwork(KeyboardTopElement.Mode)
+                    || layerSelectionCanvas.SelectionKind != CanvasSelectionKind.TopModeArtwork)
+                    throw new InvalidDataException("Mode state-image layer could not take selection authority.");
+                if (!layerSelectionCanvas.SelectTopText(KeyboardTopElement.Mode)
+                    || layerSelectionCanvas.SelectionKind != CanvasSelectionKind.TopModeText)
+                    throw new InvalidDataException("Mode text layer could not take selection authority.");
+                layerSelectionCanvas.SelectTopInteractionBox(KeyboardTopElement.Lock);
+                if (!layerSelectionCanvas.SelectTopStateArtwork(KeyboardTopElement.Lock)
+                    || layerSelectionCanvas.SelectionKind != CanvasSelectionKind.TopLockArtwork)
+                    throw new InvalidDataException("Lock state-image layer could not take selection authority.");
+                if (!layerSelectionCanvas.SelectTopText(KeyboardTopElement.Lock)
+                    || layerSelectionCanvas.SelectionKind != CanvasSelectionKind.TopLockText)
+                    throw new InvalidDataException("Lock text layer could not take selection authority.");
+            }
+            KeyboardDocument independentTopLayers = loaded.Clone();
+            using (var geometryCanvas = new KeyboardCanvas { Renderer = renderer, Document = independentTopLayers })
+            {
+                RectangleF originalButton = renderer.TopElementRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                RectangleF originalArtwork = renderer.TopStateArtworkRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                RectangleF originalText = renderer.TopElementContentRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                geometryCanvas.SetTopInteractionSizePreservingVisuals(KeyboardTopElement.Mode,
+                    originalButton.Width + 80, originalButton.Height + 20);
+                RectangleF separatedArtwork = renderer.TopStateArtworkRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                RectangleF separatedText = renderer.TopElementContentRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                if (Math.Abs(separatedArtwork.Left - originalArtwork.Left) > 0.01f
+                    || Math.Abs(separatedArtwork.Top - originalArtwork.Top) > 0.01f
+                    || Math.Abs(separatedArtwork.Width - originalArtwork.Width) > 0.01f
+                    || Math.Abs(separatedArtwork.Height - originalArtwork.Height) > 0.01f
+                    || Math.Abs((separatedText.Left + separatedText.Width / 2f)
+                        - (originalText.Left + originalText.Width / 2f)) > 0.01f
+                    || Math.Abs((separatedText.Top + separatedText.Height / 2f)
+                        - (originalText.Top + originalText.Height / 2f)) > 0.01f)
+                    throw new InvalidDataException("Resizing a top hit box stretched or moved its independent artwork/text.");
+                if (!geometryCanvas.FitTopArtworkToInteractionBox(KeyboardTopElement.Mode))
+                    throw new InvalidDataException("State image could not be fitted to its hit box.");
+                RectangleF fittedButton = renderer.TopElementRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                RectangleF fittedArtwork = renderer.TopStateArtworkRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                if (Math.Abs(fittedArtwork.Left - fittedButton.Left) > 0.01f
+                    || Math.Abs(fittedArtwork.Top - fittedButton.Top) > 0.01f
+                    || Math.Abs(fittedArtwork.Width - fittedButton.Width) > 0.01f
+                    || Math.Abs(fittedArtwork.Height - fittedButton.Height) > 0.01f)
+                    throw new InvalidDataException("Fit image to box did not align both rectangles.");
+                geometryCanvas.SetTopInteractionSizePreservingVisuals(KeyboardTopElement.Mode,
+                    fittedButton.Width + 40, fittedButton.Height + 10);
+                RectangleF detachedAfterFit = renderer.TopStateArtworkRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                if (Math.Abs(detachedAfterFit.Width - fittedArtwork.Width) > 0.01f
+                    || Math.Abs(detachedAfterFit.Height - fittedArtwork.Height) > 0.01f)
+                    throw new InvalidDataException("A fitted state image remained implicitly stretched with the hit box.");
+                if (!geometryCanvas.FitTopInteractionBoxToArtwork(KeyboardTopElement.Mode))
+                    throw new InvalidDataException("Hit box could not be fitted back to its state image.");
+                RectangleF finalButton = renderer.TopElementRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                RectangleF finalArtwork = renderer.TopStateArtworkRectangle(independentTopLayers, KeyboardTopElement.Mode);
+                if (Math.Abs(finalArtwork.Left - finalButton.Left) > 0.01f
+                    || Math.Abs(finalArtwork.Top - finalButton.Top) > 0.01f
+                    || Math.Abs(finalArtwork.Width - finalButton.Width) > 0.01f
+                    || Math.Abs(finalArtwork.Height - finalButton.Height) > 0.01f)
+                    throw new InvalidDataException("Fit box to image did not align both rectangles.");
+            }
             KeyboardDocument centeredTopText = loaded.Clone();
             centeredTopText.ModeTextOffsetX = centeredTopText.ModeTextOffsetY = 0;
             centeredTopText.LockTextOffsetX = centeredTopText.LockTextOffsetY = 0;
@@ -919,7 +982,7 @@ internal static class StudioSelfTest
                 throw new InvalidDataException("Marquee selection intersection/containment behavior failed.");
 
             File.WriteAllText(Path.Combine(outputDirectory, "keyboard-studio-self-test.txt"),
-                $"PASS\nKeys={loaded.Keys.Count}\nTheme=modern_green\nFont=ocu_nordic\nPreview=1024x560\nCustomStyle=True\nCustomStyleSeed=VisibleBaseTheme+RestorePriorValues\nStockDwemer=LatestAuthoredDesign\nStockPugDragon=BundledArtworkDesign\nDwemerBaseTheme=AuthoredStockBackground1024x560\nCanvasZoom=WheelZoomUnlessTextSelected+MiddlePan\nKeyPlates=False\nPlateLayers=Fill+OutlineRing+OutsideGlowIndependent\nParchmentRibbon=Selectable+Movable+Resizable+Removable\nOcuTarget=ContainingModRootAutoDetected\nTopPlates=ModeLock+InputBarIndependent\nTopStateArtwork=ModeVR+ModePC+LockWorld+LockHead+TextFallback\nArtwork=MovableBackground+2Sprites+ControlArrow\nControls=NestedSelectableBoxes\nControlFontHit=PaintedGlyphPixelsOnly\nControlArrowGlow=BuiltInOrPng+Breathing\nArrowKeys=IndependentMove+Resize\nTopBar=TextBar+Mode+LockMove+PlateResize+FontScale\nKeyPosition=NegativeGridCoordinatesSupported\nGridControl=ColumnCountDensity\nHistory=NoOpFiltered+VisualChangesDetected\nMarqueeSelection=VisibleItems+Additive+GroupMove\nDragPreview=Coalesced16ms+InspectorOnRelease\nBackgroundFeather=RoundedPillBoundary\nHighDpiArtwork=PixelSized\nTextEffects=OutlineColor+FontGlow+IndependentBreathing\nSpaceAdvance=MissingSFNGlyphFallback\nTTFImport=ExistingKeysOnly+NewKeyRebuild\nCustomFontExport=SFN+PNG\nBreathing=Keys+Font+Sprite+Arrow\nAnimationPreviewAverageMs={averageAnimationFrameMs:F2}\nSampling=PremultipliedBilinear\nJpegBackground=TranscodedToPng\nMO2Archive=root/OCUKeyboard.kb\nPortablePackage=FormatV1+.ocukb+ArtworkRoundTrip+StableResave+TraversalGuard\n");
+                $"PASS\nKeys={loaded.Keys.Count}\nTheme=modern_green\nFont=ocu_nordic\nPreview=1024x560\nCustomStyle=True\nCustomStyleSeed=VisibleBaseTheme+RestorePriorValues\nStockDwemer=LatestAuthoredDesign\nStockPugDragon=BundledArtworkDesign\nDwemerBaseTheme=AuthoredStockBackground1024x560\nCanvasZoom=WheelZoomUnlessTextSelected+MiddlePan\nKeyPlates=False\nPlateLayers=Fill+OutlineRing+OutsideGlowIndependent\nParchmentRibbon=Selectable+Movable+Resizable+Removable\nOcuTarget=ContainingModRootAutoDetected\nTopPlates=ModeLock+InputBarIndependent\nTopStateArtwork=ModeVR+ModePC+LockWorld+LockHead+TextFallback+IndependentGeometry+BidirectionalFit\nArtwork=MovableBackground+2Sprites+ControlArrow\nControls=NestedSelectableBoxes\nControlFontHit=PaintedGlyphPixelsOnly\nControlArrowGlow=BuiltInOrPng+Breathing\nArrowKeys=IndependentMove+Resize\nTopBar=TextBar+Mode+LockMove+PlateResize+FontScale\nKeyPosition=NegativeGridCoordinatesSupported\nGridControl=ColumnCountDensity\nHistory=NoOpFiltered+VisualChangesDetected\nMarqueeSelection=VisibleItems+Additive+GroupMove\nDragPreview=Coalesced16ms+InspectorOnRelease\nBackgroundFeather=RoundedPillBoundary\nHighDpiArtwork=PixelSized\nTextEffects=OutlineColor+FontGlow+IndependentBreathing\nSpaceAdvance=MissingSFNGlyphFallback\nTTFImport=ExistingKeysOnly+NewKeyRebuild\nCustomFontExport=SFN+PNG\nBreathing=Keys+Font+Sprite+Arrow\nAnimationPreviewAverageMs={averageAnimationFrameMs:F2}\nSampling=PremultipliedBilinear\nJpegBackground=TranscodedToPng\nMO2Archive=root/OCUKeyboard.kb\nPortablePackage=FormatV1+.ocukb+ArtworkRoundTrip+StableResave+TraversalGuard\n");
             return 0;
         }
         catch (Exception exception)

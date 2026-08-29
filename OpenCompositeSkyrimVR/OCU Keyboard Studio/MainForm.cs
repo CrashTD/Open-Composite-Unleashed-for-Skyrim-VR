@@ -237,6 +237,12 @@ internal sealed class MainForm : Form
         _installButton = ActionButton("Install for Next Launch", (_, _) => InstallToOcu());
         _toolTip.SetToolTip(_installButton,
             "Writes this keyboard into the OCU installation that opened Studio. Restart Skyrim VR to load it.");
+        Button relosControllersButton = ActionButton(
+            "Relos Custom Controllers",
+            (_, _) => OpenExternalUrl("https://www.nexusmods.com/skyrimspecialedition/mods/187713"));
+        _toolTip.SetToolTip(
+            relosControllersButton,
+            "Opens Relos Customs for SteamVR controller textures. This does not change OCU bindings, calibration dots, or laser alignment.");
         var toolbar = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -262,7 +268,8 @@ internal sealed class MainForm : Form
             ActionButton("Save As", (_, _) => SaveLayout(true)),
             ActionButton("Export PNG", (_, _) => ExportPng()),
             ActionButton("Export MO2 Mod", (_, _) => ExportMo2Mod()),
-            _installButton
+            _installButton,
+            relosControllersButton
         ]);
 
         var design = new FlowLayoutPanel
@@ -275,11 +282,15 @@ internal sealed class MainForm : Form
         const string baseThemeHelp = "The built-in visual foundation: background/colors, plate treatment, Parchment ribbon eligibility, and the authored positions for PC/VR, Lock, Size, Opacity, and Tilt. A custom background and custom colors override most of its visible appearance.";
         _toolTip.SetToolTip(baseThemeCaption, baseThemeHelp);
         _toolTip.SetToolTip(_themeCombo, baseThemeHelp);
+        Button addTtfButton = ActionButton("Add TTF", (_, _) => ImportFont(), compact: true);
+        Button findFontsButton = ActionButton("Find Fonts", (_, _) => OpenExternalUrl("https://www.fontspace.com"), compact: true);
+        _toolTip.SetToolTip(findFontsButton,
+            "Opens FontSpace in your browser. Check the individual font license before including a font in a shared .ocukb or mod package.");
         design.Controls.AddRange([
             Caption("Keyboard Design"), _designCombo,
             Spacer(12),
             baseThemeCaption, _themeCombo,
-            Caption("Font"), _fontCombo, ActionButton("Add TTF", (_, _) => ImportFont(), compact: true),
+            Caption("Font"), _fontCombo, addTtfButton, findFontsButton,
             Caption("State"), _stateCombo,
             _pressedCheck,
             _snapCheck
@@ -422,7 +433,7 @@ internal sealed class MainForm : Form
         AddRow(inspector, "Width px", _topElementWidth);
         AddRow(inspector, "Height px", _topElementHeight);
         AddRow(inspector, "Font size / scale", _topElementFontScale);
-        AddHint(inspector, "PC/VR and Lock are layered controls: select and move the interaction box, state image, or text independently. Only the interaction box changes the in-game laser hit area. Scroll over selected text to resize the font.");
+        AddHint(inspector, "PC/VR and Lock are layered controls: select and move the interaction box, state image/sprite, or text independently. Only the interaction box changes the in-game laser hit area. Scroll resizes selected text, state images, and ordinary sprites.");
 
         AddSection(inspector, "PC / VR + LOCK STATE IMAGES");
         StyleCombo(_modeStatePreview);
@@ -433,11 +444,13 @@ internal sealed class MainForm : Form
         AddRow(inspector, "VR Mode image", StateArtworkActions(TopStateArtworkSlot.ModeVr, _modeVrArtworkName));
         AddRow(inspector, "PC Mode image", StateArtworkActions(TopStateArtworkSlot.ModePc, _modePcArtworkName));
         AddWide(inspector, _modeTextOverArtwork);
+        AddRow(inspector, "Edit Mode layer", TopLayerActions(KeyboardTopElement.Mode));
         AddRow(inspector, "Preview lock", _lockStatePreview);
         AddRow(inspector, "World image", StateArtworkActions(TopStateArtworkSlot.LockWorld, _lockWorldArtworkName));
         AddRow(inspector, "Head-lock image", StateArtworkActions(TopStateArtworkSlot.LockHead, _lockHeadArtworkName));
         AddWide(inspector, _lockTextOverArtwork);
-        AddHint(inspector, "Each PNG switches with the real in-game state. Click its picture or visible text to move that layer independently; right-click the control to select its interaction box explicitly. The picture and text remain visual-only and create no extra OpenXR overlay.");
+        AddRow(inspector, "Edit Lock layer", TopLayerActions(KeyboardTopElement.Lock));
+        AddHint(inspector, "Each PNG is a state-aware sprite that switches with the real in-game state. Edit selects the matching preview and its picture immediately. Drag to move; use handles or the wheel to resize. Picture and text remain visual-only and create no extra OpenXR overlay.");
 
         AddSection(inspector, "GRID COLUMN COUNT");
         AddRow(inspector, "Columns across", _layoutWidth);
@@ -749,7 +762,7 @@ internal sealed class MainForm : Form
         };
         _canvas.EditStarted += (_, _) => _pendingCanvasUndo ??= _document.Clone();
         _canvas.ViewZoomChanged += (_, _) => SetStatus(
-            $"Canvas zoom: {_canvas.ViewZoomPercent}%. Scroll over selected text to resize it; scroll elsewhere to zoom. Middle-drag pans.");
+            $"Canvas zoom: {_canvas.ViewZoomPercent}%. Scroll over selected text or artwork to resize it; scroll elsewhere to zoom. Middle-drag pans.");
         _canvas.DocumentChanged += (_, _) =>
         {
             PopulateInspector();
@@ -1313,8 +1326,9 @@ internal sealed class MainForm : Form
                 switch (element)
                 {
                     case KeyboardTopElement.TextBar: _document.TextBarOffsetX = x; _document.TextBarOffsetY = y; break;
-                    case KeyboardTopElement.Mode: _document.ModeButtonOffsetX = x; _document.ModeButtonOffsetY = y; break;
-                    case KeyboardTopElement.Lock: _document.LockButtonOffsetX = x; _document.LockButtonOffsetY = y; break;
+                    case KeyboardTopElement.Mode:
+                    case KeyboardTopElement.Lock:
+                        _canvas.SetTopInteractionOffsetsPreservingVisuals(element, x, y); break;
                 }
                 break;
         }
@@ -1347,9 +1361,8 @@ internal sealed class MainForm : Form
                         _document.TextBarWidth = width; _document.TextBarHeight = height;
                         _document.TextBarFontScale = scale; break;
                     case KeyboardTopElement.Mode:
-                        _document.ModeButtonWidth = width; _document.ModeButtonHeight = height; break;
                     case KeyboardTopElement.Lock:
-                        _document.LockButtonWidth = width; _document.LockButtonHeight = height; break;
+                        _canvas.SetTopInteractionSizePreservingVisuals(element, width, height); break;
                 }
                 break;
         }
@@ -2351,6 +2364,7 @@ internal sealed class MainForm : Form
             Margin = Padding.Empty
         };
         actions.Controls.Add(ActionButton("Choose PNG", (_, _) => ChooseStateArtwork(slot), compact: true));
+        actions.Controls.Add(ActionButton("Edit", (_, _) => EditStateArtwork(slot), compact: true));
         actions.Controls.Add(ActionButton("Use text", (_, _) => ClearStateArtwork(slot), compact: true));
         actions.Controls.Add(nameLabel);
         return actions;
@@ -2365,7 +2379,8 @@ internal sealed class MainForm : Form
         SetStateArtwork(slot, dialog.FileName, StateArtworkPortableName(slot));
         MarkChanged();
         PopulateInspector();
-        SetStatus($"{DescribeStateArtworkSlot(slot)} artwork selected. It will travel with .ocukb and MO2 exports.");
+        SelectStateArtwork(slot);
+        SetStatus($"{DescribeStateArtworkSlot(slot)} state sprite selected for editing. Drag it or scroll to resize; it travels with .ocukb and MO2 exports.");
     }
 
     private void ClearStateArtwork(TopStateArtworkSlot slot)
@@ -2377,8 +2392,102 @@ internal sealed class MainForm : Form
         SetStateArtwork(slot, null, null);
         MarkChanged();
         PopulateInspector();
+        PreviewStateArtworkSlot(slot);
+        _canvas.SelectTopText(TopElementForStateArtworkSlot(slot));
         SetStatus($"{DescribeStateArtworkSlot(slot)} returned to the ordinary text fallback.");
     }
+
+    private Control TopLayerActions(KeyboardTopElement element)
+    {
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            WrapContents = true,
+            Margin = Padding.Empty
+        };
+        actions.Controls.Add(ActionButton("Hit box", (_, _) =>
+        {
+            _canvas.SelectTopInteractionBox(element);
+            SetStatus($"{DescribeTopElement(element)} interaction box selected. Moving it changes the in-game laser target.");
+        }, compact: true));
+        actions.Controls.Add(ActionButton("State image", (_, _) =>
+        {
+            if (_canvas.SelectTopStateArtwork(element))
+                SetStatus($"{DescribeTopElement(element)} state image selected. Drag, use its handles, or scroll to resize it without moving the hit box.");
+            else
+                SetStatus($"The previewed {DescribeTopElement(element)} state has no PNG. Choose one first.");
+        }, compact: true));
+        actions.Controls.Add(ActionButton("Text", (_, _) =>
+        {
+            if (_canvas.SelectTopText(element))
+                SetStatus($"{DescribeTopElement(element)} text selected. Drag to move it; scroll to resize the font.");
+            else
+                SetStatus($"{DescribeTopElement(element)} text is hidden by its state image. Enable the text-over-image option or use text fallback.");
+        }, compact: true));
+        actions.Controls.Add(ActionButton("Fit image to box", (_, _) => FitTopLayers(element, imageToBox: true), compact: true));
+        actions.Controls.Add(ActionButton("Fit box to image", (_, _) => FitTopLayers(element, imageToBox: false), compact: true));
+        return actions;
+    }
+
+    private void FitTopLayers(KeyboardTopElement element, bool imageToBox)
+    {
+        if (!_canvas.HasTopStateArtwork(element))
+        {
+            SetStatus($"{DescribeTopElement(element)} has no state image to fit.");
+            return;
+        }
+        PushUndo();
+        bool changed = imageToBox
+            ? _canvas.FitTopArtworkToInteractionBox(element)
+            : _canvas.FitTopInteractionBoxToArtwork(element);
+        if (!changed)
+            return;
+        MarkChanged();
+        PopulateInspector();
+        if (imageToBox)
+        {
+            _canvas.SelectTopStateArtwork(element);
+            SetStatus($"{DescribeTopElement(element)} image fitted to its hit box. Resize the hit box again to separate them without stretching the image.");
+        }
+        else
+        {
+            _canvas.SelectTopInteractionBox(element);
+            SetStatus($"{DescribeTopElement(element)} hit box fitted to its image. Resize either layer independently from here.");
+        }
+    }
+
+    private void EditStateArtwork(TopStateArtworkSlot slot)
+    {
+        PreviewStateArtworkSlot(slot);
+        KeyboardTopElement element = TopElementForStateArtworkSlot(slot);
+        if (_canvas.SelectTopStateArtwork(element))
+            SetStatus($"{DescribeStateArtworkSlot(slot)} state sprite selected. Drag, use its handles, or scroll to resize.");
+        else
+            SetStatus($"{DescribeStateArtworkSlot(slot)} has no PNG yet. Choose one first.");
+    }
+
+    private void SelectStateArtwork(TopStateArtworkSlot slot)
+    {
+        PreviewStateArtworkSlot(slot);
+        _canvas.SelectTopStateArtwork(TopElementForStateArtworkSlot(slot));
+    }
+
+    private void PreviewStateArtworkSlot(TopStateArtworkSlot slot)
+    {
+        if (slot is TopStateArtworkSlot.ModeVr or TopStateArtworkSlot.ModePc)
+            _modeStatePreview.SelectedIndex = slot == TopStateArtworkSlot.ModePc ? 1 : 0;
+        else
+            _lockStatePreview.SelectedIndex = slot == TopStateArtworkSlot.LockHead ? 1 : 0;
+    }
+
+    private static KeyboardTopElement TopElementForStateArtworkSlot(TopStateArtworkSlot slot)
+        => slot is TopStateArtworkSlot.ModeVr or TopStateArtworkSlot.ModePc
+            ? KeyboardTopElement.Mode
+            : KeyboardTopElement.Lock;
+
+    private static string DescribeTopElement(KeyboardTopElement element)
+        => element == KeyboardTopElement.Mode ? "PC / VR Mode" : "Lock / Unlock";
 
     private (string? path, string? fileName) GetStateArtwork(TopStateArtworkSlot slot) => slot switch
     {
@@ -3285,6 +3394,26 @@ internal sealed class MainForm : Form
         };
         button.Click += action;
         return button;
+    }
+
+    private void OpenExternalUrl(string url)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                $"Could not open the link.\n\n{url}\n\n{ex.Message}",
+                "OCU Keyboard Studio",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
     }
 
     private static void SetSwatch(ColorEntryControl entry, Color color) => entry.Value = color;

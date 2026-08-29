@@ -29,8 +29,9 @@ Quick use
    content, or click between/around glyphs on the empty plate to move the whole
    key. Plate handles resize from the exact dragged edge while the opposite edge
    stays anchored. While text is selected, the wheel resizes that font anywhere
-   on the canvas. Select a plate, artwork, background, or empty canvas and the wheel
-   zooms the entire keyboard around the pointer; middle-drag pans the zoomed view.
+   on the canvas. The wheel also resizes a selected state image or ordinary sprite
+   around its center. Select a plate, background, or empty canvas and the wheel zooms
+   the entire keyboard around the pointer; middle-drag pans the zoomed view.
    No edit-mode switching is required. The text bar, PC/VR Mode button, and Lock button are independently
    selectable, draggable, and resizable; their laser hit areas follow their saved
    position and plate size. Their font scale is independent and the mouse wheel
@@ -40,7 +41,12 @@ Quick use
    fallback and can optionally remain visible over the art. Their interaction
    box, current state image, and visible text are separate selectable layers:
    move/resize the image, move/scale the text, or move/resize the interaction
-   box. Right-click either control to select a fully overlapped layer explicitly.
+   box. Clicking a visible PC/VR or LOCK glyph selects its text even while the
+   larger hit box is active. The Hit box / State image / Text buttons select fully
+   overlapped layers explicitly, and choosing a state PNG immediately selects that state for editing.
+   Moving or resizing a hit box leaves its picture and text visually fixed instead
+   of stretching them. Fit image to box and Fit box to image align the rectangles
+   deliberately; the next resize separates them again.
    Only the interaction box changes the laser hit area. Typing keys may be moved above
    or left of the original grid—negative X/Y positions are supported by Studio,
    the saved layout, native rendering, and laser hit testing.
