@@ -33,9 +33,14 @@ public:
 	// Returns true if GPU supports VRS and initialization succeeded.
 	bool IsAvailable() const { return available; }
 
+	// Initialization is attempted at most once for a D3D device session. This
+	// prevents unsupported adapters from retrying NVAPI every compositor frame.
+	bool WasInitializationAttempted() const { return initializationAttempted; }
+
 private:
 	bool available = false;
 	bool nvapiLoaded = false;
+	bool initializationAttempted = false;
 
 	ID3D11Device* device = nullptr;
 	ID3D11DeviceContext* context = nullptr;
@@ -86,6 +91,7 @@ public:
 	void Disable() {}
 	void Shutdown() {}
 	bool IsAvailable() const { return false; }
+	bool WasInitializationAttempted() const { return true; }
 };
 
 #endif // OC_HAS_NVAPI

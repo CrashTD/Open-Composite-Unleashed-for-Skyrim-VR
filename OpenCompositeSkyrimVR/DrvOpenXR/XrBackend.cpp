@@ -123,123 +123,12 @@ XrBackend::XrBackend(bool useVulkanTmpGfx, bool useD3D11TmpGfx)
 	}
 }
 
-// --- GPU Timing via D3D11 Timestamp Queries ---
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-void XrBackend::InitGpuTiming(ID3D11Device* device)
-{
-	if (gpuTimingInitialized)
-		return;
-
-	D3D11_QUERY_DESC disjointDesc = {};
-	disjointDesc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
-
-	D3D11_QUERY_DESC timestampDesc = {};
-	timestampDesc.Query = D3D11_QUERY_TIMESTAMP;
-
-	HRESULT hr = device->CreateQuery(&disjointDesc, &gpuTimestampDisjoint);
-	if (FAILED(hr)) {
-		OOVR_LOG("GPU timing: failed to create disjoint query");
-		return;
-	}
-
-	hr = device->CreateQuery(&timestampDesc, &gpuTimestampBegin);
-	if (FAILED(hr)) {
-		OOVR_LOG("GPU timing: failed to create begin timestamp query");
-		gpuTimestampDisjoint->Release();
-		gpuTimestampDisjoint = nullptr;
-		return;
-	}
-
-	hr = device->CreateQuery(&timestampDesc, &gpuTimestampEnd);
-	if (FAILED(hr)) {
-		OOVR_LOG("GPU timing: failed to create end timestamp query");
-		gpuTimestampDisjoint->Release();
-		gpuTimestampDisjoint = nullptr;
-		gpuTimestampBegin->Release();
-		gpuTimestampBegin = nullptr;
-		return;
-	}
-
-	device->AddRef();
-	gpuTimingDevice = device;
-	device->GetImmediateContext(&gpuTimingContext);
-
-	gpuTimingInitialized = true;
-	OOVR_LOG("GPU timing: D3D11 timestamp queries initialized");
-}
-
-void XrBackend::ReadGpuTimingResults()
-{
-	if (!gpuTimingInFlight)
-		return;
-
-	D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjointData;
-	HRESULT hr = gpuTimingContext->GetData(gpuTimestampDisjoint, &disjointData, sizeof(disjointData), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-
-	if (hr != S_OK)
-		return; // Not ready yet, keep last measured value
-
-	if (disjointData.Disjoint) {
-		gpuTimingInFlight = false;
-		return; // GPU frequency changed, data unreliable
-	}
-
-	UINT64 beginTime, endTime;
-	hr = gpuTimingContext->GetData(gpuTimestampBegin, &beginTime, sizeof(UINT64), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-	if (hr != S_OK)
-		return;
-
-	hr = gpuTimingContext->GetData(gpuTimestampEnd, &endTime, sizeof(UINT64), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-	if (hr != S_OK)
-		return;
-
-	float deltaMs = (float)(endTime - beginTime) / (float)disjointData.Frequency * 1000.0f;
-
-	// Sanity check: ignore obviously wrong values
-	if (deltaMs > 0.0f && deltaMs < 200.0f) {
-		measuredGpuTimeMs = deltaMs;
-	}
-
-	gpuTimingInFlight = false;
-}
-
-void XrBackend::CleanupGpuTiming()
-{
-	if (gpuTimestampDisjoint) {
-		gpuTimestampDisjoint->Release();
-		gpuTimestampDisjoint = nullptr;
-	}
-	if (gpuTimestampBegin) {
-		gpuTimestampBegin->Release();
-		gpuTimestampBegin = nullptr;
-	}
-	if (gpuTimestampEnd) {
-		gpuTimestampEnd->Release();
-		gpuTimestampEnd = nullptr;
-	}
-	if (gpuTimingContext) {
-		gpuTimingContext->Release();
-		gpuTimingContext = nullptr;
-	}
-	if (gpuTimingDevice) {
-		gpuTimingDevice->Release();
-		gpuTimingDevice = nullptr;
-	}
-	gpuTimingInitialized = false;
-	gpuTimingInFlight = false;
-}
-#endif
-
 XrBackend::~XrBackend()
 {
 	// Stop the OSC listener before anything it could touch goes away
 	NetworkTrackerReceiver::Instance().Stop();
 
 	ShutdownOVRPerfHook();
-
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	CleanupGpuTiming();
-#endif
 
 	// First clear out the compositors, since they might try and access the OpenXR instance
 	// in their destructor.
@@ -430,11 +319,6 @@ void XrBackend::CheckOrInitCompositors(const vr::Texture_t* tex)
 			d3dInfo.device = dev;
 			graphicsBinding = std::make_unique<BindingWrapper<XrGraphicsBindingD3D11KHR>>(d3dInfo);
 			DrvOpenXR::SetupSession();
-
-			// Initialize GPU timing queries before releasing the device
-			if (oovr_global_configuration.EnableGpuTiming()) {
-				// InitGpuTiming(dev); // DISABLED: D3D11 timestamp queries cause micro stutter
-			}
 
 			dev->Release();
 #else
@@ -1024,16 +908,6 @@ void XrBackend::WaitForTrackingData()
 	LatchViewsForDisplayTime(xr_gbl->nextPredictedFrameTime);
 wait_done:
 
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	// GPU timing: read previous frame's results, then start new measurement
-	if (gpuTimingInitialized) {
-		ReadGpuTimingResults();
-		gpuTimingContext->Begin(gpuTimestampDisjoint);
-		gpuTimingContext->End(gpuTimestampBegin);
-		gpuTimingInFlight = true;
-	}
-#endif
-
 	// If we're not on the game's graphics API yet, don't actually mark us as having started the frame.
 	// Instead, set a different flag so we'll call this method again when it's available.
 	if (!usingApplicationGraphicsAPI) {
@@ -1183,27 +1057,6 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 		submittedEyeTextures = false;
 	}
 
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	// GPU timing: decide whether to extend measurement through _BuildLayers.
-	// VRKeyboard constructor creates XR swapchains and D3D11 resources —
-	// doing that inside an active timestamp disjoint query can crash some
-	// OpenXR runtimes. So we only keep the query active through _BuildLayers
-	// when the keyboard already exists (no construction will happen).
-	// On the rare frame where keyboard is first created, we end timing early.
-	bool gpuTimingExtendedThroughOverlay = false;
-	if (gpuTimingInitialized && gpuTimingInFlight) {
-		BaseOverlay* preCheckOverlay = GetUnsafeBaseOverlay();
-		if (preCheckOverlay && preCheckOverlay->IsKeyboardActive()) {
-			// Keyboard exists — safe to let timing run through _BuildLayers
-			gpuTimingExtendedThroughOverlay = true;
-		} else {
-			// No keyboard yet (might be created) — end timing now for safety
-			gpuTimingContext->End(gpuTimestampEnd);
-			gpuTimingContext->End(gpuTimestampDisjoint);
-		}
-	}
-#endif
-
 	// Ensure the BaseOverlay singleton exists so the keyboard shortcut
 	// detection in _BuildLayers runs every frame. Without this, the overlay
 	// is only created when the game explicitly requests IVROverlay, which
@@ -1221,14 +1074,6 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 		layer_count = 1;
 		headers = &app_layer;
 	}
-
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	// End GPU timing after _BuildLayers (if we extended through it)
-	if (gpuTimingExtendedThroughOverlay && gpuTimingInFlight) {
-		gpuTimingContext->End(gpuTimestampEnd);
-		gpuTimingContext->End(gpuTimestampDisjoint);
-	}
-#endif
 
 	// It's ok if no layers have been added at this point,
 	// it will just cause the display to be blanked
@@ -1254,16 +1099,12 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 		}
 		lastFrameSubmitQpc = endFrameEnd;
 
-		// Compositor overhead: residual = frame_interval - app_gpu - app_cpu - xrEndFrame_cpu
-		// This estimates the time the runtime spends on reprojection/distortion on the GPU.
-		// Clamped to [0, displayPeriod] to prevent garbage from measurement error.
+		// Coarse compositor residual. Direct D3D timestamp queries were removed
+		// because they introduced micro-stutter, so this fallback can include
+		// unmeasured application GPU work. Clamp it to the display period.
 		float frameInterval = predictedDisplayPeriodMs > 0.0f ? predictedDisplayPeriodMs : measuredFrameIntervalMs;
 		if (frameInterval > 0.0f) {
-			float appGpu = 0.0f;
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-			appGpu = (gpuTimingInitialized && measuredGpuTimeMs > 0.0f) ? measuredGpuTimeMs : 0.0f;
-#endif
-			float residual = frameInterval - measuredCpuFrameMs - appGpu - measuredEndFrameMs;
+			float residual = frameInterval - measuredCpuFrameMs - measuredEndFrameMs;
 			float maxClamp = frameInterval;
 			compositorOverheadMs = (residual < 0.0f) ? 0.0f : (residual > maxClamp ? maxClamp : residual);
 		}
@@ -1811,15 +1652,7 @@ bool XrBackend::GetFrameTiming(OOVR_Compositor_FrameTiming* pTiming, uint32_t un
 			pTiming->m_flPreSubmitGpuMs = ovrPerf.appGpuMs;
 			pTiming->m_flPostSubmitGpuMs = measuredEndFrameMs;
 			pTiming->m_flTotalRenderGpuMs = ovrPerf.appGpuMs + measuredEndFrameMs;
-		} else
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-		    if (gpuTimingInitialized && measuredGpuTimeMs > 0.0f) {
-			pTiming->m_flPreSubmitGpuMs = measuredGpuTimeMs;
-			pTiming->m_flPostSubmitGpuMs = measuredEndFrameMs;
-			pTiming->m_flTotalRenderGpuMs = measuredGpuTimeMs + measuredEndFrameMs;
-		} else
-#endif
-		{
+		} else {
 			pTiming->m_flPreSubmitGpuMs = displayPeriod * 0.7f;
 			pTiming->m_flPostSubmitGpuMs = displayPeriod * 0.1f;
 			pTiming->m_flTotalRenderGpuMs = displayPeriod * 0.8f;

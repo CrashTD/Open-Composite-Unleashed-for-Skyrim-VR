@@ -61,7 +61,7 @@ namespace OpenCompositeConfigurator
             { "r_grip",      ("R Grip Squeeze", new PointF(0.671f, 0.469f), false) },
             // Index trackpad: the touch oval under the stick, Touch has no
             // equivalent. Click acts as A (lower half) / B-Menu (upper half),
-            // or as the VRIK gesture input when VRIK Knuckles support is on.
+            // or as the VRIK gesture input when VRIK Knuckles trackpad mode is on.
             { "l_trackpad",  ("L Trackpad",    new PointF(0.297f, 0.133f), false) },
             { "r_trackpad",  ("R Trackpad",    new PointF(0.697f, 0.151f), false) },
             // Left stick directions

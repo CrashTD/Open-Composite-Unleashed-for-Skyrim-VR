@@ -305,7 +305,6 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, rotSmoothMinCutoff);
 		CFGOPT(float, posSmoothBeta);
 		CFGOPT(float, rotSmoothBeta);
-		CFGOPT(bool, enableGpuTiming);
 		CFGOPT(bool, dlaaEnabled);
 		CFGOPT(float, dlaaLambda);
 		CFGOPT(float, dlaaEpsilon);

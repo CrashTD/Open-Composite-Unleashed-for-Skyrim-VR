@@ -160,19 +160,6 @@ private:
 	float compositorOverheadMs = 0.0f; // estimated compositor GPU time (residual calculation)
 
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	// GPU timing measurement via D3D11 timestamp queries
-	bool gpuTimingInitialized = false;
-	ID3D11Device* gpuTimingDevice = nullptr;
-	ID3D11DeviceContext* gpuTimingContext = nullptr;
-	ID3D11Query* gpuTimestampDisjoint = nullptr;
-	ID3D11Query* gpuTimestampBegin = nullptr;
-	ID3D11Query* gpuTimestampEnd = nullptr;
-	bool gpuTimingInFlight = false;
-	float measuredGpuTimeMs = 0.0f;
-	void InitGpuTiming(ID3D11Device* device);
-	void ReadGpuTimingResults();
-	void CleanupGpuTiming();
-
 	// ASW split-frame reorder state:
 	// WaitForTrackingData claims/begins the warp slot, the first eye submit ends it
 	// and immediately waits/begins the real slot before the second eye renders.

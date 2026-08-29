@@ -6626,11 +6626,12 @@ void DX11Compositor::Invoke(XruEye eye, const vr::Texture_t* texture, const vr::
 			vrsMgr->Disable();
 
 		// Lazy-init only when Eye Tracking or Fixed was explicitly requested.
-		if (vrsMgr && oovr_global_configuration.VrsAnyEnabled() && !vrsMgr->IsAvailable()) {
+		if (vrsMgr && oovr_global_configuration.VrsAnyEnabled() && !vrsMgr->IsAvailable() &&
+		    !vrsMgr->WasInitializationAttempted()) {
 			if (vrsMgr->Initialize(BaseCompositor::dxcomp->GetDevice())) {
 				OOVR_LOG("VRS: NVIDIA Variable Rate Shading initialized (lazy, on dxcomp)");
 			} else {
-				OOVR_LOG("VRS: Not available (requires NVIDIA RTX or GTX 16xx series)");
+				OOVR_LOG("VRS: Not available for this graphics device session");
 			}
 		}
 		if (vrsMgr && vrsMgr->IsAvailable() && oovr_global_configuration.VrsAnyEnabled()) {

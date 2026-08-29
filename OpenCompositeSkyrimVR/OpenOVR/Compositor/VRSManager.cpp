@@ -8,6 +8,7 @@
 #include "../logging.h"
 
 #include <nvapi.h>
+#include <dxgi.h>
 #include <cmath>
 #include <cstring>
 
@@ -20,11 +21,36 @@ bool VRSManager::Initialize(ID3D11Device* dev)
 {
 	if (available)
 		return true;
+	if (initializationAttempted)
+		return false;
 
 	if (!dev) {
 		OOVR_LOG("VRSManager: No D3D11 device provided");
 		return false;
 	}
+
+	// A valid device identifies this graphics session. From this point on, any
+	// unsupported result is final for the session; do not hammer NVAPI from the
+	// per-frame compositor path.
+	initializationAttempted = true;
+
+	IDXGIDevice* dxgiDevice = nullptr;
+	IDXGIAdapter* adapter = nullptr;
+	DXGI_ADAPTER_DESC adapterDesc = {};
+	if (SUCCEEDED(dev->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice)))) {
+		if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter)) &&
+		    SUCCEEDED(adapter->GetDesc(&adapterDesc)) &&
+		    adapterDesc.VendorId != 0x10DE) {
+			OOVR_LOGF("VRSManager: NVAPI VRS disabled for non-NVIDIA adapter vendor 0x%04X", adapterDesc.VendorId);
+			adapter->Release();
+			dxgiDevice->Release();
+			return false;
+		}
+	}
+	if (adapter)
+		adapter->Release();
+	if (dxgiDevice)
+		dxgiDevice->Release();
 
 	OOVR_LOG("VRSManager: Initializing NVAPI...");
 

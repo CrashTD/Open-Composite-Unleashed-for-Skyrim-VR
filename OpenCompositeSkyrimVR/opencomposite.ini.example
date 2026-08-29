@@ -96,6 +96,12 @@
 ; Default: #4D4D4D  (dark grey)
 ;handColour=#4D4D4D
 
+; Preserve the player's current left/right hand profile, bindings, and model
+; while a controller sleeps or wakes instead of replacing it with a Vive wand.
+; This does not prevent the physical controller from entering power saving.
+; Default: true
+;preserveControllerProfileOnSleep=true
+
 ; Enable controller haptic feedback (vibration).
 ; Default: true
 ;haptics=true
@@ -168,14 +174,17 @@
 
 
 ; ----------------------------------------------------------------------------
-;  INPUT SMOOTHING  (thumbstick movement)
+;  INPUT DROPOUT PROTECTION
 ; ----------------------------------------------------------------------------
 
-; Smooth thumbstick input to reduce jitter during locomotion.
+; Retain the strongest recent controller input to bridge momentary runtime
+; dropouts. This covers sticks, triggers, grips, buttons, and touch states.
+; It does not average or smooth values; releases can linger for the window.
 ; Default: false
 ;enableInputSmoothing=false
 
-; Number of frames to average for input smoothing. Higher = smoother but laggier.
+; Number of recent input samples retained. 3-5 is a practical starting range.
+; Higher values survive longer dropouts but add more release latency.
 ; Only used when enableInputSmoothing is true.
 ; Default: 5
 ;inputWindowSize=5
@@ -314,11 +323,12 @@
 ; Default: true
 ;disableThumbrestTouch=true
 
-; Disable trackpad emulation on thumbstick controllers.
+; Disable Skyrim's legacy upper/lower physical-trackpad click routing.
+; This does not disable or emulate thumbsticks.
 ; Default: false
 ;disableTrackPad=false
 
-; Enable VRIK-compatible Knuckles trackpad support.
+; Enable VRIK-compatible Knuckles trackpad gesture routing.
 ; Only relevant if you use the VRIK mod with Index controllers.
 ; Default: false
 ;enableVRIKKnucklesTrackPadSupport=false

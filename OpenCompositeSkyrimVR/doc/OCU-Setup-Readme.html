@@ -7,120 +7,433 @@
   <style>
     :root {
       color-scheme: dark;
-      --bg: #14151a;
-      --panel: #20222a;
-      --line: #343846;
-      --text: #eceff6;
-      --muted: #aeb5c4;
-      --gold: #ffd43b;
-      --blue: #70b7ff;
-      --green: #69d27f;
-      --red: #e28a72;
+      --window: #0e1116;
+      --surface: #161a21;
+      --surface-raised: #1b2028;
+      --surface-hover: #242a33;
+      --input: #14181f;
+      --border: #303844;
+      --border-soft: #252b35;
+      --accent: #287828;
+      --accent-hover: #339137;
+      --accent-pressed: #1f6022;
+      --accent-soft: #1b4323;
+      --accent-text: #67d376;
+      --key-glow: #3ebe8f;
+      --key-glow-hover: #5fe5b0;
+      --key-glow-bright: #84f29e;
+      --text: #edf0f5;
+      --text-secondary: #b5bcc7;
+      --muted: #7e8896;
+      --warning: #c27e2d;
+      --danger: #a44242;
     }
 
     * { box-sizing: border-box; }
+    html {
+      scroll-behavior: smooth;
+      scrollbar-color: var(--accent) var(--window);
+    }
     body {
       margin: 0;
-      background: var(--bg);
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(62, 190, 143, 0.08), transparent 34rem),
+        radial-gradient(circle at 88% 12%, rgba(40, 120, 40, 0.07), transparent 28rem),
+        var(--window);
       color: var(--text);
       font-family: "Segoe UI", Arial, sans-serif;
-      line-height: 1.55;
+      font-size: 16px;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
     }
 
     header {
-      padding: 34px 28px 24px;
-      border-bottom: 1px solid var(--line);
-      background: #1a1c22;
+      position: relative;
+      overflow: hidden;
+      padding: 54px 28px 42px;
+      border-top: 3px solid var(--accent);
+      border-bottom: 1px solid var(--border-soft);
+      background:
+        linear-gradient(110deg, rgba(27, 67, 35, 0.52), transparent 42%),
+        linear-gradient(180deg, var(--surface-raised), var(--surface));
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.26);
+    }
+    header::before {
+      content: "";
+      position: absolute;
+      width: 520px;
+      height: 520px;
+      right: -170px;
+      top: -310px;
+      border: 1px solid rgba(132, 242, 158, 0.12);
+      border-radius: 50%;
+      box-shadow:
+        0 0 65px rgba(62, 190, 143, 0.08),
+        inset 0 0 65px rgba(62, 190, 143, 0.05);
+    }
+    header::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--key-glow), transparent);
+      opacity: 0.7;
+    }
+    .header-inner {
+      position: relative;
+      z-index: 1;
+      width: min(1120px, 100%);
+      margin: 0 auto;
+    }
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 0 12px;
+      color: var(--key-glow-bright);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before {
+      content: "";
+      width: 28px;
+      height: 3px;
+      border-radius: 999px;
+      background: var(--key-glow-bright);
+      box-shadow: 0 0 12px rgba(132, 242, 158, 0.7);
     }
 
     main {
       max-width: 1120px;
       margin: 0 auto;
-      padding: 28px;
+      padding: 34px 28px 60px;
     }
 
     h1, h2, h3 { line-height: 1.2; }
-    h1 { margin: 0 0 8px; font-size: 34px; }
-    h2 {
-      margin: 38px 0 14px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid var(--line);
-      color: var(--gold);
+    h1 {
+      max-width: 900px;
+      margin: 0 0 12px;
+      color: var(--text);
+      font-size: clamp(34px, 5vw, 52px);
+      font-weight: 720;
+      letter-spacing: -0.035em;
+      text-shadow: 0 0 28px rgba(132, 242, 158, 0.08);
     }
-    h3 { margin: 24px 0 8px; color: var(--blue); }
+    h2 {
+      position: relative;
+      margin: 44px 0 18px;
+      padding-bottom: 11px;
+      color: var(--accent-text);
+      font-size: 26px;
+      letter-spacing: -0.015em;
+    }
+    h2::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 1px;
+      background: linear-gradient(90deg, var(--key-glow), var(--border-soft) 55%, transparent);
+    }
+    h3 { margin: 28px 0 9px; color: var(--key-glow-hover); }
     p { margin: 8px 0 12px; }
-    a { color: var(--blue); }
+    a {
+      color: var(--accent-text);
+      text-decoration-color: rgba(103, 211, 118, 0.45);
+      text-underline-offset: 3px;
+    }
+    a:hover { color: var(--key-glow-bright); }
+    ::selection { color: #08110b; background: var(--key-glow-bright); }
     code {
-      background: #101116;
-      border: 1px solid var(--line);
-      padding: 1px 5px;
-      border-radius: 4px;
+      background: var(--input);
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: #dffbea;
+      font-size: 0.92em;
     }
 
-    .lead { color: var(--muted); max-width: 900px; }
+    .lead {
+      max-width: 880px;
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 18px;
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 14px;
+      gap: 16px;
     }
     .card {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 14px;
+      background: linear-gradient(145deg, rgba(27, 32, 40, 0.96), rgba(22, 26, 33, 0.96));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+    }
+    .card > h2:first-child { margin-top: 0; }
+    #support {
+      position: relative;
+      overflow: hidden;
+      border-color: rgba(62, 190, 143, 0.45);
+      box-shadow:
+        0 12px 32px rgba(0, 0, 0, 0.2),
+        0 0 24px rgba(62, 190, 143, 0.04);
+    }
+    #support::after {
+      content: "";
+      position: absolute;
+      width: 220px;
+      height: 220px;
+      right: -110px;
+      bottom: -150px;
+      border-radius: 50%;
+      background: rgba(62, 190, 143, 0.09);
+      filter: blur(20px);
+      pointer-events: none;
     }
     .warn {
-      border-left: 4px solid var(--red);
-      background: #241b1a;
-      padding: 12px 14px;
-      margin: 14px 0;
+      border: 1px solid rgba(194, 126, 45, 0.34);
+      border-left: 4px solid var(--warning);
+      border-radius: 10px;
+      background: linear-gradient(90deg, rgba(112, 73, 30, 0.24), rgba(27, 32, 40, 0.76));
+      padding: 13px 16px;
+      margin: 16px 0;
     }
     .ok {
-      border-left: 4px solid var(--green);
-      background: #18241c;
-      padding: 12px 14px;
-      margin: 14px 0;
+      border: 1px solid rgba(62, 190, 143, 0.3);
+      border-left: 4px solid var(--key-glow);
+      border-radius: 10px;
+      background: linear-gradient(90deg, rgba(27, 67, 35, 0.4), rgba(22, 26, 33, 0.78));
+      padding: 13px 16px;
+      margin: 16px 0;
     }
     .muted { color: var(--muted); }
-    .button-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .button-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
     .button {
+      position: relative;
       display: inline-block;
-      padding: 9px 12px;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      background: #2a2d36;
+      overflow: hidden;
+      padding: 10px 18px;
+      border: 1px solid var(--key-glow);
+      border-radius: 999px;
+      background: linear-gradient(180deg, #1b4139, #101f20);
       color: var(--text);
       text-decoration: none;
-      font-weight: 600;
+      font-weight: 650;
+      box-shadow:
+        0 0 0 1px rgba(132, 242, 158, 0.03) inset,
+        0 0 14px rgba(62, 190, 143, 0.1);
+      transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+    }
+    .button::after {
+      content: "";
+      position: absolute;
+      inset: -60% auto -60% -45%;
+      width: 24%;
+      transform: rotate(18deg);
+      background: linear-gradient(90deg, transparent, rgba(235, 255, 240, 0.48), transparent);
+      opacity: 0;
+    }
+    .button:hover {
+      color: #f0fff4;
+      border-color: var(--key-glow-bright);
+      background: linear-gradient(180deg, #265c4a, #142a28);
+      box-shadow: 0 0 20px rgba(132, 242, 158, 0.18);
+      transform: translateY(-1px);
+    }
+    .button:hover::after {
+      opacity: 1;
+      animation: button-shine 700ms ease-out both;
+    }
+    .button:focus-visible,
+    .tab-jumps a:focus-visible,
+    .toc > a:focus-visible,
+    summary:focus-visible {
+      outline: 2px solid var(--key-glow-bright);
+      outline-offset: 3px;
     }
     figure {
-      margin: 14px 0;
-      padding: 12px;
-      border: 1px dashed var(--line);
-      background: #181a20;
-      border-radius: 6px;
+      margin: 18px 0;
+      padding: 13px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 12px;
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.16);
     }
     figure img {
       display: block;
       max-width: 100%;
       height: auto;
-      border-radius: 4px;
-      border: 1px solid #303442;
-      margin-bottom: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      margin-bottom: 10px;
     }
     figcaption { color: var(--muted); font-size: 14px; }
     ul { padding-left: 22px; }
     ol { padding-left: 24px; }
-    .toc a { display: block; padding: 4px 0; }
+    li::marker { color: var(--key-glow); }
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+    }
+    .toc h2 { grid-column: 1 / -1; }
+    .toc > a {
+      display: block;
+      padding: 10px 14px;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      background: rgba(22, 26, 33, 0.75);
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: 140ms ease;
+    }
+    .toc > a:hover {
+      border-color: var(--key-glow);
+      background: rgba(27, 65, 57, 0.55);
+      color: var(--text);
+      transform: translateX(2px);
+    }
+    .tab-jumps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin: 18px 0;
+    }
+    .tab-jumps a {
+      padding: 7px 13px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface-raised);
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: 140ms ease;
+    }
+    .tab-jumps a:hover {
+      border-color: var(--key-glow-hover);
+      background: rgba(27, 65, 57, 0.75);
+      color: var(--text);
+      box-shadow: 0 0 14px rgba(62, 190, 143, 0.1);
+    }
+    details.tab-reference {
+      margin: 13px 0;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: linear-gradient(145deg, var(--surface-raised), var(--surface));
+      overflow: hidden;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+    }
+    details.tab-reference > summary {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 17px;
+      color: var(--accent-text);
+      font-size: 18px;
+      font-weight: 700;
+      cursor: pointer;
+      list-style: none;
+      background: rgba(27, 67, 35, 0.26);
+      transition: color 140ms ease, background 140ms ease;
+    }
+    details.tab-reference > summary::-webkit-details-marker { display: none; }
+    details.tab-reference > summary::after {
+      content: "+";
+      display: grid;
+      flex: 0 0 27px;
+      width: 27px;
+      height: 27px;
+      place-items: center;
+      border: 1px solid var(--key-glow);
+      border-radius: 50%;
+      color: var(--key-glow-bright);
+      font-size: 19px;
+      font-weight: 500;
+      line-height: 1;
+      box-shadow: 0 0 10px rgba(62, 190, 143, 0.09);
+      transition: transform 160ms ease, background 160ms ease;
+    }
+    details.tab-reference > summary:hover {
+      color: var(--key-glow-bright);
+      background: rgba(27, 67, 35, 0.44);
+    }
+    details.tab-reference[open] {
+      border-color: rgba(62, 190, 143, 0.52);
+    }
+    details.tab-reference[open] > summary {
+      color: var(--key-glow-bright);
+      border-bottom: 1px solid rgba(62, 190, 143, 0.22);
+    }
+    details.tab-reference[open] > summary::after {
+      content: "−";
+      transform: rotate(180deg);
+      background: var(--accent-soft);
+    }
+    details.tab-reference > div { padding: 5px 18px 18px; }
+    .setting-list { padding-left: 20px; }
+    .setting-list li { margin: 8px 0; }
+    .setting-list strong { color: var(--key-glow-hover); }
+    .subhead {
+      margin: 20px 0 7px;
+      color: var(--accent-text);
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+    .badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      vertical-align: middle;
+      background: var(--input);
+    }
+
+    @keyframes button-shine {
+      from { left: -45%; }
+      to { left: 125%; }
+    }
+
+    @media (max-width: 720px) {
+      header { padding: 40px 20px 32px; }
+      main { padding: 24px 18px 46px; }
+      h2 { margin-top: 36px; font-size: 23px; }
+      .toc { grid-template-columns: 1fr; }
+      .card { padding: 18px; }
+      details.tab-reference > summary { font-size: 16px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Open Composite Unleashed Setup Readme</h1>
-    <p class="lead">
-      This guide explains how to set up OCU for Skyrim VR, choose the right OpenXR runtime,
-      use the Configurator safely, and understand the experimental features.
-    </p>
+    <div class="header-inner">
+      <p class="eyebrow">OpenXR for Skyrim VR</p>
+      <h1>Open Composite Unleashed Setup Readme</h1>
+      <p class="lead">
+        Set up OCU, choose the right OpenXR runtime, configure controls and video features,
+        and troubleshoot the full Skyrim VR integration.
+      </p>
+    </div>
   </header>
 
   <main>
@@ -148,6 +461,7 @@
       <a href="#steamvr">SteamVR OpenXR Headsets</a>
       <a href="#uninstall">Clean OCU Removal / Return To SteamVR</a>
       <a href="#configurator">Configurator Settings</a>
+      <a href="#settings-reference">Complete Tab-By-Tab Settings Reference</a>
       <a href="#laser-alignment">Controller And Laser Alignment</a>
       <a href="#community-shaders">Community Shaders And Upscaling</a>
       <a href="#dapa">DAPA Experimental Notes</a>
@@ -426,6 +740,274 @@
         <li><strong>Open SteamVR Settings Folder:</strong> opens the folder containing <code>steamvr.vrsettings</code>.</li>
         <li><strong>Remove OCU Game-Root Files:</strong> safely moves recognized OCU runtime files into a recovery backup. It does not touch <code>Data</code> or SteamVR's headset drivers.</li>
       </ul>
+    </section>
+
+    <section id="settings-reference">
+      <h2>Complete Tab-By-Tab Settings Reference</h2>
+      <p>
+        This reference follows the labels in the current OCU Configurator. Settings stored in
+        <code>opencomposite.ini</code> do not affect a game that is already running: click
+        <strong>Save opencomposite.ini</strong>, close Skyrim VR, and start it again. Bindings use their own save button.
+        Gesture edits hot-load within a few seconds unless the control itself says otherwise.
+      </p>
+      <div class="tab-jumps">
+        <a href="#tab-settings">Settings</a>
+        <a href="#tab-bindings">Bindings</a>
+        <a href="#tab-gestures">Gestures</a>
+        <a href="#tab-video">Video</a>
+        <a href="#tab-steam-help">SteamVR / Help</a>
+        <a href="#tab-haptics">Haptics</a>
+        <a href="#tab-body">Body Tracking</a>
+      </div>
+
+      <details id="tab-settings" class="tab-reference" open>
+        <summary>Settings Tab</summary>
+        <div>
+          <p class="subhead">Page controls</p>
+          <ul class="setting-list">
+            <li><strong>Master Reset:</strong> resets and saves only the Settings page. It does not alter keyboard or controller bindings.</li>
+            <li><strong>Save opencomposite.ini:</strong> writes all INI-backed settings to OCU's installed locations. Restart Skyrim VR afterward.</li>
+            <li><strong>Reload:</strong> discards unsaved INI edits in the window and reloads the currently installed configuration.</li>
+          </ul>
+
+          <p class="subhead">VR Keyboard Shortcut</p>
+          <ul class="setting-list">
+            <li><strong>Enable controller shortcut to open keyboard anywhere:</strong> allows the chosen controller button or combination to open OCU's VR keyboard.</li>
+            <li><strong>Left/Right Stick, X/Y, and A/B selections:</strong> choose the physical buttons in the shortcut. Selecting more than one makes a chord; all selected buttons must be held together.</li>
+            <li><strong>Trackpad:</strong> adds an Index/Knuckles trackpad swipe shortcut. It appears only when the Index controller picture is selected.</li>
+            <li><strong>Tap:</strong> chooses single, double, triple, or quadruple activation. Multi-tap waits for the selected timing window before resolving the final tap count.</li>
+            <li><strong>Timing:</strong> length of the multi-tap window in milliseconds.</li>
+            <li><strong>Tilt / Trans / Size:</strong> keyboard angle, overall opacity, and physical display scale in VR.</li>
+            <li><strong>Keyboard:</strong> selects Parchment or an installed <code>.ocukb</code> design. Studio-installed designs appear here automatically.</li>
+            <li><strong>Open Keyboard Studio:</strong> launches the separate visual editor for keyboard layouts, fonts, artwork, states, and effects.</li>
+            <li><strong>Keyboard feedback:</strong> master switch for keyboard hover and press audio.</li>
+            <li><strong>Hover / Press:</strong> set the volume of hover and keypress feedback sounds.</li>
+          </ul>
+
+          <p class="subhead">General Settings</p>
+          <ul class="setting-list">
+            <li><strong>Supersampling:</strong> multiplies OCU's render resolution. Above 1.0 is sharper and substantially more GPU-intensive; below 1.0 improves performance at the cost of clarity. It stacks with runtime supersampling.</li>
+            <li><strong>Controller models:</strong> <em>Automatic</em> prefers the installed SteamVR/Relos model, <em>Legacy grey hands</em> uses OCU's old hand model, and <em>Off</em> leaves controller/hand rendering to another mod such as VRIK.</li>
+            <li><strong>Enable hidden mesh fix:</strong> converts the runtime's hidden-area visibility mask for Skyrim VR. Leave it on unless the headset shows clipped edges or black wedges; it has no effect when the runtime supplies no mask.</li>
+            <li><strong>Invert using shaders:</strong> vertically flips eye textures through a shader. Use it only when the headset image is upside down.</li>
+            <li><strong>Keep player hands when controllers sleep:</strong> preserves the player's current left/right hand profile, bindings, and model while a controller sleeps or wakes instead of letting SteamVR temporarily replace that hand with a Vive wand. It does not keep the physical controller awake.</li>
+          </ul>
+
+          <p class="subhead">Skyrim VR Settings</p>
+          <ul class="setting-list">
+            <li><strong>Input dropout protection:</strong> keeps the strongest recent stick, trigger, grip, button, and touch sample so a one-frame runtime dropout does not cancel the input. It is not averaging and can make releases linger.</li>
+            <li><strong>Hold samples:</strong> number of recent samples retained. Three to five is a practical starting range; higher values survive longer dropouts but add more release latency.</li>
+            <li><strong>Controller smoothing:</strong> applies adaptive One Euro filtering to controller position and rotation. It stabilizes virtual hands, not the HMD, sticks, or buttons.</li>
+            <li><strong>Pos/Rot base Hz:</strong> baseline position or rotation responsiveness. Lower values smooth more at rest; higher values preserve more immediate movement and more jitter.</li>
+            <li><strong>Pos/Rot response:</strong> how quickly fast movement breaks through the corresponding filter. Higher values reduce lag during rapid motion but admit more noise.</li>
+            <li><strong>Disable trigger touch:</strong> ignores capacitive finger contact on the trigger. Pulling and clicking the trigger still work.</li>
+            <li><strong>Disable thumbrest touch:</strong> prevents capacitive thumbrest contact from being exposed as the legacy bindable D-pad Up input.</li>
+            <li><strong>Disable legacy trackpad routing:</strong> disables Skyrim's upper/lower physical-trackpad click translation. It does not disable or emulate thumbsticks.</li>
+            <li><strong>VRIK Knuckles trackpad mode:</strong> routes the Index/Knuckles trackpad in the compatibility mode expected by VRIK gestures. Leave it off for other controllers.</li>
+            <li><strong>L/R dead zone:</strong> ignores small X/Y movement around the center of each physical stick. Raise only far enough to stop drift.</li>
+            <li><strong>Swap sticks: right moves, left turns:</strong> swaps stick axes and stick-touch state. Stick clicks and other buttons remain on their physical hands.</li>
+          </ul>
+
+          <p class="subhead">Audio</p>
+          <ul class="setting-list">
+            <li><strong>Auto-switch audio to headset:</strong> changes the Windows default audio endpoint when OCU starts. Do not use it with Virtual Desktop, which owns its own audio routing.</li>
+            <li><strong>Device name:</strong> partial text used to match the desired Windows audio device.</li>
+          </ul>
+
+          <p class="subhead">Controller Axis Adjustments</p>
+          <ul class="setting-list">
+            <li><strong>Adjust tilt:</strong> applies a shared forward/backward controller tilt in degrees.</li>
+            <li><strong>Left/Right rotation X/Y/Z:</strong> rotates each controller model around its three local axes.</li>
+            <li><strong>Left/Right position X/Y/Z:</strong> offsets each controller model in meters. These are model/grip-pose adjustments, not laser calibration.</li>
+            <li><strong>Reset All to Defaults:</strong> returns controller and laser calibration values to zero/default filtering values.</li>
+          </ul>
+
+          <p class="subhead">Laser Aim Calibration</p>
+          <ul class="setting-list">
+            <li><strong>Enable menu lasers:</strong> enables OCU lasers in supported Scaleform menus. Disable for classic controller-only menu input. Requires save and restart.</li>
+            <li><strong>Smooth laser aim:</strong> applies adaptive filtering to the beam origin and aim direction.</li>
+            <li><strong>Pos Hz / Pos response:</strong> baseline smoothing and fast-motion response for the beam origin.</li>
+            <li><strong>Aim Hz / Aim response:</strong> baseline smoothing and fast-motion response for the beam direction.</li>
+            <li><strong>Left/Right laser X/Y/Z:</strong> rotates the OpenXR aim pose for each hand. It changes where the laser points; it does not move the controller model or the decorative binding dots.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details id="tab-bindings" class="tab-reference">
+        <summary>Bindings Tab</summary>
+        <div>
+          <div class="warn">Binding edits are not saved by <strong>Save opencomposite.ini</strong>. Use <strong>Save All Bindings</strong>, then restart Skyrim VR.</div>
+          <ul class="setting-list">
+            <li><strong>Keyboard Type:</strong> selects the Skyrim input context being edited, such as gameplay, menus, or inventory. Each context has independent mappings.</li>
+            <li><strong>Disable Mouse Bindings (VR):</strong> unbinds the mouse column in the VR control map to prevent conflicting desktop-style mouse actions.</li>
+            <li><strong>Key / Action:</strong> click a key in the keyboard diagram, then assign the Skyrim action for the selected input context. Choose the none option to unbind it.</li>
+            <li><strong>Save All Bindings:</strong> writes the entire <code>controlmapvr.txt</code>&mdash;keyboard, mouse, gamepad, controller mappings&mdash;and saves controller combos.</li>
+            <li><strong>Master Reset:</strong> resets the Bindings page to OCU's VR Safe defaults, removes known keyboard conflicts, and unbinds mouse mappings.</li>
+            <li><strong>Reset to Game Defaults:</strong> restores the embedded baseline game control map rather than the VR Safe preset.</li>
+            <li><strong>Validate Bindings:</strong> scans the live control map for known deterministic crash patterns, repairs known-safe cases, and reports ambiguous conflicts.</li>
+            <li><strong>Controller Type:</strong> selects the input context for controller editing, independently of the keyboard Type selector.</li>
+            <li><strong>Button / Action:</strong> click a dot on the controller picture and assign its Skyrim action for the selected context. Fixed trackpad translations are displayed but are not separately remappable.</li>
+            <li><strong>Preset:</strong> selects a built-in or user-saved controller layout.</li>
+            <li><strong>Apply Preset:</strong> merges the selected preset's controller bindings into the live control map while preserving keyboard, mouse, and gamepad mappings.</li>
+            <li><strong>Save As:</strong> captures the entire current control map as a named user preset. Save pending UI edits first.</li>
+            <li><strong>Remove:</strong> deletes a user-created preset. Built-in presets are embedded and cannot be removed.</li>
+            <li><strong>Controller Combos:</strong> maps a button chord or one-to-four-tap sequence to a keyboard key. If the same button has multiple tap counts, OCU waits through the configured tap window so it can resolve the intended count.</li>
+            <li><strong>Controller:</strong> changes the Configurator picture and dot layout between Quest Touch, Index Knuckles, and PSVR2 Sense. Click its adjacent Save button to retain the choice.</li>
+            <li><strong>Move dots:</strong> lets mod authors align the clickable binding dots with the controller artwork. It does not calibrate an in-game laser or change OpenXR controller coordinates.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details id="tab-gestures" class="tab-reference">
+        <summary>Gestures Tab</summary>
+        <div>
+          <ul class="setting-list">
+            <li><strong>Left/Right drawing canvases:</strong> define one continuous stroke per hand. Drawing again replaces that hand's stroke; using both boxes creates a two-hand gesture.</li>
+            <li><strong>Gesture Library:</strong> loads, previews, edits, or deletes saved gestures.</li>
+            <li><strong>Clear Left / Clear Right / Clear Both:</strong> remove strokes from the selected canvas or both canvases.</li>
+            <li><strong>Smooth Shapes:</strong> cleans the current stroke once. <strong>Smooth as you draw</strong> applies cleanup continuously while authoring.</li>
+            <li><strong>Name:</strong> the saved gesture's display name.</li>
+            <li><strong>Key:</strong> keyboard key emitted when the Action is Press Key.</li>
+            <li><strong>Hold while gesturing:</strong> physical controller input that arms and records the gesture in game.</li>
+            <li><strong>Save Gesture:</strong> writes the gesture and hot-loads it into the running game within a few seconds.</li>
+            <li><strong>Action:</strong> chooses Press Key, instant spell cast, or equip spell in the left or right hand.</li>
+            <li><strong>Spell / Reload / Only spells I know:</strong> selects a spell from the exported game list, reloads that list, and optionally hides spells the player does not know.</li>
+            <li><strong>Trail / Rune:</strong> choose separate colors for the live tracing ribbon and the successful-completion flash.</li>
+            <li><strong>Width:</strong> controls the rendered trail thickness.</li>
+            <li><strong>Transparent / Smoky / Wispy / Glowing:</strong> combine visual style flags for the trail. Smoky adds billowing puffs; Wispy adds thin tendrils.</li>
+            <li><strong>Cast sounds:</strong> enables the tracing hum and successful-cast sound.</li>
+            <li><strong>Finish sound:</strong> selects the Impact or Dark successful-cast sound.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details id="tab-video" class="tab-reference">
+        <summary>Video Tab</summary>
+        <div>
+          <div class="warn">Do not stack OCU DLSS or FSR 3 with another temporal upscaler. OCU blocks Community Shaders upscaling while either OCU upscaler is active.</div>
+
+          <p class="subhead">NVIDIA DLSS / DLAA</p>
+          <ul class="setting-list">
+            <li><strong>Enable DLSS Super Resolution:</strong> enables NVIDIA NGX temporal upscaling. It is mutually exclusive with OCU FSR 3 and automatically enables the motion-vector path it requires.</li>
+            <li><strong>DLSS Preset:</strong> selects Quality 67%, Balanced 58%, Performance 50%, Ultra Performance 33%, DLAA/native resolution, or Ultra Quality 77%.</li>
+            <li><strong>Quick Presets:</strong> one-click buttons for the common DLSS presets or Off.</li>
+            <li><strong>Advanced &mdash; Model:</strong> selects the NGX model hint. Default uses K unless the installed NGX runtime resolves it differently.</li>
+            <li><strong>Advanced &mdash; Scale override:</strong> replaces the preset render scale; zero means use the chosen preset.</li>
+            <li><strong>Advanced &mdash; MV scale:</strong> scales the motion-vector magnitude sent to DLSS. Keep 1.0 unless diagnosing motion-vector behavior.</li>
+            <li><strong>Advanced &mdash; Jitter:</strong> controls temporal sub-pixel jitter amplitude.</li>
+            <li><strong>Advanced &mdash; NGX verbose logging:</strong> enables detailed NGX diagnostics and should remain off during ordinary play.</li>
+          </ul>
+
+          <p class="subhead">AMD FSR 3 / Native AA</p>
+          <ul class="setting-list">
+            <li><strong>Enable FSR 3:</strong> enables the hardware-agnostic FSR 3 temporal upscaler. It is mutually exclusive with OCU DLSS.</li>
+            <li><strong>Native AA:</strong> runs FSR's temporal antialiasing at a 1.0 render scale instead of upscaling a lower-resolution image.</li>
+            <li><strong>Render Scale:</strong> fraction of each eye's target resolution rendered before FSR reconstruction. Lower values save more GPU time and lose more source detail.</li>
+            <li><strong>Presets:</strong> set Quality 0.67, Balanced 0.59, Performance 0.50, Ultra Performance 0.33, Native AA 1.00, or Off.</li>
+            <li><strong>Advanced &mdash; Enable Motion Vectors / Actor MV / Camera MV:</strong> selects the game, actor, and camera motion-vector sources used by temporal upscalers.</li>
+            <li><strong>Advanced &mdash; MV Scale:</strong> global multiplier for motion-vector magnitude; 1.0 is the unmodified engine value.</li>
+            <li><strong>Advanced &mdash; FSR 3 Sharpness:</strong> FSR's own sharpening pass, separate from CAS.</li>
+            <li><strong>Advanced &mdash; Jitter Scale / MV Jitter Cancellation:</strong> controls temporal jitter and whether FSR compensates for jitter already present in game vectors.</li>
+            <li><strong>Advanced &mdash; View-to-Meters:</strong> converts Skyrim units to meters for FSR motion estimation; the normal Skyrim value is 0.01428.</li>
+            <li><strong>Advanced &mdash; Reactiveness / Shading / Accum per frame:</strong> tune disocclusion response, shading-change response, and temporal-history accumulation.</li>
+            <li><strong>Advanced &mdash; Debug view:</strong> shows FSR inputs and intermediate buffers for diagnosis. Leave Off for normal play.</li>
+          </ul>
+
+          <p class="subhead">DAPA &mdash; Depth-Assisted Positional Reprojection</p>
+          <ul class="setting-list">
+            <li><strong>Enable DAPA:</strong> generates synthetic frames from the previous color frame, depth, and positional change. It is not conventional ASW and does not apply per-pixel motion vectors. Do not combine it with SSW or runtime motion smoothing.</li>
+            <li><strong>Advanced &mdash; Experimental mode:</strong> enables additional experimental DAPA behavior intended for testing.</li>
+            <li><strong>Advanced &mdash; Upscaler reactive mask:</strong> feeds DAPA's changed/unsafe regions into a compatible upscaler's reactive handling.</li>
+            <li><strong>Advanced &mdash; Buffered scheduling:</strong> moves synthetic-frame work into the experimental buffered scheduling path.</li>
+            <li><strong>Advanced &mdash; Reset upscaler history:</strong> clears temporal-upscaler history on synthetic frames to reduce trails at some sharpness cost.</li>
+            <li><strong>Advanced &mdash; Auto mode:</strong> leaves native rendering alone while the game is fast enough and engages DAPA below the FPS threshold.</li>
+            <li><strong>Advanced &mdash; Debug highlight:</strong> tints synthetic frames so cadence and engagement can be verified.</li>
+            <li><strong>Advanced &mdash; Warp Strength:</strong> master correction strength; zero shows the cached frame without pose correction and 1.0 applies full correction.</li>
+            <li><strong>Advanced &mdash; Rotation / Translation / Loco Scale:</strong> control head-turn, positional lean/strafe, and game-locomotion contributions to the warp.</li>
+            <li><strong>Advanced &mdash; Depth Scale:</strong> controls depth-parallax intensity; zero becomes a flat 2D shift and values above 1.0 exaggerate depth.</li>
+            <li><strong>Advanced &mdash; Engage below FPS:</strong> threshold used by Auto mode.</li>
+          </ul>
+
+          <p class="subhead">Post AA and CAS</p>
+          <ul class="setting-list">
+            <li><strong>BlueSkyDefender Post-AA:</strong> hardware-agnostic post-process edge antialiasing. NVIDIA DLAA is instead selected from the DLSS preset list.</li>
+            <li><strong>BlueSky sensitivity / Threshold:</strong> tune edge detection strength and the luminance threshold for BlueSkyDefender.</li>
+            <li><strong>Enable CAS Sharpening:</strong> applies AMD RCAS sharpening, useful at native resolution. FSR 3 already has its own sharpening control.</li>
+            <li><strong>CAS Sharpness:</strong> controls RCAS strength from soft/off to maximum.</li>
+          </ul>
+
+          <p class="subhead">Texture MIP Bias</p>
+          <ul class="setting-list">
+            <li><strong>Correct MIPs for upscaling:</strong> asks texture sampling to retain finer mip levels when the scene is rendered below native resolution. This counteracts the blur that otherwise occurs before DLSS/FSR reconstruction, but values that are too negative can shimmer.</li>
+            <li><strong>Mode:</strong> <em>Auto</em> derives bias from <code>log2(renderScale)</code>, <em>Off</em> applies no correction, and <em>Custom</em> uses the Fixed value.</li>
+            <li><strong>Fixed:</strong> manual mip bias used only in Custom mode. Negative values select sharper/higher-detail mip levels; positive values select softer/lower-detail levels.</li>
+            <li><strong>Shared offset:</strong> adjustment applied to every automatic upscaler calculation.</li>
+            <li><strong>DLSS / FSR3 offset:</strong> per-upscaler correction added after the shared automatic bias.</li>
+          </ul>
+
+          <p class="subhead">Foveated Rendering (NVIDIA VRS)</p>
+          <ul class="setting-list">
+            <li><strong>Eye Tracking AUTO:</strong> uses OpenXR gaze data when the headset/runtime exposes it. It does not silently enable fixed foveation on a headset without gaze.</li>
+            <li><strong>Fixed ENABLE:</strong> enables head-centered fixed foveation for non-eye-tracking headsets. When Eye Tracking is also checked, Fixed is only the fallback if gaze becomes unavailable.</li>
+            <li><strong>Preset:</strong> Compatibility avoids 2x2 shading; Conservative, Balanced, and Aggressive trade progressively more peripheral quality for performance; Custom preserves manual radius values.</li>
+            <li><strong>Inner:</strong> radius of the full-rate 1x1 region around gaze or view center.</li>
+            <li><strong>Mid:</strong> radius of the half-rate ring before the outer rate begins in performance presets.</li>
+            <li><strong>Compatibility (max 2x1):</strong> prevents 2x2 coarse shading, reducing Skyrim terrain, foliage, derivative, and mip-selection artifacts.</li>
+            <li><strong>Favor Horizontal:</strong> selects 2x1 rather than 1x2 for half-rate tiles.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details id="tab-steam-help" class="tab-reference">
+        <summary>SteamVR / Help Tab</summary>
+        <div>
+          <ul class="setting-list">
+            <li><strong>Apply SteamVR OCU Profile:</strong> backs up and patches the active <code>steamvr.vrsettings</code> with OCU-compatible helper values. It does not select the active OpenXR runtime.</li>
+            <li><strong>Restore SteamVR Defaults:</strong> creates a backup and removes the OCU-specific SteamVR helper overrides.</li>
+            <li><strong>Open SteamVR Settings Folder:</strong> opens the folder containing the active SteamVR settings file.</li>
+            <li><strong>Remove OCU Game-Root Files:</strong> moves recognized OCU runtime files from the Skyrim VR game root into a recoverable backup. It does not delete <code>Data</code>, headset drivers, or SteamVR itself. Follow the result message and verify Skyrim VR through Steam when Valve's original loader cannot be restored.</li>
+            <li><strong>Open Setup Readme:</strong> opens this Help page from the installed OCU package.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details id="tab-haptics" class="tab-reference">
+        <summary>Haptics Tab <span class="badge">may be hidden in public builds</span></summary>
+        <div>
+          <ul class="setting-list">
+            <li><strong>Enable haptics:</strong> master gate for OCU haptics and vibration requests sent by the game.</li>
+            <li><strong>Game rumble strength:</strong> multiplier for ordinary engine-generated vibration such as native touch and interaction feedback.</li>
+            <li><strong>Shield / weapon block:</strong> pulses the blocking hand when OCU recognizes a block.</li>
+            <li><strong>Weapon &amp; fist hits:</strong> pulses the attacking hand on landed weapon or swinging-fist impacts.</li>
+            <li><strong>Bow release:</strong> enables the bow-release combat pulse.</li>
+            <li><strong>Magic casting:</strong> enables haptic feedback for supported magic casting events.</li>
+            <li><strong>Combat strength:</strong> common 0-100 strength applied to the enabled combat events.</li>
+            <li><strong>Key click strength:</strong> haptic tick produced when the OCU laser presses a VR keyboard key.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details id="tab-body" class="tab-reference">
+        <summary>Body Tracking Tab <span class="badge">experimental developer feature</span></summary>
+        <div>
+          <div class="warn">The Body Tracking tab is compiled for development but hidden in normal public builds. It remains opt-in and does nothing until its output switches are enabled.</div>
+          <ul class="setting-list">
+            <li><strong>Camera:</strong> selects a local webcam or a phone/IP-camera URL. Start and Stop control local capture.</li>
+            <li><strong>Mirror:</strong> horizontally mirrors the camera interpretation to match a front-facing preview.</li>
+            <li><strong>Stream to OCU (OSC):</strong> sends locally derived body tracking data to OCU over OSC.</li>
+            <li><strong>Show preview:</strong> displays the camera/tracking preview; disabling it reduces UI and preview work.</li>
+            <li><strong>Skeleton only:</strong> hides the camera image and shows only tracking landmarks/silhouette information.</li>
+            <li><strong>Send trackers to the game:</strong> enables network tracker output consumed by the game-side FBT path. Requires save and game restart.</li>
+            <li><strong>AI device:</strong> selects the local pose-inference device. The present implementation uses local CPU MediaPipe World3D Lite.</li>
+            <li><strong>FBT tracker pose:</strong> selects the pose source used to construct tracker positions. The present implementation uses local MediaPipe World 3D landmarks.</li>
+            <li><strong>Preview crop/vertical trim controls:</strong> change only the preview framing unless the adjacent text explicitly identifies a saved calibration value.</li>
+            <li><strong>FBT motion calibration capture:</strong> records labeled view, action, leg, and take samples for classifier development; it is not required for ordinary controller play.</li>
+            <li><strong>Camera foot-placement calibration:</strong> enables the in-game calibration editor for leg trim and lift range. Follow the on-page controller instructions; changes auto-save.</li>
+            <li><strong>Enable Full-Body Walking:</strong> converts walking-in-place gait into Skyrim locomotion. Requires save and restart.</li>
+            <li><strong>Hold to activate:</strong> optionally requires a selected controller input before gait can start; None leaves walking activation always armed.</li>
+          </ul>
+        </div>
+      </details>
     </section>
 
     <section id="laser-alignment">

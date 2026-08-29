@@ -219,7 +219,6 @@ namespace OpenCompositeConfigurator
             ["vrsOuterRadius"] = "vrs",
             ["vrsFavorHorizontal"] = "vrs",
 
-            ["enableGpuTiming"] = "debug",
             ["logAllOpenVRCalls"] = "debug",
             ["logGetTrackedProperty"] = "debug",
             ["stopOnSoftAbort"] = "debug"

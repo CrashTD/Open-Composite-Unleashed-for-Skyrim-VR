@@ -139,7 +139,6 @@ public:
 	float PosSmoothBeta() { return posSmoothBeta; }
 	float RotSmoothBeta() { return rotSmoothBeta; }
 
-	inline bool EnableGpuTiming() const { return enableGpuTiming; }
 	inline bool SwapThumbsticks() const { return swapThumbsticks; }
 
 	inline bool DlaaEnabled() const { return dlaaEnabled; }
@@ -384,8 +383,6 @@ private:
 	float rotSmoothBeta = 0.2;
 	std::string keyboardText = "";
 	std::string controllerModel = "hands";
-	bool enableGpuTiming = true;
-
 	bool dlaaEnabled = false;
 	float dlaaLambda = 3.0f;        // edge detection sensitivity (1.0-6.0)
 	float dlaaEpsilon = 0.1f;       // luminance threshold offset (0.01-0.50)

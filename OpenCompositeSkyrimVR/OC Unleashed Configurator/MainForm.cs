@@ -168,11 +168,11 @@ namespace OpenCompositeConfigurator
         private Label _lblPosBeta = null!;
         private Label _lblRotCutoff = null!;
         private Label _lblRotBeta = null!;
+        private ToolTip _skyrimSettingsTip = null!;
         private CheckBox _chkDisableTriggerTouch = null!;
         private CheckBox _chkDisableThumbrestTouch = null!;
         private CheckBox _chkDisableTrackpad = null!;
         private CheckBox _chkVRIKKnuckles = null!;
-        private CheckBox _chkGpuTiming = null!;
         private CheckBox _chkCombatHapticShield = null!;
         private CheckBox _chkCombatHapticWeapon = null!;
         private CheckBox _chkCombatHapticBow = null!;
@@ -479,6 +479,7 @@ namespace OpenCompositeConfigurator
             _keyboardStudioShineEpoch = Environment.TickCount64;
             _activeGlowTimer.Start();
             Activated += (_, _) => RefreshKeyboardDesignChoices();
+            FormClosed += (_, _) => _skyrimSettingsTip?.Dispose();
         }
 
         private void LoadControllerImage()
@@ -1299,13 +1300,13 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(_chkInvertShaders);
             y += 24;
 
-            _chkPreserveControllerProfileOnSleep = MakeCheckBox("Keep controller identity while sleeping", gc1, y);
+            _chkPreserveControllerProfileOnSleep = MakeCheckBox("Keep player hands when controllers sleep", gc1, y);
             _chkPreserveControllerProfileOnSleep.Width = 320;
             container.Controls.Add(_chkPreserveControllerProfileOnSleep);
             new ToolTip { AutoPopDelay = 12000, InitialDelay = 350 }.SetToolTip(
                 _chkPreserveControllerProfileOnSleep,
-                "Prevents a sleeping controller from temporarily changing into Vive wands. " +
-                "This preserves its bindings and model; controller hardware may still enter its normal power-saving state.");
+                "Keeps the player's existing left/right hand profile, bindings, and model when a controller sleeps, " +
+                "instead of temporarily replacing that hand with a Vive wand. This does not prevent hardware power saving.");
             y += 28;
 
             int generalBottom = y;
@@ -1327,62 +1328,85 @@ namespace OpenCompositeConfigurator
             _pnlSkyrimOnly.Controls.Add(lblSkyrim);
             sy += 26;
 
-            _chkInputSmoothing = MakeCheckBox("Input smoothing", sc1, sy);
+            _skyrimSettingsTip = new ToolTip
+            {
+                AutoPopDelay = 16000,
+                InitialDelay = 300,
+                ReshowDelay = 100
+            };
+
+            _chkInputSmoothing = MakeCheckBox("Input dropout protection", sc1, sy);
             _pnlSkyrimOnly.Controls.Add(_chkInputSmoothing);
-            _pnlSkyrimOnly.Controls.Add(MakeLabel("Window:", sc2, sy + 3, 60));
+            _pnlSkyrimOnly.Controls.Add(MakeLabel("Hold samples:", sc2, sy + 3, 88));
             _nudInputWindow = new NumericUpDown
             {
-                Location = new Point(sc2 + 60, sy), Width = 55,
+                Location = new Point(sc2 + 88, sy), Width = 55,
                 Minimum = 1, Maximum = 20, Value = 5,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             _pnlSkyrimOnly.Controls.Add(_nudInputWindow);
+            _skyrimSettingsTip.SetToolTip(_chkInputSmoothing,
+                "Keeps the strongest recent stick, trigger, grip, button, and touch sample. " +
+                "This prevents momentary dropouts; it is not an averaging filter and can make releases linger slightly.");
+            _skyrimSettingsTip.SetToolTip(_nudInputWindow,
+                "Number of recent samples retained. Start at 3-5; higher values resist longer dropouts but add release latency.");
             sy += 26;
 
             _chkControllerSmoothing = MakeCheckBox("Controller smoothing", sc1, sy);
             _pnlSkyrimOnly.Controls.Add(_chkControllerSmoothing);
+            _skyrimSettingsTip.SetToolTip(_chkControllerSmoothing,
+                "Adaptive filtering for controller position and rotation. This stabilizes virtual hands; " +
+                "it does not smooth sticks, buttons, or the headset.");
             sy += 26;
 
             // Controller smoothing fine-tuning (1€ filter parameters)
             int smIndent = 16; // indent under the checkbox
-            _lblPosCutoff = MakeLabel("Pos cutoff:", sc1 + smIndent, sy + 3, 80);
+            _lblPosCutoff = MakeLabel("Pos base Hz:", sc1 + smIndent, sy + 3, 92);
             _pnlSkyrimOnly.Controls.Add(_lblPosCutoff);
             _nudPosSmoothMinCutoff = new NumericUpDown
             {
-                Location = new Point(sc1 + smIndent + 80, sy), Width = 65,
+                Location = new Point(sc1 + smIndent + 92, sy), Width = 65,
                 DecimalPlaces = 2, Increment = 0.25m, Minimum = 0.01m, Maximum = 20.0m, Value = 1.25m,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             _pnlSkyrimOnly.Controls.Add(_nudPosSmoothMinCutoff);
-            _lblPosBeta = MakeLabel("Pos beta:", sc2, sy + 3, 70);
+            _lblPosBeta = MakeLabel("Pos response:", sc2, sy + 3, 90);
             _pnlSkyrimOnly.Controls.Add(_lblPosBeta);
             _nudPosSmoothBeta = new NumericUpDown
             {
-                Location = new Point(sc2 + 70, sy), Width = 65,
+                Location = new Point(sc2 + 90, sy), Width = 65,
                 DecimalPlaces = 1, Increment = 1.0m, Minimum = 0.0m, Maximum = 100.0m, Value = 20.0m,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             _pnlSkyrimOnly.Controls.Add(_nudPosSmoothBeta);
+            _skyrimSettingsTip.SetToolTip(_nudPosSmoothMinCutoff,
+                "Position base frequency: lower is steadier at rest; higher is more immediate but preserves more jitter.");
+            _skyrimSettingsTip.SetToolTip(_nudPosSmoothBeta,
+                "Position response: higher values let fast movement break through the filter sooner.");
             sy += 26;
 
-            _lblRotCutoff = MakeLabel("Rot cutoff:", sc1 + smIndent, sy + 3, 80);
+            _lblRotCutoff = MakeLabel("Rot base Hz:", sc1 + smIndent, sy + 3, 92);
             _pnlSkyrimOnly.Controls.Add(_lblRotCutoff);
             _nudRotSmoothMinCutoff = new NumericUpDown
             {
-                Location = new Point(sc1 + smIndent + 80, sy), Width = 65,
+                Location = new Point(sc1 + smIndent + 92, sy), Width = 65,
                 DecimalPlaces = 2, Increment = 0.25m, Minimum = 0.01m, Maximum = 20.0m, Value = 1.50m,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             _pnlSkyrimOnly.Controls.Add(_nudRotSmoothMinCutoff);
-            _lblRotBeta = MakeLabel("Rot beta:", sc2, sy + 3, 70);
+            _lblRotBeta = MakeLabel("Rot response:", sc2, sy + 3, 90);
             _pnlSkyrimOnly.Controls.Add(_lblRotBeta);
             _nudRotSmoothBeta = new NumericUpDown
             {
-                Location = new Point(sc2 + 70, sy), Width = 65,
+                Location = new Point(sc2 + 90, sy), Width = 65,
                 DecimalPlaces = 1, Increment = 0.1m, Minimum = 0.0m, Maximum = 10.0m, Value = 0.2m,
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             _pnlSkyrimOnly.Controls.Add(_nudRotSmoothBeta);
+            _skyrimSettingsTip.SetToolTip(_nudRotSmoothMinCutoff,
+                "Rotation base frequency: lower is steadier at rest; higher makes aiming and wrist movement more immediate.");
+            _skyrimSettingsTip.SetToolTip(_nudRotSmoothBeta,
+                "Rotation response: higher values reduce filtering sooner during fast controller rotation.");
             sy += 26;
 
             // Enable/disable smoothing controls based on checkbox
@@ -1406,6 +1430,8 @@ namespace OpenCompositeConfigurator
 
             _chkDisableTriggerTouch = MakeCheckBox("Disable trigger touch", sc3, sy2);
             _pnlSkyrimOnly.Controls.Add(_chkDisableTriggerTouch);
+            _skyrimSettingsTip.SetToolTip(_chkDisableTriggerTouch,
+                "Ignores merely resting a finger on the capacitive trigger sensor. Pulling and clicking the trigger still work.");
             _chkDisableThumbrestTouch = MakeCheckBox("Disable thumbrest touch", sc4, sy2);
             _chkDisableThumbrestTouch.CheckedChanged += (s, e) =>
             {
@@ -1419,17 +1445,22 @@ namespace OpenCompositeConfigurator
                 _picBindingsController?.Invalidate();
             };
             _pnlSkyrimOnly.Controls.Add(_chkDisableThumbrestTouch);
+            _skyrimSettingsTip.SetToolTip(_chkDisableThumbrestTouch,
+                "Prevents the capacitive thumbrest sensor from being exposed as the bindable legacy D-pad Up input.");
             sy2 += 26;
 
-            _chkDisableTrackpad = MakeCheckBox("Disable trackpad", sc3, sy2);
+            _chkDisableTrackpad = MakeCheckBox("Disable legacy trackpad routing", sc3, sy2);
+            _chkDisableTrackpad.Width = 300;
             _pnlSkyrimOnly.Controls.Add(_chkDisableTrackpad);
-            _chkVRIKKnuckles = MakeCheckBox("VRIK Knuckles support", sc4, sy2);
-            _pnlSkyrimOnly.Controls.Add(_chkVRIKKnuckles);
+            _skyrimSettingsTip.SetToolTip(_chkDisableTrackpad,
+                "Disables Skyrim's legacy upper/lower physical-trackpad click routing. This is not thumbstick emulation.");
             sy2 += 26;
 
-            _chkGpuTiming = MakeCheckBox("GPU frame timing", sc3, sy2);
-            _chkGpuTiming.Checked = true;
-            _pnlSkyrimOnly.Controls.Add(_chkGpuTiming);
+            _chkVRIKKnuckles = MakeCheckBox("VRIK Knuckles trackpad mode", sc3, sy2);
+            _chkVRIKKnuckles.Width = 300;
+            _pnlSkyrimOnly.Controls.Add(_chkVRIKKnuckles);
+            _skyrimSettingsTip.SetToolTip(_chkVRIKKnuckles,
+                "Compatibility routing for VRIK gestures on Valve Index/Knuckles controllers. Leave off for other controllers.");
             sy2 += 26;
 
             _pnlSkyrimOnly.Controls.Add(MakeLabel("L dead zone:", sc3, sy2 + 3, 90));
@@ -1440,6 +1471,8 @@ namespace OpenCompositeConfigurator
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             _pnlSkyrimOnly.Controls.Add(_nudLeftDeadZone);
+            _skyrimSettingsTip.SetToolTip(_nudLeftDeadZone,
+                "Ignores small X/Y movement from the physical left stick. Raise only until left-stick drift stops.");
             _pnlSkyrimOnly.Controls.Add(MakeLabel("R:", sc3 + 165, sy2 + 3, 20));
             _nudRightDeadZone = new NumericUpDown
             {
@@ -1448,10 +1481,14 @@ namespace OpenCompositeConfigurator
                 BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
             };
             _pnlSkyrimOnly.Controls.Add(_nudRightDeadZone);
+            _skyrimSettingsTip.SetToolTip(_nudRightDeadZone,
+                "Ignores small X/Y movement from the physical right stick. Raise only until right-stick drift stops.");
             sy2 += 28;
 
             _chkSwapThumbsticks = MakeCheckBox("Swap sticks: right moves, left turns", sc3, sy2);
             _pnlSkyrimOnly.Controls.Add(_chkSwapThumbsticks);
+            _skyrimSettingsTip.SetToolTip(_chkSwapThumbsticks,
+                "Swaps only stick axes and their touch state. Stick clicks and all other buttons remain on their physical hands.");
             sy2 += 24;
 
             // Combat haptics moved to the dedicated Haptics tab (BuildHapticsTab)
@@ -2697,7 +2734,7 @@ namespace OpenCompositeConfigurator
                 SelectActionInCombo(_cmbCtrlAction, null);
                 if (updateStatus)
                 {
-                    _lblKbStatus.Text = $"{info.display}: click = A Button (lower half) or B/Menu (upper half). With VRIK Knuckles support enabled it feeds VRIK gestures instead. Not separately remappable.";
+                    _lblKbStatus.Text = $"{info.display}: click = A Button (lower half) or B/Menu (upper half). With VRIK Knuckles trackpad mode enabled it feeds VRIK gestures instead. Not separately remappable.";
                     _lblKbStatus.ForeColor = Color.FromArgb(255, 200, 100);
                 }
                 _picBindingsController.Invalidate();
@@ -7103,7 +7140,6 @@ namespace OpenCompositeConfigurator
                 _chkDisableThumbrestTouch.Checked = true;
                 _chkDisableTrackpad.Checked = false;
                 _chkVRIKKnuckles.Checked = false;
-                _chkGpuTiming.Checked = true;
                 _nudLeftDeadZone.Value = 0m;
                 _nudRightDeadZone.Value = 0m;
                 _chkSwapThumbsticks.Checked = false;
@@ -7580,7 +7616,6 @@ namespace OpenCompositeConfigurator
             }
             _appliedBindingPresetName = _cmbBindingPreset.SelectedItem?.ToString() ?? "VRIK V2.1.0";
             UpdateDeletePresetEnabled();
-            _chkGpuTiming.Checked = ParseBool(_ini.Get("", "enableGpuTiming", "true"));
             _chkCombatHapticShield.Checked = ParseBool(_ini.Get("", "combatHapticShield", "true"));
             _chkCombatHapticWeapon.Checked = ParseBool(_ini.Get("", "combatHapticWeapon", "true"));
             _chkCombatHapticBow.Checked = ParseBool(_ini.Get("", "combatHapticBow", "true"));
@@ -7942,7 +7977,9 @@ namespace OpenCompositeConfigurator
                 _ini.Set("", "disableThumbrestTouch", _chkDisableThumbrestTouch.Checked ? "true" : "false");
                 _ini.Set("", "disableTrackPad", _chkDisableTrackpad.Checked ? "true" : "false");
                 _ini.Set("", "enableVRIKKnucklesTrackPadSupport", _chkVRIKKnuckles.Checked ? "true" : "false");
-                _ini.Set("", "enableGpuTiming", _chkGpuTiming.Checked ? "true" : "false");
+                // The old D3D timestamp-query path caused micro-stutter and was
+                // removed. Strip its obsolete setting from older INIs.
+                _ini.Remove("", "enableGpuTiming");
                 _ini.Set("", "combatHapticShield", _chkCombatHapticShield.Checked ? "true" : "false");
                 _ini.Set("", "combatHapticWeapon", _chkCombatHapticWeapon.Checked ? "true" : "false");
                 _ini.Set("", "combatHapticBow", _chkCombatHapticBow.Checked ? "true" : "false");

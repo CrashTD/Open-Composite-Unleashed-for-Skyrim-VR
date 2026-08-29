@@ -126,6 +126,14 @@ These settings apply to both Skyrim VR and Fallout 4 VR.
 
 **Default:** Automatic (SteamVR / Relos)
 
+#### Keep Player Hands When Controllers Sleep
+
+**What it does:** Keeps the player's existing left/right hand profile, bindings, and model while a controller is sleeping or waking. This prevents SteamVR's temporary fallback profile from replacing that hand with a Vive wand.
+
+This does not keep the physical controller awake or disable its normal battery-saving behavior.
+
+**Default:** Enabled
+
 #### Enable Haptics
 
 **What it does:** Controls whether the game can make your controllers vibrate.
@@ -146,9 +154,9 @@ VR games use vibration (haptic feedback) to simulate things like weapon impacts,
 
 #### Enable Hidden Mesh Fix
 
-**What it does:** Uses the headset's "hidden area mesh" to skip rendering pixels that you'll never see (the corners of each eye that are outside the lens's visible area).
+**What it does:** Converts the OpenXR runtime's hidden-area visibility mask into the normalized coordinates Skyrim VR expects. Skyrim can then avoid shading pixels that sit outside the lenses' visible region.
 
-This is a free performance optimization — it reduces GPU work without any visual difference because those pixels were invisible anyway. There is essentially no reason to disable this unless you experience a specific visual glitch.
+If the runtime does not expose a visibility mask, this setting has no effect. Leave it enabled unless a headset shows clipped peripheral vision, black wedges, or another mask-specific edge artifact.
 
 **Default:** Enabled
 
@@ -160,37 +168,29 @@ Some combinations of graphics API and headset can result in the game appearing u
 
 **Default:** Disabled
 
-#### DX10 Mode
-
-**What it does:** Forces the game to use DirectX 10 instead of DirectX 11.
-
-This is a compatibility fallback. Only enable this if the game crashes on startup and you've exhausted other troubleshooting options. DX10 mode may disable some visual features.
-
-**Default:** Disabled
-
 ---
 
 ### Skyrim VR Settings
 
 These settings only appear when **Skyrim VR** is selected. They are specific to how Skyrim VR handles input, controller tracking, and certain mod compatibility features.
 
-#### Enable Input Smoothing
+#### Input Dropout Protection
 
-**What it does:** Smooths out thumbstick movement input by averaging multiple frames of stick position data.
+**What it does:** Retains the strongest recent controller input across a short sample window. It covers thumbsticks, triggers, grips, button presses, and capacitive touch states.
 
-Without smoothing, thumbstick input is read directly each frame, which can feel twitchy or jerky — especially at lower framerates or with controllers that have slightly noisy analog sticks. With smoothing enabled, the game averages several frames of stick data together, producing smoother movement.
+This is not an averaging filter. A new press takes effect immediately, while a release can remain active until the older sample leaves the window. It is useful for controllers or runtimes that briefly drop input states, but should remain disabled when inputs are already reliable.
 
-**Trade-off:** Smoother movement at the cost of slightly more input lag (delay between moving the stick and seeing the result in-game).
+**Trade-off:** Resists momentary dropouts at the cost of a small release delay.
 
 **Default:** Disabled
 
-#### Smoothing Window
+#### Hold Samples
 
-**What it does:** Controls how many frames of thumbstick input are averaged together when input smoothing is enabled. Only relevant if "Enable input smoothing" is checked.
+**What it does:** Controls how many recent input samples Dropout Protection retains.
 
-- **Low values (1-3):** Minimal smoothing, minimal lag. Feels responsive but may still be slightly twitchy.
-- **Medium values (4-7):** Good balance of smoothness and responsiveness. **Recommended starting point: 5.**
-- **High values (8+):** Very smooth but noticeably laggy. Movement will feel sluggish and floaty.
+- **1:** No meaningful persistence.
+- **3-5:** Short dropout protection with a small release delay.
+- **Higher values:** Survive longer dropouts, but buttons and analog inputs take longer to return to zero.
 
 **Default:** 5
 
@@ -198,11 +198,14 @@ Without smoothing, thumbstick input is read directly each frame, which can feel 
 
 **What it does:** Smooths the physical position and rotation tracking of your controllers using a "One Euro" noise filter.
 
-This is different from input smoothing — this affects where your HANDS appear in 3D space, not thumbstick movement. If your virtual hands shake or jitter (common in some tracking environments with reflective surfaces or poor lighting), enabling this can stabilize them.
+This is different from Input Dropout Protection — it affects where your hands appear in 3D space, not thumbsticks or buttons. If your virtual hands shake or jitter, enabling it can stabilize them.
 
 **Trade-off:** Reduces hand jitter but adds a tiny amount of tracking latency. Most people won't notice the latency.
 
-**Default:** Disabled
+**Default:** Enabled
+
+- **Pos/Rot base Hz:** Baseline responsiveness while the controller is still or moving slowly. Lower values smooth more; higher values feel more immediate.
+- **Pos/Rot response:** How quickly the filter backs off during fast movement. Higher values reduce lag during motion but allow more tracking noise through.
 
 #### Disable Trigger Touch Events
 
@@ -212,7 +215,7 @@ Touch controllers (Quest, Rift) have capacitive sensors that detect when your fi
 
 **When to enable:** If you notice the game reacting to your trigger finger when you're not intentionally pressing it.
 
-**Default:** Disabled
+**Default:** Enabled
 
 #### Disable Thumbrest Touch Events
 
@@ -224,15 +227,15 @@ OCU can expose thumbrest touch as a bindable DPad Up input, but it is easy to tr
 
 **Default:** Enabled
 
-#### Disable Trackpad Emulation
+#### Disable Legacy Trackpad Routing
 
-**What it does:** Stops Open Composite from emulating a trackpad using the thumbstick.
+**What it does:** Stops OCU from translating the upper and lower halves of a physical trackpad click into Skyrim's legacy Application Menu and A-button behavior. It does not emulate a trackpad from a thumbstick.
 
-Some older VR games were designed for Vive wand controllers that have a large circular trackpad. Open Composite can emulate that trackpad using the thumbstick on Touch/Quest controllers. If this emulation causes input problems (wrong movement, menu navigation issues), disabling it may help.
+Enable this only when Vive or Index trackpad clicks produce unwanted Skyrim actions.
 
 **Default:** Disabled
 
-#### VRIK Knuckles Trackpad Support
+#### VRIK Knuckles Trackpad Mode
 
 **What it does:** Enables a compatibility mode for using VRIK (the full-body mod for Skyrim VR) with Valve Index / Knuckles controllers.
 
@@ -244,7 +247,7 @@ Index controllers have both a thumbstick and a small trackpad. VRIK uses the tra
 
 #### Left / Right Dead Zone
 
-**What it does:** Sets a dead zone radius for each thumbstick, on a scale from 0.00 (no dead zone) to 1.00 (entire stick is dead zone).
+**What it does:** Sets an X/Y center threshold for each physical thumbstick, on a scale from 0.00 (no dead zone) to 1.00 (entire stick is ignored).
 
 A dead zone is a small area around the center of the thumbstick where movement is ignored. This prevents "stick drift" — where the game thinks you're pushing the stick slightly even when you're not touching it. Stick drift causes your character to slowly walk on their own.
 
