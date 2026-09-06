@@ -511,7 +511,7 @@ void XrBackend::LatchViewsForDisplayTime(XrTime displayTime)
 	xr_gbl->viewsLatched = true;
 	{
 		static bool s = false;
-		if (!s) {
+		if (!s && oovr_debug_logging_enabled()) {
 			s = true;
 			OOVR_LOGF("[diag] WaitForTrackingData: views LATCHED (viewsLatched=true)");
 #ifdef _WIN32

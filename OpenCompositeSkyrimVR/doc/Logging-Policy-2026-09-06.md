@@ -31,3 +31,19 @@ on/off round trips; config cleanup/foveation persistence; diagnostic macro
 argument suppression; shipping recording disabled; DAPA motion and refresh
 timing; HIGGS, Spell Wheel, engine draw and installed-CSX GPU mask regressions.
 No new headset performance measurement is claimed.
+
+## Follow-up noise audit
+
+Routine keyboard haptics, key injection, controller combos, gesture progress,
+menu/laser transforms, input ownership, SKSE laser clicks and console selection
+now require detailed logging. WIP action heartbeats skip their diagnostic clocks
+when off. The one-time VDXR registry probe and detailed eye poses are also gated.
+Successful gaze samples are quiet; each unavailable condition remains visible
+once in normal mode, and actual gaze-call/data failures are rate limited.
+Starting/completed keyboard text is omitted rather than written to the log.
+
+Potential per-frame failures in VRS setup, density-mask geometry and keyboard
+swapchain operations use a thread-safe per-call-site five-second limiter: the
+first report is immediate and continued failures remain visible periodically,
+whether or not the checkbox is checked. Existing bounded failure/startup logs
+remain. Logging does not alter XR calls, input actions, rendering or fallbacks.

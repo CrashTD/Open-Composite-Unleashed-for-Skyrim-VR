@@ -1,4 +1,5 @@
 #pragma once
+#include "LogRateLimit.h"
 
 // Not strictly a logging thing, but makes clion happy about calling OOVR_ABORT and not returning
 #ifdef _WIN32
@@ -14,6 +15,10 @@ bool oovr_debug_logging_enabled();
 #define OOVR_LOGF(...) oovr_log_raw_format(__FILE__, __LINE__, __FUNCTION__, __VA_ARGS__)
 #define OOVR_DEBUG_LOG(msg) do { if (oovr_debug_logging_enabled()) OOVR_LOG(msg); } while (0)
 #define OOVR_DEBUG_LOGF(...) do { if (oovr_debug_logging_enabled()) OOVR_LOGF(__VA_ARGS__); } while (0)
+#define OOVR_LOG_LIMITEDF(intervalMs, ...) do { \
+    static OcuLogging::RateLimit limiter; \
+    if (limiter.Allow(OcuLogging::NowMs(), intervalMs)) OOVR_LOGF(__VA_ARGS__); \
+} while (0)
 
 OC_NORETURN void oovr_abort_raw(const char* file, long line, const char* func, const char* msg, const char* title = nullptr, ...);
 void oovr_soft_abort_raw(const char* file, long line, const char* func, int* hit_count, const char* msg, ...);

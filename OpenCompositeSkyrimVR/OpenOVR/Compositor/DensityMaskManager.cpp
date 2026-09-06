@@ -449,7 +449,7 @@ bool DensityMaskManager::PrepareStereoTarget(ID3D11Texture2D* target, int width,
 {
 	armed = false;
 	if (!available || !target || !ValidateGeometry(width, height, leftEye, rightEye)) {
-		OOVR_LOG("DensityMask: invalid stereo target geometry; backend withheld");
+		OOVR_LOG_LIMITEDF(5000, "DensityMask: invalid stereo target geometry; backend withheld");
 		return false;
 	}
 

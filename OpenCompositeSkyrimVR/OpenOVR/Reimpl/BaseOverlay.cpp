@@ -677,7 +677,7 @@ static void ProcessCombos(BaseSystem* sys, const VRControllerState_t ctrlState[2
 			if (allPressed && !combo.firedThisPress) {
 				FireComboTap(combo);
 				combo.firedThisPress = true;
-				OOVR_LOGF("Combo fired (press): scancode 0x%02x", combo.scancode);
+				OOVR_DEBUG_LOGF("Combo fired (press): scancode 0x%02x", combo.scancode);
 			}
 			if (!allPressed)
 				combo.firedThisPress = false;
@@ -687,11 +687,11 @@ static void ProcessCombos(BaseSystem* sys, const VRControllerState_t ctrlState[2
 			if (allPressed && !combo.firedThisPress) {
 				SendComboKey(combo.scancode, false);
 				combo.firedThisPress = true;
-				OOVR_LOGF("Combo hold: scancode 0x%02x DOWN", combo.scancode);
+				OOVR_DEBUG_LOGF("Combo hold: scancode 0x%02x DOWN", combo.scancode);
 			} else if (!allPressed && combo.firedThisPress) {
 				SendComboKey(combo.scancode, true);
 				combo.firedThisPress = false;
-				OOVR_LOGF("Combo hold: scancode 0x%02x UP", combo.scancode);
+				OOVR_DEBUG_LOGF("Combo hold: scancode 0x%02x UP", combo.scancode);
 			}
 		} else if (combo.mode == "long_press") {
 			if (allPressed) {
@@ -701,7 +701,7 @@ static void ProcessCombos(BaseSystem* sys, const VRControllerState_t ctrlState[2
 					(GetTickCount64() - combo.holdStart) >= (ULONGLONG)combo.timingMs) {
 					FireComboTap(combo);
 					combo.firedThisPress = true;
-					OOVR_LOGF("Combo fired (long_press): scancode 0x%02x", combo.scancode);
+					OOVR_DEBUG_LOGF("Combo fired (long_press): scancode 0x%02x", combo.scancode);
 				}
 			} else {
 				combo.holdStart = 0;
@@ -726,7 +726,7 @@ static void ProcessCombos(BaseSystem* sys, const VRControllerState_t ctrlState[2
 				if (combo.tapCount >= requiredTaps) {
 					FireComboTap(combo);
 					combo.tapCount = 0;
-					OOVR_LOGF("Combo fired (%s): scancode 0x%02x", combo.mode.c_str(), combo.scancode);
+					OOVR_DEBUG_LOGF("Combo fired (%s): scancode 0x%02x", combo.mode.c_str(), combo.scancode);
 				}
 			}
 			// Expire stale taps
@@ -1031,7 +1031,7 @@ static void LoadGestures()
 	} while (FindNextFileW(find, &fd));
 	FindClose(find);
 
-	OOVR_LOGF("Gestures: loaded %zu gesture(s) from Gestures folder", s_defs.size());
+	OOVR_DEBUG_LOGF("Gestures: loaded %zu gesture(s) from Gestures folder", s_defs.size());
 	for (const auto& d : s_defs)
 		OOVR_LOGF("Gestures:   '%s' hold=%s action=%d key=0x%02X spell=%s/0x%X",
 		    d.name.c_str(), d.hold.c_str(), d.action, d.scancode,
@@ -1214,7 +1214,7 @@ static void FireGestureKey(int scancode, int vk)
 	if (vk) {
 		if (auto deliver = GetPrismaDeliverVKey()) {
 			deliver(vk);
-			OOVR_LOGF("Gesture key: also delivered vk 0x%02X directly to Prisma", vk);
+			OOVR_DEBUG_LOGF("Gesture key: also delivered vk 0x%02X directly to Prisma", vk);
 		}
 	}
 }
@@ -1379,7 +1379,7 @@ static const GestureDef* MatchCapture(const Capture& cap, const float arc[2], bo
 			continue;
 		score /= hands;
 		if (!quiet)
-			OOVR_LOGF("Gesture: candidate '%s' score %.2f", def.name.c_str(), score);
+			OOVR_DEBUG_LOGF("Gesture: candidate '%s' score %.2f", def.name.c_str(), score);
 		if (score > bestScore) {
 			bestScore = score;
 			best = &def;
@@ -1419,7 +1419,7 @@ static void Update(BaseSystem* sys, bool keyboardOpen)
 		static bool s_loggedKbPause = false;
 		if (keyboardOpen && !s_loggedKbPause) {
 			s_loggedKbPause = true;
-			OOVR_LOG("Gesture: paused while VR keyboard is open (close it to cast)");
+			OOVR_DEBUG_LOG("Gesture: paused while VR keyboard is open (close it to cast)");
 		}
 		if (!keyboardOpen)
 			s_loggedKbPause = false;
@@ -1466,7 +1466,7 @@ static void Update(BaseSystem* sys, bool keyboardOpen)
 				s_stopRequest.hand = s_streamHand;
 				PostMessageW(hwnd, WM_OC_KB_GESTURE, 6, (LPARAM)&s_stopRequest);
 			}
-			OOVR_LOGF("Gesture: stream ends (%s after %.1fs)",
+			OOVR_DEBUG_LOGF("Gesture: stream ends (%s after %.1fs)",
 			    timedOut ? "30s safety cap" : "burst done, trigger not held",
 			    (now - s_streamStartedAt) / 1000.0f);
 		}
@@ -1519,7 +1519,7 @@ static void Update(BaseSystem* sys, bool keyboardOpen)
 						static ULONGLONG s_lastGateLog = 0;
 						if (now - s_lastGateLog > 2000) {
 							s_lastGateLog = now;
-							OOVR_LOGF("Gesture: hold held but no hand raised (best %.2fm below arm height) — raise a hand to %.2fm above head to arm",
+							OOVR_DEBUG_LOGF("Gesture: hold held but no hand raised (best %.2fm below arm height) — raise a hand to %.2fm above head to arm",
 							    armY - bestY, oovr_global_configuration.KbGestureArmHeight());
 						}
 						continue; // hold held, but hands too low — stay disarmed
@@ -1558,7 +1558,7 @@ static void Update(BaseSystem* sys, bool keyboardOpen)
 				s_trailT0 = now;
 				s_capArc[0] = s_capArc[1] = 0;
 
-				OOVR_LOGF("Gesture: capture started (hold=%s, hand raised)", s_cap.hold.c_str());
+				OOVR_DEBUG_LOGF("Gesture: capture started (hold=%s, hand raised)", s_cap.hold.c_str());
 				break;
 			}
 		}
@@ -1620,11 +1620,11 @@ static void Update(BaseSystem* sys, bool keyboardOpen)
 		for (size_t i = 1; i < cap.path[h].size(); i++)
 			arc[h] += hypotf(cap.path[h][i].x - cap.path[h][i - 1].x, cap.path[h][i].y - cap.path[h][i - 1].y);
 
-	OOVR_LOGF("Gesture: capture ended (hold=%s) — left %.2fm/%zu pts, right %.2fm/%zu pts",
+	OOVR_DEBUG_LOGF("Gesture: capture ended (hold=%s) — left %.2fm/%zu pts, right %.2fm/%zu pts",
 	    cap.hold.c_str(), arc[0], cap.path[0].size(), arc[1], cap.path[1].size());
 
 	if ((arc[0] <= 0.12f || cap.path[0].size() < 8) && (arc[1] <= 0.12f || cap.path[1].size() < 8)) {
-		OOVR_LOG("Gesture: no deliberate drawing motion (need > 0.12m of hand travel) — ignored");
+		OOVR_DEBUG_LOG("Gesture: no deliberate drawing motion (need > 0.12m of hand travel) — ignored");
 		s_trailPhase = TrailPhase::Fade;
 		s_trailSuccess = false;
 		s_trailT0 = now;
@@ -1686,7 +1686,7 @@ static void Update(BaseSystem* sys, bool keyboardOpen)
 			}
 		}
 	} else if (best) {
-		OOVR_LOGF("Gesture: best candidate '%s' below threshold (%.2f < %.2f)",
+		OOVR_DEBUG_LOGF("Gesture: best candidate '%s' below threshold (%.2f < %.2f)",
 		    best->name.c_str(), bestScore, threshold);
 	}
 
@@ -1853,7 +1853,7 @@ static bool EnsureTrailResources()
 	s_trailLayer.subImage.imageArrayIndex = 0;
 	s_trailLayer.size.width = kTrailQuadSize;
 	s_trailLayer.size.height = kTrailQuadSize;
-	OOVR_LOG("Gesture trail: overlay swapchain created");
+	OOVR_DEBUG_LOG("Gesture trail: overlay swapchain created");
 	return true;
 }
 
@@ -2012,7 +2012,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				if (CompareFileTime(&fad.ftLastWriteTime, &lastShortcutWriteTime) != 0) {
 					lastShortcutWriteTime = fad.ftLastWriteTime;
 					if (ReloadShortcutSettings()) {
-						OOVR_LOGF("Shortcut settings reloaded: enabled=%d button=%s mode=%s timing=%d",
+						OOVR_DEBUG_LOGF("Shortcut settings reloaded: enabled=%d button=%s mode=%s timing=%d",
 							s_shortcutEnabled, s_shortcutButton.c_str(), s_shortcutMode.c_str(), s_shortcutTiming);
 					}
 					LoadCombos();
@@ -2160,7 +2160,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 								if ((wantUp && dy >= 0.8f) || (!wantUp && dy <= -0.8f)) {
 									activate = true;
 									swipeFired[h] = true;
-									OOVR_LOGF("Keyboard shortcut: trackpad swipe %s (hand=%d dy=%.2f)",
+									OOVR_DEBUG_LOGF("Keyboard shortcut: trackpad swipe %s (hand=%d dy=%.2f)",
 									    wantUp ? "up" : "down", h, dy);
 								}
 							}
@@ -2180,12 +2180,12 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 								clearCtx->ClearState();
 								clearCtx->Flush();
 								clearCtx->Release();
-								OOVR_LOG("[KB-DIAG] ClearState()+Flush() before shortcut keyboard");
+								OOVR_DEBUG_LOG("[KB-DIAG] ClearState()+Flush() before shortcut keyboard");
 							}
 						}
 					}
 					ID3D11Device* kbDev = BaseCompositor::dxcomp ? BaseCompositor::dxcomp->GetDevice() : nullptr;
-					OOVR_LOGF("[KB-DIAG] shortcut: dxcomp=0x%llX GetDevice()=0x%llX",
+					OOVR_DEBUG_LOGF("[KB-DIAG] shortcut: dxcomp=0x%llX GetDevice()=0x%llX",
 					    (unsigned long long)(uintptr_t)BaseCompositor::dxcomp,
 					    (unsigned long long)(uintptr_t)kbDev);
 					if (kbDev && reinterpret_cast<uintptr_t>(kbDev) > 0xFFFF) {
@@ -2248,7 +2248,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 			if (hMod)
 				gameBase = (uintptr_t)hMod;
 			if (gameBase)
-				OOVR_LOGF("TextInput auto-detect: SkyrimVR.exe base = 0x%llX", (unsigned long long)gameBase);
+				OOVR_DEBUG_LOGF("TextInput auto-detect: SkyrimVR.exe base = 0x%llX", (unsigned long long)gameBase);
 			else
 				OOVR_LOG("TextInput auto-detect: SkyrimVR.exe not found, disabled");
 		}
@@ -2272,7 +2272,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 
 			// Transition: text input just became active — auto-open keyboard
 			if (textInputActive && !textInputWasActive && !keyboard) {
-				OOVR_LOGF("TextInput auto-detect: textEntryCount=%d, opening VR keyboard", textEntryCount);
+				OOVR_DEBUG_LOGF("TextInput auto-detect: textEntryCount=%d, opening VR keyboard", textEntryCount);
 				// Clear any dirty D3D11 pipeline state left by overlay rendering (PrismaUI etc.)
 				{
 					ID3D11Device* clearDev2 = BaseCompositor::dxcomp->GetDevice();
@@ -2283,7 +2283,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							clearCtx2->ClearState();
 							clearCtx2->Flush();
 							clearCtx2->Release();
-							OOVR_LOG("[KB-DIAG] ClearState()+Flush() before auto-detect keyboard");
+							OOVR_DEBUG_LOG("[KB-DIAG] ClearState()+Flush() before auto-detect keyboard");
 						}
 					}
 				}
@@ -2294,7 +2294,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					}
 				};
 				ID3D11Device* kbDev2 = BaseCompositor::dxcomp->GetDevice();
-				OOVR_LOGF("[KB-DIAG] auto-detect: dxcomp=0x%llX GetDevice()=0x%llX",
+				OOVR_DEBUG_LOGF("[KB-DIAG] auto-detect: dxcomp=0x%llX GetDevice()=0x%llX",
 				    (unsigned long long)(uintptr_t)BaseCompositor::dxcomp,
 				    (unsigned long long)(uintptr_t)kbDev2);
 				if (kbDev2 && reinterpret_cast<uintptr_t>(kbDev2) > 0xFFFF) {
@@ -2318,7 +2318,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 
 			// Transition: text input ended while we auto-opened — close keyboard
 			if (!textInputActive && textInputWasActive && keyboard && autoOpenedKeyboard) {
-				OOVR_LOG("TextInput auto-detect: text input ended, closing VR keyboard");
+				OOVR_DEBUG_LOG("TextInput auto-detect: text input ended, closing VR keyboard");
 				HideKeyboard();
 				autoOpenedKeyboard = false;
 			}
@@ -2345,7 +2345,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 		const auto& kbLayers = keyboard->Update();
 
 		if (keyboard->IsClosed()) {
-			OOVR_LOG("Keyboard closed, destroying before layer submission");
+			OOVR_DEBUG_LOG("Keyboard closed, destroying before layer submission");
 			HideKeyboard();
 			g_kbLaserConsumesTrigger[0] = false;
 			g_kbLaserConsumesTrigger[1] = false;
@@ -2381,7 +2381,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 			if (!consoleLaser && laserDev && reinterpret_cast<uintptr_t>(laserDev) > 0xFFFF) {
 				consoleLaser = std::make_unique<VRMenuLaser>(laserDev);
 				consoleLaser->SetShowDebugQuad(false);
-				OOVR_LOG("Console world lasers created (two-hand, Havok hit feedback)");
+				OOVR_DEBUG_LOG("Console world lasers created (two-hand, Havok hit feedback)");
 			}
 
 			if (consoleLaser) {
@@ -2443,7 +2443,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 			g_consoleLaserConsumesTrigger[0] = ownsConsoleInput;
 			g_consoleLaserConsumesTrigger[1] = ownsConsoleInput;
 			if (!s_consoleWasOpen)
-				OOVR_LOG("Console world-laser mode entered; native console trigger selection masked");
+				OOVR_DEBUG_LOG("Console world-laser mode entered; native console trigger selection masked");
 			s_consoleWasOpen = true;
 		} else {
 			g_consoleLaserConsumesTrigger[0] = false;
@@ -2461,7 +2461,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 			}
 			if (consoleLaser) {
 				consoleLaser.reset();
-				OOVR_LOG("Console world lasers destroyed");
+				OOVR_DEBUG_LOG("Console world lasers destroyed");
 			}
 			s_consoleWasOpen = false;
 		}
@@ -2602,7 +2602,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							else if (sscanf(line, "show_sf_cursor=%d", &iv) == 1) s_mqShowSfCursor = (iv != 0);
 						}
 						fclose(mf);
-						OOVR_LOGF("Menu quad settings: dist=%.3f wScale=%.3f hScale=%.3f yOff=%.3f xOff=%.3f yawDeg=%.1f pitchDeg=%.1f rollDeg=%.1f opacity=%d debug=%d headLock=%d",
+						OOVR_DEBUG_LOGF("Menu quad settings: dist=%.3f wScale=%.3f hScale=%.3f yOff=%.3f xOff=%.3f yawDeg=%.1f pitchDeg=%.1f rollDeg=%.1f opacity=%d debug=%d headLock=%d",
 						    s_mqDist, s_mqWidthScale, s_mqHeightScale, s_mqYOffset, s_mqXOffset,
 						    s_mqYawOffset * 180.0f / 3.14159265f, s_mqPitchOffset * 180.0f / 3.14159265f, s_mqRollOffset * 180.0f / 3.14159265f,
 						    s_mqOpacity, s_mqShowDebug ? 1 : 0, s_mqHeadLocked ? 1 : 0);
@@ -2723,7 +2723,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				XrSpaceLocation openHead = { XR_TYPE_SPACE_LOCATION };
 				xrLocateSpace(xr_gbl->viewSpace, xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace),
 				    xr_gbl->nextPredictedFrameTime, &openHead);
-				OOVR_LOGF("CAL MENU-OPEN head(%.4f, %.4f, %.4f) orient(%.4f, %.4f, %.4f, %.4f)",
+				OOVR_DEBUG_LOGF("CAL MENU-OPEN head(%.4f, %.4f, %.4f) orient(%.4f, %.4f, %.4f, %.4f)",
 				    openHead.pose.position.x,
 				    openHead.pose.position.y,
 				    openHead.pose.position.z,
@@ -2737,7 +2737,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				// the laser interaction area matches the Scaleform extent.
 				OCMenuTransform mxOpen = {};
 				bool readOk = ReadMenuTransform(mxOpen);
-				OOVR_LOGF("MENU-OPEN: ReadMenuTransform=%s menuName='%s'",
+				OOVR_DEBUG_LOGF("MENU-OPEN: ReadMenuTransform=%s menuName='%s'",
 				    readOk ? "OK" : "FAIL", readOk ? mxOpen.menuName : "(n/a)");
 				if (readOk && mxOpen.menuName[0] != '\0') {
 					float pDist, pW, pH, pYOff, pXOff;
@@ -2763,7 +2763,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 					if (nameChanged) {
 						strncpy(s_lastMenuName, mxCheck.menuName, sizeof(s_lastMenuName) - 1);
 						s_lastMenuName[sizeof(s_lastMenuName) - 1] = '\0';
-						OOVR_LOGF("Menu changed to '%s' — applying hardcoded profile", s_lastMenuName);
+						OOVR_DEBUG_LOGF("Menu changed to '%s' — applying hardcoded profile", s_lastMenuName);
 
 						// Apply hardcoded profile for the new menu.
 						// Always applies — quad automatically resizes per menu.
@@ -2913,7 +2913,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 									};
 									q = quatMul(roomToStage, q);
 									if (s_planeAdoptLogsLeft > 0) {
-										OOVR_LOGF("Menu plane Room->Stage: roomPlane=(%.3f,%.3f,%.3f) roomHmd=(%.3f,%.3f,%.3f) stageHmd=(%.3f,%.3f,%.3f) yawDelta=%.2fdeg mapped=(%.3f,%.3f,%.3f)",
+										OOVR_DEBUG_LOGF("Menu plane Room->Stage: roomPlane=(%.3f,%.3f,%.3f) roomHmd=(%.3f,%.3f,%.3f) stageHmd=(%.3f,%.3f,%.3f) yawDelta=%.2fdeg mapped=(%.3f,%.3f,%.3f)",
 										    rawRoomPlane.x, rawRoomPlane.y, rawRoomPlane.z,
 										    roomHmd.x, roomHmd.y, roomHmd.z, headPos.x, headPos.y, headPos.z,
 										    yawDelta * 180.0f / 3.14159265f, p.x, p.y, p.z);
@@ -2939,7 +2939,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 								q = qf;
 								rotate_vector_by_quaternion({ 0, 0, 1 }, q, faceN);
 								if (s_planeAdoptLogsLeft > 0)
-									OOVR_LOG("Menu laser: shared plane faced AWAY from viewer — flipped 180");
+									OOVR_DEBUG_LOG("Menu laser: shared plane faced AWAY from viewer — flipped 180");
 							}
 							// Nudge 2cm toward the viewer so the quad never z-fights the
 							// menu surface the game draws at this exact plane.
@@ -2967,7 +2967,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							quadSize = { mxPlane.uiPlaneWidth * ps, mxPlane.uiPlaneHeight * ps };
 							if (s_planeAdoptLogsLeft > 0) {
 								s_planeAdoptLogsLeft--;
-								OOVR_LOGF("Menu laser: using game uiNode plane pos(%.3f,%.3f,%.3f) quat(%.3f,%.3f,%.3f,%.3f) size %.3fx%.3fm",
+								OOVR_DEBUG_LOGF("Menu laser: using game uiNode plane pos(%.3f,%.3f,%.3f) quat(%.3f,%.3f,%.3f,%.3f) size %.3fx%.3fm",
 								    p.x, p.y, p.z, q.x, q.y, q.z, q.w, quadSize.width, quadSize.height);
 							}
 						} else {
@@ -2997,10 +2997,10 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				// failures measurable: head, rendered quad, and their relative vector
 				// are captured in the same OpenXR reference space every two seconds.
 				static ULONGLONG s_nextMenuTrackLog = 0;
-				ULONGLONG trackNow = GetTickCount64();
-				if (s_mqShowDebug && trackNow >= s_nextMenuTrackLog) {
+				ULONGLONG trackNow = oovr_debug_logging_enabled() ? GetTickCount64() : 0;
+				if (oovr_debug_logging_enabled() && s_mqShowDebug && trackNow >= s_nextMenuTrackLog) {
 					s_nextMenuTrackLog = trackNow + 2000;
-					OOVR_LOGF("MENU TRACK LIVE menu=%s space=%d head=(%.4f,%.4f,%.4f) quad=(%.4f,%.4f,%.4f) rel=(%.4f,%.4f,%.4f) size=(%.4f,%.4f)",
+					OOVR_DEBUG_LOGF("MENU TRACK LIVE menu=%s space=%d head=(%.4f,%.4f,%.4f) quad=(%.4f,%.4f,%.4f) rel=(%.4f,%.4f,%.4f) size=(%.4f,%.4f)",
 					    s_lastMenuName, (int)GetUnsafeBaseSystem()->currentSpace,
 					    headPos.x, headPos.y, headPos.z,
 					    quadPose.position.x, quadPose.position.y, quadPose.position.z,
@@ -3065,7 +3065,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						    s_mqWidthScale, s_mqHeightScale,
 						    s_mqDist, s_mqXOffset, s_mqYOffset);
 						fclose(fbf);
-						OOVR_LOGF("Feedback: menu=%s head(%.3f,%.3f,%.3f) yaw=%.1f quad(%.3f,%.3f,%.3f)",
+						OOVR_DEBUG_LOGF("Feedback: menu=%s head(%.3f,%.3f,%.3f) yaw=%.1f quad(%.3f,%.3f,%.3f)",
 						    menuNameStr,
 						    s_mqAnchorHeadPos.x, s_mqAnchorHeadPos.y, s_mqAnchorHeadPos.z,
 						    headYawDeg,
@@ -3219,7 +3219,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				// Left thumbstick click toggles local adjustment mode
 				if (menuLaser->IsThumbstickPressed(0)) {
 					s_adjustModeLocal = !s_adjustModeLocal;
-					OOVR_LOGF("Menu quad adjustment mode: %s", s_adjustModeLocal ? "ON" : "OFF");
+					OOVR_DEBUG_LOGF("Menu quad adjustment mode: %s", s_adjustModeLocal ? "ON" : "OFF");
 				}
 
 				// Active if either local toggle OR ini toggle is on
@@ -3229,7 +3229,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 				if (s_adjustMode && menuLaser->IsXButtonPressed(0)) {
 					s_rightStickParam = (s_rightStickParam + 1) % 3;
 					const char* names[] = { "Width", "Height", "Opacity" };
-					OOVR_LOGF("Right stick adjusts: %s", names[s_rightStickParam]);
+					OOVR_DEBUG_LOGF("Right stick adjusts: %s", names[s_rightStickParam]);
 				}
 
 				// Explicit four-click mouse calibration. The LEFT controller's X
@@ -3249,14 +3249,14 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						s_mouseCalStep = 0;
 						snprintf(s_mouseCalMenu, sizeof(s_mouseCalMenu), "%s", s_lastMenuName);
 						s_activeLaserHand = 1;
-						OOVR_LOGF("MOUSE CAL: new menu '%s'; sequence reset, RIGHT TARGET expected", s_lastMenuName);
+						OOVR_DEBUG_LOGF("MOUSE CAL: new menu '%s'; sequence reset, RIGHT TARGET expected", s_lastMenuName);
 					}
 
 					const int calSide = (s_mouseCalStep < 2) ? 1 : 0;
 					const bool targetStep = ((s_mouseCalStep & 1) == 0);
 					const char* handName = calSide == 0 ? "LEFT" : "RIGHT";
 					if (suppressLaser || !menuLaser->IsHit(calSide)) {
-						OOVR_LOGF("MOUSE CAL %d/4 %s %s: X IGNORED -- that laser is not hitting the menu quad",
+						OOVR_DEBUG_LOGF("MOUSE CAL %d/4 %s %s: X IGNORED -- that laser is not hitting the menu quad",
 						    s_mouseCalStep + 1, handName, targetStep ? "TARGET" : "MOUSE");
 					} else {
 						const float rawU = menuLaser->GetHitU(calSide);
@@ -3269,7 +3269,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						if (targetStep) {
 							s_mouseCalTargetU[calSide] = rawU;
 							s_mouseCalTargetV[calSide] = rawV;
-							OOVR_LOGF("MOUSE CAL %d/4 %s TARGET CAPTURED: menu=%s raw=(%.6f,%.6f) adjusted=(%.6f,%.6f) t=%.4f rayO=(%.4f,%.4f,%.4f) rayD=(%.4f,%.4f,%.4f)",
+							OOVR_DEBUG_LOGF("MOUSE CAL %d/4 %s TARGET CAPTURED: menu=%s raw=(%.6f,%.6f) adjusted=(%.6f,%.6f) t=%.4f rayO=(%.4f,%.4f,%.4f) rayD=(%.4f,%.4f,%.4f)",
 							    s_mouseCalStep + 1, handName, s_lastMenuName, rawU, rawV, adjU, adjV,
 							    menuLaser->GetHitT(calSide), rayO.x, rayO.y, rayO.z, rayD.x, rayD.y, rayD.z);
 						} else {
@@ -3281,7 +3281,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 							// errors instead of incorrectly baking them into an offset.
 							const float proposedOffsetX = s_mqMouseOffsetX - deltaU;
 							const float proposedOffsetY = s_mqMouseOffsetY - deltaV;
-							OOVR_LOGF("MOUSE CAL %d/4 %s MOUSE CAPTURED: menu=%s raw=(%.6f,%.6f) adjusted=(%.6f,%.6f) target=(%.6f,%.6f) visualDelta=(%+.6f,%+.6f) pixels2048=(%+.1f,%+.1f) REVERSE_OFFSETS=(%.6f,%.6f) current=(%.6f,%.6f)",
+							OOVR_DEBUG_LOGF("MOUSE CAL %d/4 %s MOUSE CAPTURED: menu=%s raw=(%.6f,%.6f) adjusted=(%.6f,%.6f) target=(%.6f,%.6f) visualDelta=(%+.6f,%+.6f) pixels2048=(%+.1f,%+.1f) REVERSE_OFFSETS=(%.6f,%.6f) current=(%.6f,%.6f)",
 							    s_mouseCalStep + 1, handName, s_lastMenuName, rawU, rawV, adjU, adjV,
 							    s_mouseCalTargetU[calSide], s_mouseCalTargetV[calSide], deltaU, deltaV,
 							    deltaU * 2048.0f, deltaV * 2048.0f, proposedOffsetX, proposedOffsetY,
@@ -3291,11 +3291,11 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 						s_mouseCalStep++;
 						if (s_mouseCalStep == 2) {
 							s_activeLaserHand = 0;
-							OOVR_LOG("MOUSE CAL: RIGHT pair complete; visible laser switched to LEFT -- LEFT TARGET expected");
+							OOVR_DEBUG_LOG("MOUSE CAL: RIGHT pair complete; visible laser switched to LEFT -- LEFT TARGET expected");
 						} else if (s_mouseCalStep >= 4) {
 							s_mouseCalStep = 0;
 							s_activeLaserHand = 1;
-							OOVR_LOG("MOUSE CAL: BOTH HANDS complete; sequence reset and visible laser switched to RIGHT");
+							OOVR_DEBUG_LOG("MOUSE CAL: BOTH HANDS complete; sequence reset and visible laser switched to RIGHT");
 						}
 					}
 				}
@@ -3428,7 +3428,7 @@ int BaseOverlay::_BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompos
 		} else if (!menuActive) {
 			// Menu closed — destroy laser system, unlock profile
 			if (menuLaser) {
-				OOVR_LOG("Menu laser: destroyed (menu-active flag went false)");
+				OOVR_DEBUG_LOG("Menu laser: destroyed (menu-active flag went false)");
 				menuLaser.reset();
 			}
 			g_menuLaserActive = false;
@@ -4572,7 +4572,7 @@ EVROverlayError BaseOverlay::ShowKeyboardWithDispatch(EGamepadTextInputMode eInp
 				clearCtx3->ClearState();
 				clearCtx3->Flush();
 				clearCtx3->Release();
-				OOVR_LOG("[KB-DIAG] ClearState()+Flush() before ShowKeyboard");
+				OOVR_DEBUG_LOG("[KB-DIAG] ClearState()+Flush() before ShowKeyboard");
 			}
 		}
 	}
@@ -4635,7 +4635,7 @@ void BaseOverlay::ProcessPendingOverlayDestroys()
 		// VRKeyboard destruction releases its swapchain and D3D resources. This is
 		// now guaranteed to run on the same thread as VRKeyboard::Update().
 		if (keyboard && keyboardOwner == overlay) {
-			OOVR_LOGF("Closing keyboard with owner '%s' on compositor thread (tid=%lu)",
+			OOVR_DEBUG_LOGF("Closing keyboard with owner '%s' on compositor thread (tid=%lu)",
 			    overlay->key.c_str(), (unsigned long)GetCurrentThreadId());
 			HideKeyboard();
 		} else if (keyboardOwner == overlay) {
@@ -4652,7 +4652,7 @@ void BaseOverlay::ProcessPendingOverlayDestroys()
 			std::lock_guard<std::mutex> lock(pendingOverlayDestroyMutex);
 			if (!validOverlays.count(overlay))
 				continue;
-			OOVR_LOGF("Destroying overlay on compositor thread: key='%s' overlay=0x%llX",
+			OOVR_DEBUG_LOGF("Destroying overlay on compositor thread: key='%s' overlay=0x%llX",
 			    overlay->key.c_str(), (unsigned long long)(uintptr_t)overlay);
 			overlays.erase(overlay->key);
 			validOverlays.erase(overlay);
@@ -4702,7 +4702,7 @@ void BaseOverlay::ProcessPendingKeyboardRequest()
 		    (VRKeyboard::EGamepadTextInputMode)request->inputMode);
 		keyboard->contents(VRKeyboard::CHAR_CONV.from_bytes(request->existingText));
 		keyboardOwner = request->owner;
-		OOVR_LOGF("Queued keyboard created on compositor thread (tid=%lu owner=0x%llX)",
+		OOVR_DEBUG_LOGF("Queued keyboard created on compositor thread (tid=%lu owner=0x%llX)",
 		    (unsigned long)GetCurrentThreadId(),
 		    (unsigned long long)(uintptr_t)keyboardOwner);
 	} catch (const std::exception& e) {
@@ -4795,16 +4795,16 @@ void BaseOverlay::HideKeyboard()
 {
 	// First, if the keyboard is currently open, cache its contents
 	if (keyboard) {
-		OOVR_LOGF("HideKeyboard: caching contents (%zu chars)", keyboard->contents().size());
+		OOVR_DEBUG_LOGF("HideKeyboard: caching contents (%zu chars)", keyboard->contents().size());
 		keyboardCache = VRKeyboard::CHAR_CONV.to_bytes(keyboard->contents());
 	} else {
-		OOVR_LOG("HideKeyboard: keyboard already null");
+		OOVR_DEBUG_LOG("HideKeyboard: keyboard already null");
 	}
 
 	// Check device pointer health before and after destruction
 	{
 		ID3D11Device* preDestroyDev = BaseCompositor::dxcomp ? BaseCompositor::dxcomp->GetDevice() : nullptr;
-		OOVR_LOGF("[KB-DIAG] HideKeyboard BEFORE destroy: dxcomp=0x%llX GetDevice()=0x%llX",
+		OOVR_DEBUG_LOGF("[KB-DIAG] HideKeyboard BEFORE destroy: dxcomp=0x%llX GetDevice()=0x%llX",
 		    (unsigned long long)(uintptr_t)BaseCompositor::dxcomp,
 		    (unsigned long long)(uintptr_t)preDestroyDev);
 	}
@@ -4815,11 +4815,11 @@ void BaseOverlay::HideKeyboard()
 
 	{
 		ID3D11Device* postDestroyDev = BaseCompositor::dxcomp ? BaseCompositor::dxcomp->GetDevice() : nullptr;
-		OOVR_LOGF("[KB-DIAG] HideKeyboard AFTER destroy: dxcomp=0x%llX GetDevice()=0x%llX",
+		OOVR_DEBUG_LOGF("[KB-DIAG] HideKeyboard AFTER destroy: dxcomp=0x%llX GetDevice()=0x%llX",
 		    (unsigned long long)(uintptr_t)BaseCompositor::dxcomp,
 		    (unsigned long long)(uintptr_t)postDestroyDev);
 	}
-	OOVR_LOG("HideKeyboard: keyboard instance destroyed");
+	OOVR_DEBUG_LOG("HideKeyboard: keyboard instance destroyed");
 }
 void BaseOverlay::SetKeyboardTransformAbsolute(ETrackingUniverseOrigin eTrackingOrigin, const HmdMatrix34_t* pmatTrackingOriginToKeyboardTransform)
 {

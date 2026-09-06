@@ -4,20 +4,37 @@
 #include <vector>
 
 namespace DapaCsxDraw {
-// Adapter for the accepted calls in Paintball build C192935E... . No menu
-// decisions are replaced. Verify the ENTIRE owner function before installing.
-inline constexpr uint32_t ownerRva=0x105bd0;
-inline constexpr size_t ownerSize=0x384;
-inline constexpr std::array<uint8_t,32> ownerSha256{
-    0x2b,0x5b,0xc1,0x45,0xd2,0xa4,0xd7,0xf9,0xc9,0x79,0xdf,0x11,0x7f,0xa7,0x24,0xec,
-    0xb4,0x9b,0x14,0xe8,0x15,0x83,0x02,0x87,0xb4,0x39,0x84,0xf2,0xbd,0x92,0xef,0x24};
-inline constexpr std::array<DapaEngineDraw::Site,2> sites{{
-    {0x105c3c,true,7,0,{0x41,0xff,0x92,0xa0,0,0,0}},
-    {0x105f10,true,6,0,{0xff,0x90,0xa0,0,0,0}}
+// Exact, disassembly-verified VRMenuBridgeDirectDrawHook contracts. Version
+// strings alone are insufficient: regular and Paintball DLLs both say 3.19.
+// Observe only the fast-path draw and the draw AFTER CSX's suppression test.
+// Unknown/rebuilt owners still fail closed; never bypass menu decisions.
+struct Build {
+    const char* name;
+    uint32_t ownerRva;
+    size_t ownerSize;
+    std::array<uint8_t,32> ownerSha256;
+    std::array<DapaEngineDraw::Site,2> sites;
+};
+inline constexpr std::array<Build,3> builds{{
+    {"CSX Paintball 3.19 (C192935E)",0x105bd0,0x384,
+     {0x2b,0x5b,0xc1,0x45,0xd2,0xa4,0xd7,0xf9,0xc9,0x79,0xdf,0x11,0x7f,0xa7,0x24,0xec,
+      0xb4,0x9b,0x14,0xe8,0x15,0x83,0x02,0x87,0xb4,0x39,0x84,0xf2,0xbd,0x92,0xef,0x24},
+     {{{0x105c3c,true,7,0,{0x41,0xff,0x92,0xa0,0,0,0}},
+       {0x105f10,true,6,0,{0xff,0x90,0xa0,0,0,0}}}}},
+    {"CSX 3.18 (BCDECB99)",0xe01a0,0x356,
+     {0x61,0x7b,0x54,0xc5,0x30,0xce,0xdd,0x95,0x38,0xa4,0x66,0xe5,0x43,0xa6,0x11,0xd5,
+      0xe2,0xb0,0xbe,0xfb,0x49,0xc4,0xf6,0x04,0xe2,0x27,0x3f,0x4f,0xee,0xb5,0xb4,0x83},
+     {{{0xe020c,true,7,0,{0x41,0xff,0x92,0xa0,0,0,0}},
+       {0xe04b2,true,6,0,{0xff,0x90,0xa0,0,0,0}}}}},
+    {"CSX 3.19 (04CBC257)",0xf5460,0x384,
+     {0x1e,0xc9,0xe2,0x17,0xd6,0x49,0x08,0x58,0x9a,0x70,0x4c,0xb5,0x25,0xfe,0xa1,0xfb,
+      0xff,0xe5,0x35,0x8a,0xbe,0xcc,0x3b,0xcb,0x12,0xe6,0x31,0x30,0xc6,0xa2,0xf4,0x1f},
+     {{{0xf54cc,true,7,0,{0x41,0xff,0x92,0xa0,0,0,0}},
+       {0xf57a0,true,6,0,{0xff,0x90,0xa0,0,0,0}}}}}
 }};
 
-inline bool MatchesOwner(const void* function) {
-    std::array<uint8_t,ownerSize> bytes{};
+inline bool MatchesOwner(const Build& build,const void* function) {
+    std::vector<uint8_t> bytes(build.ownerSize);
     SIZE_T read=0;
     if(!ReadProcessMemory(GetCurrentProcess(),function,bytes.data(),bytes.size(),&read) || read!=bytes.size())return false;
     std::array<uint8_t,32> hash{};
@@ -31,7 +48,14 @@ inline bool MatchesOwner(const void* function) {
     if(ok)ok=BCryptFinishHash(handle,hash.data(),ULONG(hash.size()),0)>=0;
     if(handle)BCryptDestroyHash(handle);
     BCryptCloseAlgorithmProvider(algorithm,0);
-    return ok && hash==ownerSha256;
+    return ok && hash==build.ownerSha256;
+}
+
+inline const Build* FindBuild(uintptr_t module,const void* owner) {
+    for(const auto& build:builds)
+        if(reinterpret_cast<uintptr_t>(owner)==module+build.ownerRva && MatchesOwner(build,owner))
+            return &build;
+    return nullptr;
 }
 
 // Non-fatal near allocation. The page stays resident for any in-flight callback.
@@ -55,19 +79,21 @@ inline uint8_t* AllocateNear(uintptr_t address) {
 }
 
 struct Adapter {
+    const Build* build=nullptr;
     std::array<DapaEngineDraw::Hook,2> hooks{};
     uint8_t* code=nullptr;
     DWORD error=0;
     bool Prepare(uintptr_t module,void* owner,uintptr_t callback) {
-        if(reinterpret_cast<uintptr_t>(owner)!=module+ownerRva || !MatchesOwner(owner)) {
+        build=FindBuild(module,owner);
+        if(!build) {
             error=ERROR_REVISION_MISMATCH;return false;
         }
         for(size_t i=0;i<hooks.size();++i) {
-            if(!hooks[i].Prepare(sites[i],reinterpret_cast<uint8_t*>(module+sites[i].rva)) || hooks[i].chained) {
+            if(!hooks[i].Prepare(build->sites[i],reinterpret_cast<uint8_t*>(module+build->sites[i].rva)) || hooks[i].chained) {
                 error=ERROR_INVALID_DATA;return false;
             }
         }
-        code=AllocateNear(module+ownerRva);
+        code=AllocateNear(module+build->ownerRva);
         if(!code) {error=ERROR_NOT_ENOUGH_MEMORY;return false;}
         for(size_t i=0;i<hooks.size();++i)if(!hooks[i].Build(code+i*64,callback)) {
             error=hooks[i].error;return false;

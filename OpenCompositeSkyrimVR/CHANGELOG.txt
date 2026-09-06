@@ -2,6 +2,8 @@
 
 ## 6 September 2026 - DAPA and diagnostic logging update
 
+- Fixed the DAPA accepted-draw adapter rejecting the verified regular CSX 3.18 and 3.19 binaries. Select the exact validated owner contract at startup, retaining Paintball support and all CSX suppression decisions. No additional per-frame scan, GPU pass or timing change. Other rebuilt/forked binaries are not automatically accepted; see doc/DAPA-CSX-Compatibility-2026-09-06.md.
+- Follow-up: moved routine keyboard/haptic/key-injection, gesture/combo, laser/menu and eye-pose diagnostics behind logging. First failures remain visible with per-call-site throttling on high-frequency failure paths. Starting/completed keyboard text is no longer logged. No input/rendering behavior changes.
 - Added the themed "Turn on logging" checkbox in SteamVR / Help. Detailed runtime and SKSE diagnostics share the resolved logLevel setting; saving requires a Skyrim restart. Basic startup/error logs remain.
 - Gated recurring DAPA body-mask/status/latency diagnostics and removed per-draw diagnostic clock reads when logging is off. Removed config parameter echo spam and per-info-line forced disk flushing. No DAPA motion, timing or mask math changed for this logging update.
 - Integrated tested player/equipped, HIGGS-held and Spell Wheel UI depth ownership. The CSX adapter validates its supported draw signature; transparent materials without usable depth remain a limitation.

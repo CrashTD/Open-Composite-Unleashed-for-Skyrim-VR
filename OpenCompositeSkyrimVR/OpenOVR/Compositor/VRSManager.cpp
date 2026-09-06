@@ -331,11 +331,11 @@ bool VRSManager::EnableShadingRates()
 bool VRSManager::ApplyStereo()
 {
 	if (!available) {
-		OOVR_LOGF("VRSManager::ApplyStereo: skipped (available=%d)", (int)available);
+		OOVR_LOG_LIMITEDF(5000, "VRSManager::ApplyStereo: skipped (available=%d)", (int)available);
 		return false;
 	}
 	if (!vrsView) {
-		OOVR_LOG("VRSManager::ApplyStereo: skipped — resource view is null");
+		OOVR_LOG_LIMITEDF(5000, "VRSManager::ApplyStereo: skipped — resource view is null");
 		return false;
 	}
 

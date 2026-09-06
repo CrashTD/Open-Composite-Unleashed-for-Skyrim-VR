@@ -72,17 +72,31 @@ void AdapterTest(const wchar_t* path) {
     HMODULE module=LoadLibraryExW(path,nullptr,DONT_RESOLVE_DLL_REFERENCES);
     Check(module!=nullptr,"map installed CSX");
     auto base=reinterpret_cast<uintptr_t>(module);
-    auto* owner=reinterpret_cast<void*>(base+DapaCsxDraw::ownerRva);
-    Check(DapaCsxDraw::MatchesOwner(owner),"installed CSX owner SHA256 differs");
+    const DapaCsxDraw::Build* build=nullptr;
+    for(const auto& candidate:DapaCsxDraw::builds)
+        if(DapaCsxDraw::FindBuild(base,reinterpret_cast<void*>(base+candidate.ownerRva))==&candidate) {
+            Check(!build,"binary matched multiple contracts");build=&candidate;
+        }
+    Check(build!=nullptr,"installed CSX has no validated owner contract");
+    auto* owner=reinterpret_cast<void*>(base+build->ownerRva);
+    std::printf("Testing %s\n",build->name);
     DapaCsxDraw::Adapter adapter;
     Check(adapter.Prepare(base,owner,reinterpret_cast<uintptr_t>(&Accepted)),"actual CSX adapter prepare");
     Check(adapter.Install(),"actual CSX observer install");
-    Check(!DapaCsxDraw::MatchesOwner(owner),"patched code unexpectedly matches original");
-    Check(adapter.Remove() && DapaCsxDraw::MatchesOwner(owner),"actual CSX rollback failed");
+    Check(adapter.build==build,"adapter selected wrong binary contract");
+    Check(!DapaCsxDraw::MatchesOwner(*build,owner),"patched code unexpectedly matches original");
+    Check(adapter.Remove() && DapaCsxDraw::MatchesOwner(*build,owner),"actual CSX rollback failed");
     DapaCsxDraw::Adapter wrong;
-    Check(!wrong.Prepare(base,reinterpret_cast<void*>(base+DapaCsxDraw::ownerRva+1),reinterpret_cast<uintptr_t>(&Accepted)),"unknown owner accepted");
-    std::array<uint8_t,DapaCsxDraw::ownerSize> modified{};memcpy(modified.data(),owner,modified.size());modified[100]^=1;
-    Check(!DapaCsxDraw::MatchesOwner(modified.data()),"changed owner function accepted");
+    Check(!wrong.Prepare(base,reinterpret_cast<void*>(base+build->ownerRva+1),reinterpret_cast<uintptr_t>(&Accepted)),"unknown owner accepted");
+    std::vector<uint8_t> modified(build->ownerSize);memcpy(modified.data(),owner,modified.size());modified[100]^=1;
+    Check(!DapaCsxDraw::MatchesOwner(*build,modified.data()),"changed owner function accepted");
+    for(const auto& other:DapaCsxDraw::builds)if(&other!=build)
+        Check(!DapaCsxDraw::MatchesOwner(other,owner),"wrong build contract accepted");
+    // Every byte matters, including branch predicates and each draw site.
+    for(size_t i=0;i<modified.size();++i) {
+        memcpy(modified.data(),owner,modified.size());modified[i]^=1;
+        Check(!DapaCsxDraw::MatchesOwner(*build,modified.data()),"owner mutation accepted");
+    }
     FreeLibrary(module);
     std::puts("PASS actual installed CSX: full function SHA256, both patch sites, complete byte restoration, mismatch refusal");
 }
@@ -183,9 +197,10 @@ void BiasedDepthTest(D3D_DRIVER_TYPE driver,bool reversed,bool d24) {
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        Check(argc==2,"pass installed CommunityShaders.dll path");
-        ScopeTest();for(const auto& site:DapaCsxDraw::sites)InstructionTest(site);
-        AdapterTest(argv[1]);GpuTest(D3D_DRIVER_TYPE_WARP);GpuTest(D3D_DRIVER_TYPE_HARDWARE);
+        Check(argc>=2,"pass one or more CommunityShaders.dll paths");
+        ScopeTest();for(const auto& build:DapaCsxDraw::builds)for(const auto& site:build.sites)InstructionTest(site);
+        for(int i=1;i<argc;++i)AdapterTest(argv[i]);
+        GpuTest(D3D_DRIVER_TYPE_WARP);GpuTest(D3D_DRIVER_TYPE_HARDWARE);
         for(auto driver:{D3D_DRIVER_TYPE_WARP,D3D_DRIVER_TYPE_HARDWARE})for(bool reversed:{false,true})for(bool d24:{false,true})BiasedDepthTest(driver,reversed,d24);
         return 0;
     } catch(const std::exception& error) {std::printf("FAIL: %s\n",error.what());return 1;}

@@ -1408,6 +1408,20 @@ bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& gazeDirec
     XrPosef eyeViewPoses[2], XrTime& sampleTime)
 {
 	auto logState = [](int state, const char* description) {
+		if (!oovr_debug_logging_enabled()) {
+			if (state == 8 || state == 9) return; // Routine valid gaze samples.
+			if (state == 2 || state == 4 || state == 7) {
+				OOVR_LOG_LIMITEDF(5000, "Eye gaze failure: %s", description);
+			} else {
+				// Keep each unavailable-state warning once; blinks/focus loss
+				// must not produce repeated tracking chatter in normal mode.
+				static std::atomic<unsigned> reported{0};
+				const unsigned bit = 1u << state;
+				if (!(reported.fetch_or(bit, std::memory_order_relaxed) & bit))
+					OOVR_LOGF("Eye gaze state: %s (repeated transitions require logging)", description);
+			}
+			return;
+		}
 		// State changes caused by blinks/tracking loss can otherwise flood the log.
 		// If a new state remains stable, report it after a one-second quiet period.
 		static int lastLoggedState = -1;
@@ -1531,7 +1545,7 @@ bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& gazeDirec
 	eyeViewPoses[1] = eyeGazeViewPoses[1];
 	if (currentViewPosesValid) {
 		static bool loggedEyePoses = false;
-		if (!loggedEyePoses) {
+		if (!loggedEyePoses && oovr_debug_logging_enabled()) {
 			loggedEyePoses = true;
 			OOVR_LOGF(
 			    "Eye gaze per-eye VIEW poses: Lpos=(%.5f,%.5f,%.5f) Lq=(%.5f,%.5f,%.5f,%.5f), Rpos=(%.5f,%.5f,%.5f) Rq=(%.5f,%.5f,%.5f,%.5f)",
@@ -2039,7 +2053,7 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 
 			act->previousState.x = state.currentState.x;
 			act->previousState.y = state.currentState.y;
-			if (wipInjected) {
+			if (wipInjected && oovr_debug_logging_enabled()) {
 				static uint64_t s_lastWipActionLog = 0;
 				uint64_t now = GetTickCount64();
 				if (now - s_lastWipActionLog > 1000) {
@@ -2047,7 +2061,7 @@ EVRInputError BaseInput::GetAnalogActionData(VRActionHandle_t action, InputAnalo
 					OOVR_LOGF("WIP ACTION: %s injected left move y=%.3f", act->fullName.c_str(), wip);
 				}
 			}
-			if (turnInjected) {
+			if (turnInjected && oovr_debug_logging_enabled()) {
 				static uint64_t s_lastWipTurnLog = 0;
 				uint64_t now = GetTickCount64();
 				if (now - s_lastWipTurnLog > 1000) {

@@ -213,6 +213,7 @@ void InstallSetupGeometryHook() {
             return;
         }
         csxPrepared=true;
+        SKSE::log::info("DAPA BODY MASK v4: validated {} accepted-draw adapter",csxAdapter.build->name);
     }
     SKSE::AllocTrampoline(2048);
     for(size_t i=0;i<engineHooks.size();++i) {

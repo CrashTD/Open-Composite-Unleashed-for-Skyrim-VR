@@ -648,7 +648,7 @@ namespace
 		g_pConsoleLaser->magic = OCConsoleLaserBridge::MAGIC;
 		g_pConsoleLaser->version = OCConsoleLaserBridge::VERSION;
 		g_pConsoleLaser->byteSize = sizeof(OCConsoleLaserBridge);
-		SKSE::log::info("Console laser bridge created: Local\\OpenCompositeConsoleLaser ({} bytes)",
+		SKSE::log::debug("Console laser bridge created: Local\\OpenCompositeConsoleLaser ({} bytes)",
 			sizeof(OCConsoleLaserBridge));
 	}
 
@@ -1403,7 +1403,7 @@ namespace
 	{
 		auto pending = [logDiagnostics](const char* reason) {
 			if (logDiagnostics)
-				SKSE::log::info("LASER plane pending: {}", reason);
+				SKSE::log::debug("LASER plane pending: {}", reason);
 			return false;
 		};
 
@@ -1674,15 +1674,15 @@ namespace
 			                    (bookIsNote ? "note-model-world" : "book-model-world")) :
 			    (dialogueOpen ? (coherentGeometry ? "dialogue-geometry-local" : "dialogue-geometry-world") :
 			                    (coherentGeometry ? "geometry-local" : "world-fallback"));
-			SKSE::log::info("LASER live-plane source={} world center({:.2f},{:.2f},{:.2f}) r={:.2f} uiFrame={} roomFrame={}",
+			SKSE::log::debug("LASER live-plane source={} world center({:.2f},{:.2f},{:.2f}) r={:.2f} uiFrame={} roomFrame={}",
 			    planeSource,
 			    fallbackPlaneObject->worldBound.center.x, fallbackPlaneObject->worldBound.center.y,
 			    fallbackPlaneObject->worldBound.center.z, fallbackPlaneObject->worldBound.radius,
 			    fallbackPlaneObject->lastUpdatedFrameCounter, roomNode->lastUpdatedFrameCounter);
-			SKSE::log::info("LASER live plane app-space pos({:.3f},{:.3f},{:.3f}) quat({:.3f},{:.3f},{:.3f},{:.3f}) size {:.3f}x{:.3f}m",
+			SKSE::log::debug("LASER live plane app-space pos({:.3f},{:.3f},{:.3f}) quat({:.3f},{:.3f},{:.3f},{:.3f}) size {:.3f}x{:.3f}m",
 			    posXr[0], posXr[1], posXr[2], quat[0], quat[1], quat[2], quat[3], widthM, heightM);
 			if (g_pTransform->roomHmdValid) {
-				SKSE::log::info("LASER RoomNode HMD pos({:.3f},{:.3f},{:.3f}) quat({:.3f},{:.3f},{:.3f},{:.3f})",
+				SKSE::log::debug("LASER RoomNode HMD pos({:.3f},{:.3f},{:.3f}) quat({:.3f},{:.3f},{:.3f},{:.3f})",
 				    g_pTransform->roomHmdPos[0], g_pTransform->roomHmdPos[1], g_pTransform->roomHmdPos[2],
 				    g_pTransform->roomHmdQuat[0], g_pTransform->roomHmdQuat[1],
 				    g_pTransform->roomHmdQuat[2], g_pTransform->roomHmdQuat[3]);
@@ -1690,18 +1690,18 @@ namespace
 			// First-level children of uiNode — identifies the actual menu geometry
 			if (bookOpen && bookMenu) {
 				auto& bookData = bookMenu->GetRuntimeData();
-				SKSE::log::info("LASER BookMenu isNote={} initialized={} startAnimating={} model='{}' bound r={:.2f}",
+				SKSE::log::debug("LASER BookMenu isNote={} initialized={} startAnimating={} model='{}' bound r={:.2f}",
 				    bookData.isNote, bookData.bookInitialized, bookData.startAnimating,
 				    bookModel->name.c_str(), bookModel->worldBound.radius);
 				if (auto* textGeo = bookData.pageTextGeo.get()) {
-					SKSE::log::info("LASER BookMenu PageText template '{}' center({:.2f},{:.2f},{:.2f}) r={:.2f} culled={}",
+					SKSE::log::debug("LASER BookMenu PageText template '{}' center({:.2f},{:.2f},{:.2f}) r={:.2f} culled={}",
 					    textGeo->name.c_str(), textGeo->worldBound.center.x, textGeo->worldBound.center.y,
 					    textGeo->worldBound.center.z, textGeo->worldBound.radius, textGeo->GetAppCulled());
 				}
 			} else if (uiNode) {
 				for (auto& child : uiNode->GetChildren()) {
 					if (child) {
-						SKSE::log::info("LASER uiNode child '{}' bound r={:.2f} culled={}",
+						SKSE::log::debug("LASER uiNode child '{}' bound r={:.2f} culled={}",
 						    child->name.c_str(), child->worldBound.radius, child->GetAppCulled());
 					}
 				}
@@ -1736,7 +1736,7 @@ namespace
 		    1.0f, 0.0f, action);
 		queue->AddButtonEvent(RE::INPUT_DEVICE::kKeyboard, 0, static_cast<std::int32_t>(key),
 		    0.0f, 0.06f, action);
-		SKSE::log::info("LASER BookMenu native action={} key=0x{:X}", actionName, key);
+		SKSE::log::debug("LASER BookMenu native action={} key=0x{:X}", actionName, key);
 		return true;
 	}
 
@@ -1756,7 +1756,7 @@ namespace
 				RE::GFxValue arg;
 				arg.SetNumber(static_cast<double>(selection));
 				if (movie.Invoke("_root.TweenMenu_mc.onInputRectClick", nullptr, &arg, 1)) {
-					SKSE::log::info("LASER Tween semantic ACTIVATE selection={} ({})",
+					SKSE::log::debug("LASER Tween semantic ACTIVATE selection={} ({})",
 					    selection, selection == 1 ? "Skills" : selection == 2 ? "Magic" :
 					    selection == 3 ? "Items" : "Map");
 					return true;
@@ -3650,7 +3650,7 @@ namespace
 			SendGFxKeyPulse(movie, action == JournalSystemConfirmAction::kAccept ?
 			    RE::GFxKey::kReturn : RE::GFxKey::kTab);
 		}
-		SKSE::log::info("LASER Journal System confirmation {} via {}",
+		SKSE::log::debug("LASER Journal System confirmation {} via {}",
 		    action == JournalSystemConfirmAction::kAccept ? "YES" : "NO",
 		    invoked ? "SystemPage handler" : "key fallback");
 		return true;
@@ -3951,7 +3951,7 @@ namespace
 			    movie.Invoke("Selection.setFocus", nullptr, focusArgs.data(), 1);
 		}
 		if (!activate) {
-			SKSE::log::info("LASER MessageBox FOCUS button={} result={}",
+			SKSE::log::debug("LASER MessageBox FOCUS button={} result={}",
 			    buttonIndex, focused);
 			return focused;
 		}
@@ -3964,7 +3964,7 @@ namespace
 		event.SetMember("target", button);
 		const bool invoked = movie.Invoke("_root.MessageMenu.ClickCallback",
 		    nullptr, &event, 1);
-		SKSE::log::info("LASER MessageBox {} button={} focus={} callback={}",
+		SKSE::log::debug("LASER MessageBox {} button={} focus={} callback={}",
 		    activate ? "ACTIVATE" : "FOCUS", buttonIndex, focused, invoked);
 		return invoked;
 	}
@@ -4262,7 +4262,7 @@ namespace
 		if (!equipInvoked)
 			return false;
 
-		SKSE::log::info("LASER selected-row ACTIVATE menu='{}' layout={} index={} hand={} slot={}",
+		SKSE::log::debug("LASER selected-row ACTIVATE menu='{}' layout={} index={} hand={} slot={}",
 		    menuName, skyUiLayout ? "SkyUI" : "vanilla",
 		    static_cast<int>(selectedIndex.GetNumber()),
 		    laserHand == 0 ? "LEFT" : (laserHand == 1 ? "RIGHT" : "UNKNOWN"),
@@ -4388,7 +4388,7 @@ namespace
 				if (s_pressedMovieUsesSculpt) {
 					EndRaceMenuSculptStroke(*s_pressedMovie,
 					    s_raceSculptDisplay, s_raceSculptForeground);
-					SKSE::log::info(
+					SKSE::log::debug(
 					    "LASER RaceMenu sculpt END at local({:.1f},{:.1f}) reason={}",
 					    s_raceSculptLastX, s_raceSculptLastY, reason);
 				} else if (s_pressedMovieUsesNotifyMouse) {
@@ -4397,13 +4397,13 @@ namespace
 					// the menu stack changed before the physical trigger was released.
 					s_pressedMovie->NotifyMouseState(
 					    s_pressedMovieX, s_pressedMovieY, 0u, 0);
-					SKSE::log::info("LASER notify-click UP at ({:.1f},{:.1f}) reason={}",
+					SKSE::log::debug("LASER notify-click UP at ({:.1f},{:.1f}) reason={}",
 					    s_pressedMovieX, s_pressedMovieY, reason);
 				} else {
 					RE::GFxMouseEvent up(RE::GFxEvent::EventType::kMouseUp, 0,
 					    s_pressedMovieX, s_pressedMovieY);
 					s_pressedMovie->HandleEvent(up);
-					SKSE::log::info("LASER gfx-click UP at ({:.1f},{:.1f}) reason={}",
+					SKSE::log::debug("LASER gfx-click UP at ({:.1f},{:.1f}) reason={}",
 					    s_pressedMovieX, s_pressedMovieY, reason);
 				}
 			}
@@ -4441,7 +4441,7 @@ namespace
 		static bool s_loggedNativeMapBypass = false;
 		if (mapOpen && !s_loggedNativeMapBypass) {
 			s_loggedNativeMapBypass = true;
-			SKSE::log::info(
+			SKSE::log::debug(
 			    "LASER MapMenu native bypass: OCU map geometry, Scaleform, input, depth bridge, and compositor laser disabled");
 		}
 		if (mapOpen) {
@@ -4659,7 +4659,7 @@ namespace
 
 				if (GetTickCount64() >= s_planeNotBefore && s_planeStableFrames >= 3) {
 					s_planePublished = true;
-					SKSE::log::info("LASER live tracking ARMED menu='{}' generation={} stableFrames={} pos({:.3f},{:.3f},{:.3f})",
+					SKSE::log::debug("LASER live tracking ARMED menu='{}' generation={} stableFrames={} pos({:.3f},{:.3f},{:.3f})",
 					    s_planeMenuName, s_planeGeneration, s_planeStableFrames,
 					    g_pTransform->uiPlanePos[0], g_pTransform->uiPlanePos[1], g_pTransform->uiPlanePos[2]);
 				}
@@ -4677,7 +4677,7 @@ namespace
 			g_pTransform->cursorRangeX = cd.screenWidthX;
 			g_pTransform->cursorRangeY = cd.screenWidthY;
 			if (s_diagLogsLeft > 0)
-				SKSE::log::info("LASER cursor pos({:.1f},{:.1f}) range({:.1f},{:.1f}) sens={:.3f} showCount={}",
+				SKSE::log::debug("LASER cursor pos({:.1f},{:.1f}) range({:.1f},{:.1f}) sens={:.3f} showCount={}",
 				    cd.cursorPosX, cd.cursorPosY, cd.screenWidthX, cd.screenWidthY,
 				    cd.cursorSensitivity, cd.showCursorCount);
 		}
@@ -4703,7 +4703,7 @@ namespace
 				s_lastReleaseSeq = releaseSeq;
 				if (GetTickCount64() >= s_clickRearmNotBefore) {
 					s_clickArmed = true;
-					SKSE::log::info("LASER BookMenu gesture input armed");
+					SKSE::log::debug("LASER BookMenu gesture input armed");
 				}
 			}
 
@@ -4737,7 +4737,7 @@ namespace
 				s_bookGestureMoved = false;
 				s_bookAnchorV = g_pTransform->laserV;
 				s_bookPressU = g_pTransform->laserU;
-				SKSE::log::info("LASER BookMenu gesture DOWN type={} uv({:.3f},{:.3f})",
+				SKSE::log::debug("LASER BookMenu gesture DOWN type={} uv({:.3f},{:.3f})",
 				    isNote ? "note" : "book", s_bookPressU, s_bookAnchorV);
 			}
 
@@ -4813,12 +4813,12 @@ namespace
 							movie.NotifyMouseState(s_journalReplayX, s_journalReplayY, 1u, 0);
 							movie.NotifyMouseState(s_journalReplayX, s_journalReplayY, 0u, 0);
 						}
-						SKSE::log::info(
+						SKSE::log::debug(
 						    "LASER Journal System restored left CategoryList and replayed {} at ({:.1f},{:.1f})",
 						    s_journalReplayCategoryClick ? "click" : "hover",
 						    s_journalReplayX, s_journalReplayY);
 					} else {
-						SKSE::log::info("LASER Journal System focus restored to left CategoryList");
+						SKSE::log::debug("LASER Journal System focus restored to left CategoryList");
 					}
 					s_journalReturnToSystemCategories = false;
 					s_journalReturnLastPulsedState = -1;
@@ -4831,7 +4831,7 @@ namespace
 				s_journalReplayNotBefore = 0;
 				SendGFxKeyPulse(*advertisedTopMenu->uiMovie, RE::GFxKey::kTab);
 				s_journalReturnLastPulsedState = systemState;
-				SKSE::log::info("LASER Journal System return-left step from state={}", systemState);
+				SKSE::log::debug("LASER Journal System return-left step from state={}", systemState);
 			}
 		}
 
@@ -5044,7 +5044,7 @@ namespace
 						}
 					}
 					if (s_laserOwnsFocus) {
-						SKSE::log::info("MENU INPUT owner=CONTROLLER menu='{}' (native input)",
+						SKSE::log::debug("MENU INPUT owner=CONTROLLER menu='{}' (native input)",
 						    s_planeMenuName);
 					}
 					s_laserOwnsFocus = false;
@@ -5094,7 +5094,7 @@ namespace
 				s_laserOwnsFocus = true;
 			} else if (explicitLaserIntent && !s_laserOwnsFocus) {
 				s_laserOwnsFocus = true;
-				SKSE::log::info(
+				SKSE::log::debug(
 				    "MENU INPUT owner=LASER menu='{}' intent={} target(button={}, itemList={}, altStart={}, messageBox={}, journal={})",
 				    s_planeMenuName, newLaserPress ? "trigger" : "motion", buttonHit,
 				    itemListHit, alternatePerspectiveTargetHit, messageBoxHoverButton,
@@ -5285,7 +5285,7 @@ namespace
 					const auto oldCursorCount = laserMovie->GetMouseCursorCount();
 					if (!raceMenuOpen && oldCursorCount == 0)
 						laserMovie->SetMouseCursorCount(1);
-					SKSE::log::info(
+					SKSE::log::debug(
 					    "LASER GFx mouse menu='{}' cursorCount {}->{} viewport buf={}x{} rect=({},{} {}x{})",
 					    s_planeMenuName, oldCursorCount, laserMovie->GetMouseCursorCount(), viewport.bufferWidth,
 					    viewport.bufferHeight, viewport.left, viewport.top, viewport.width, viewport.height);
@@ -5322,7 +5322,7 @@ namespace
 					laserMovie->GetMouseState(0, &mouseX, &mouseY, &mouseButtons);
 					const bool diagnosticButtonHit = laserMovie->HitTest(
 					    targetX, targetY, RE::GFxMovieView::HitTestType::kButtonEvents, 0);
-					SKSE::log::info(
+					SKSE::log::debug(
 					    "LASER GFx state menu='{}' target({:.1f},{:.1f}) mouse({:.1f},{:.1f}) buttons={} buttonHit={}",
 					    s_planeMenuName, targetX, targetY, mouseX, mouseY, mouseButtons, diagnosticButtonHit);
 					s_gfxMousePrimed = true;
@@ -5344,7 +5344,7 @@ namespace
 			ULONGLONG nowDiag = GetTickCount64();
 			if (nowDiag - s_lastDriveDiag > 2000) {
 				s_lastDriveDiag = nowDiag;
-				SKSE::log::info("LASER drive-direct uv({:.3f},{:.3f}) target({:.1f},{:.1f}) drift={:.1f} sz({:.1f},{:.1f}) showCount={}",
+				SKSE::log::debug("LASER drive-direct uv({:.3f},{:.3f}) target({:.1f},{:.1f}) drift={:.1f} sz({:.1f},{:.1f}) showCount={}",
 				    g_pTransform->laserU, g_pTransform->laserV, targetX, targetY,
 				    errMag, cd.safeZoneX, cd.safeZoneY, cd.showCursorCount);
 			}
@@ -5361,7 +5361,7 @@ namespace
 				s_lastReleaseSeq = releaseSeq;
 				if (GetTickCount64() >= s_clickRearmNotBefore) {
 					s_clickArmed = true;
-					SKSE::log::info("LASER click input armed for '{}'", s_planeMenuName);
+					SKSE::log::debug("LASER click input armed for '{}'", s_planeMenuName);
 				}
 			}
 			if (s_clickArmed && pressSeq != s_lastPressSeq) {
@@ -5381,7 +5381,7 @@ namespace
 						s_mouseHeld = false;
 						s_pressedMovie = nullptr;
 						s_pressedMovieUsesNotifyMouse = false;
-						SKSE::log::info("LASER Dialogue choice ACTIVATE at ({:.1f},{:.1f})", targetX, targetY);
+						SKSE::log::debug("LASER Dialogue choice ACTIVATE at ({:.1f},{:.1f})", targetX, targetY);
 					} else if (strcmp(s_planeMenuName, "TweenMenu") == 0) {
 						ActivateHighlightedTweenSelection(*laserMovie);
 						// Semantic activation is atomic. Never send a mouse-up into the
@@ -5411,7 +5411,7 @@ namespace
 							s_mouseHeld = false;
 							s_pressedMovie = nullptr;
 							s_pressedMovieUsesNotifyMouse = false;
-							SKSE::log::info(
+							SKSE::log::debug(
 							    "LASER Alternate Perspective scrollbar drag START at ({:.1f},{:.1f})",
 							    targetX, targetY);
 						}
@@ -5423,7 +5423,7 @@ namespace
 						s_mouseHeld = false;
 						s_pressedMovie = nullptr;
 						s_pressedMovieUsesNotifyMouse = false;
-						SKSE::log::info(
+						SKSE::log::debug(
 						    "LASER Alternate Perspective item ACTIVATE index={} result={} at ({:.1f},{:.1f})",
 						    activatedIndex, activated, targetX, targetY);
 					} else if (mcmScrollBarHit) {
@@ -5437,7 +5437,7 @@ namespace
 							s_mouseHeld = false;
 							s_pressedMovie = nullptr;
 							s_pressedMovieUsesNotifyMouse = false;
-							SKSE::log::info(
+							SKSE::log::debug(
 							    "LASER MCM vertical scrollbar drag START at ({:.1f},{:.1f})",
 							    targetX, targetY);
 						}
@@ -5456,7 +5456,7 @@ namespace
 							s_mouseHeld = false;
 							s_pressedMovie = nullptr;
 							s_pressedMovieUsesNotifyMouse = false;
-							SKSE::log::info(
+							SKSE::log::debug(
 							    "LASER Journal System confirmation consumed at state={}", confirmState);
 							return;
 						}
@@ -5479,7 +5479,7 @@ namespace
 							s_mouseHeld = false;
 							s_pressedMovie = nullptr;
 							s_pressedMovieUsesNotifyMouse = false;
-							SKSE::log::info(
+							SKSE::log::debug(
 							    "LASER Journal System return-left requested from state={}", systemState);
 							return;
 						}
@@ -5505,7 +5505,7 @@ namespace
 						s_pressedMovieY = targetY;
 						s_mouseHeld = true;
 						s_pressedMovieUsesNotifyMouse = true;
-						SKSE::log::info("LASER notify-click DOWN menu='{}' at ({:.1f},{:.1f})",
+						SKSE::log::debug("LASER notify-click DOWN menu='{}' at ({:.1f},{:.1f})",
 						    s_planeMenuName, targetX, targetY);
 					} else if (raceMenuOpen && raceMenuTargetHit) {
 						if (raceMenuTarget.kind == RaceMenuLaserTargetKind::kSculptCanvas) {
@@ -5523,7 +5523,7 @@ namespace
 								s_mouseHeld = true;
 								s_pressedMovieUsesNotifyMouse = false;
 								s_pressedMovieUsesSculpt = true;
-								SKSE::log::info(
+								SKSE::log::debug(
 								    "LASER RaceMenu sculpt BEGIN local({:.1f},{:.1f}) viewport({:.1f},{:.1f})",
 								    localX, localY, targetX, targetY);
 							} else {
@@ -5546,7 +5546,7 @@ namespace
 								s_mouseHeld = false;
 								s_pressedMovie = nullptr;
 								s_pressedMovieUsesNotifyMouse = false;
-								SKSE::log::info(
+								SKSE::log::debug(
 								    "LASER RaceMenu semantic ACTIVATE kind={} index={} at ({:.1f},{:.1f})",
 								    static_cast<int>(raceMenuTarget.kind), raceMenuTarget.index,
 								    targetX, targetY);
@@ -5559,7 +5559,7 @@ namespace
 						s_pressedMovieY = targetY;
 						s_mouseHeld = true;
 						s_pressedMovieUsesNotifyMouse = true;
-						SKSE::log::info(
+						SKSE::log::debug(
 						    "LASER {} notify-click DOWN at ({:.1f},{:.1f})",
 						    raceMenuOpen ? "RaceMenu" : "Alternate Perspective",
 						    targetX, targetY);
@@ -5572,7 +5572,7 @@ namespace
 						s_pressedMovieY = targetY;
 						s_mouseHeld = true;
 						s_pressedMovieUsesNotifyMouse = false;
-						SKSE::log::info("LASER gfx-click DOWN menu='{}' at ({:.1f},{:.1f})",
+						SKSE::log::debug("LASER gfx-click DOWN menu='{}' at ({:.1f},{:.1f})",
 						    s_planeMenuName, targetX, targetY);
 					}
 				}
@@ -5672,7 +5672,7 @@ namespace
 
 		if (s_diagLogsLeft > 0) {
 			s_diagLogsLeft--;
-			SKSE::log::info("Console pick: node={} from({:.0f},{:.0f},{:.0f}) dir({:.2f},{:.2f},{:.2f}) hit={:08X}",
+			SKSE::log::debug("Console pick: node={} from({:.0f},{:.0f},{:.0f}) dir({:.2f},{:.2f},{:.2f}) hit={:08X}",
 			    vrData->UIPointerNode ? "UIPointer" : "RightWand",
 			    from.x, from.y, from.z, dir.x, dir.y, dir.z,
 			    hitRef ? hitRef->GetFormID() : 0);
@@ -5724,7 +5724,7 @@ namespace
 		if (!g_consoleOpen.load(std::memory_order_acquire)) {
 			if (s_sessionActive) {
 				publishNoHits();
-				SKSE::log::info("Console world laser closed; flat pointer ownership released");
+				SKSE::log::debug("Console world laser closed; flat pointer ownership released");
 			}
 			s_sessionActive = false;
 			s_lastFrameSequence = 0;
@@ -5778,7 +5778,7 @@ namespace
 			s_lastFrameSequence = 0;
 			for (int side = 0; side < 2; ++side)
 				s_lastTriggerSequence[side] = triggerSequence[side];
-			SKSE::log::info("Console world laser armed: OpenXR -> RoomNode -> Havok");
+			SKSE::log::debug("Console world laser armed: OpenXR -> RoomNode -> Havok");
 		}
 		if (frameSequence == s_lastFrameSequence)
 			return;
@@ -5886,7 +5886,7 @@ namespace
 			s_lastTriggerSequence[side] = triggerSequence[side];
 			RE::TESObjectREFR* selected = hitRefs[side];
 			if (!selected) {
-				SKSE::log::info("Console {} trigger: no selectable reference under laser",
+				SKSE::log::debug("Console {} trigger: no selectable reference under laser",
 					side == 0 ? "LEFT" : "RIGHT");
 				continue;
 			}
@@ -5904,7 +5904,7 @@ namespace
 					(name && name[0]) ? name : "<unnamed>",
 					selected->GetFormID(), base ? base->GetFormID() : 0);
 			}
-			SKSE::log::info("Console {} trigger selected ref {:08X}",
+			SKSE::log::debug("Console {} trigger selected ref {:08X}",
 				side == 0 ? "LEFT" : "RIGHT", s_selectedFormId);
 		}
 
@@ -6002,11 +6002,11 @@ namespace
 			g_waitingForKeyboard = true;
 		}
 
-		SKSE::log::info("BSVirtualKeyboardDevice::Start() intercepted");
-		SKSE::log::info("  startingText: \"{}\"", a_info->startingText ? a_info->startingText : "(null)");
-		SKSE::log::info("  maxChars: {}", a_info->maxChars);
-		SKSE::log::info("  doneCallback: {:p}", reinterpret_cast<void*>(a_info->doneCallback));
-		SKSE::log::info("  cancelCallback: {:p}", reinterpret_cast<void*>(a_info->cancelCallback));
+		SKSE::log::debug("BSVirtualKeyboardDevice::Start() intercepted");
+		SKSE::log::debug("  startingText: omitted");
+		SKSE::log::debug("  maxChars: {}", a_info->maxChars);
+		SKSE::log::debug("  doneCallback: {:p}", reinterpret_cast<void*>(a_info->doneCallback));
+		SKSE::log::debug("  cancelCallback: {:p}", reinterpret_cast<void*>(a_info->cancelCallback));
 
 		// Call ShowKeyboard through the OpenVR overlay interface (Open Composite intercepts this)
 		auto overlay = RE::BSOpenVR::GetCleanIVROverlay();
@@ -6018,7 +6018,7 @@ namespace
 			constexpr uint32_t SKYRIM_HARD_LIMIT = 31;
 			uint32_t gameLimit = (a_info->maxChars > 1) ? (a_info->maxChars - 1) : SKYRIM_HARD_LIMIT;
 			uint32_t charLimit = (gameLimit < SKYRIM_HARD_LIMIT) ? gameLimit : SKYRIM_HARD_LIMIT;
-			SKSE::log::info("  charLimit: {} (game maxChars: {})", charLimit, a_info->maxChars);
+			SKSE::log::debug("  charLimit: {} (game maxChars: {})", charLimit, a_info->maxChars);
 
 			auto err = overlay->ShowKeyboard(
 				vr::k_EGamepadTextInputModeNormal,
@@ -6034,7 +6034,7 @@ namespace
 				std::lock_guard<std::mutex> lock(g_callbackMutex);
 				g_waitingForKeyboard = false;
 			} else {
-				SKSE::log::info("VR keyboard shown successfully");
+				SKSE::log::debug("VR keyboard shown successfully");
 			}
 		} else {
 			SKSE::log::error("Failed to get IVROverlay interface");
@@ -6120,7 +6120,7 @@ namespace
 						// Stop a held stream (hold button released)
 						if (handCaster)
 							handCaster->InterruptCast(false);
-						SKSE::log::info("Gesture cast: '{}' stream stopped ({} hand)", spell->GetName(), hand == 0 ? "left" : "right");
+						SKSE::log::debug("Gesture cast: '{}' stream stopped ({} hand)", spell->GetName(), hand == 0 ? "left" : "right");
 						return;
 					}
 					if (mode == 3) {
@@ -6134,7 +6134,7 @@ namespace
 						}
 						if (handCaster) {
 							handCaster->CastSpellImmediate(spell, false, nullptr, 1.0f, false, 0.0f, player);
-							SKSE::log::info("Gesture cast: '{}' streaming from {} hand until release", spell->GetName(), hand == 0 ? "left" : "right");
+							SKSE::log::debug("Gesture cast: '{}' streaming from {} hand until release", spell->GetName(), hand == 0 ? "left" : "right");
 						}
 						return;
 					}
@@ -6158,7 +6158,7 @@ namespace
 							if (concentration) {
 								// Quick-release burst: let the stream run 2s,
 								// then stop the caster (nothing else ever will).
-								SKSE::log::info("Gesture cast: '{}' streaming a 2s burst from {} hand", spell->GetName(), hand == 0 ? "left" : "right");
+								SKSE::log::debug("Gesture cast: '{}' streaming a 2s burst from {} hand", spell->GetName(), hand == 0 ? "left" : "right");
 								std::thread([hand]() {
 									std::this_thread::sleep_for(std::chrono::seconds(2));
 									SKSE::GetTaskInterface()->AddTask([hand]() {
@@ -6173,7 +6173,7 @@ namespace
 									});
 								}).detach();
 							} else {
-								SKSE::log::info("Gesture cast: '{}' fired from {} hand ({:.0f} magicka)", spell->GetName(), hand == 0 ? "left" : "right", cost);
+								SKSE::log::debug("Gesture cast: '{}' fired from {} hand ({:.0f} magicka)", spell->GetName(), hand == 0 ? "left" : "right", cost);
 							}
 						}
 					} else {
@@ -6184,7 +6184,7 @@ namespace
 						auto* slot = static_cast<RE::BGSEquipSlot*>(
 							RE::TESForm::LookupByID(mode == 1 ? 0x00013F43 : 0x00013F42));
 						RE::ActorEquipManager::GetSingleton()->EquipSpell(player, spell, slot);
-						SKSE::log::info("Gesture cast: '{}' equipped to {} hand", spell->GetName(), mode == 1 ? "left" : "right");
+						SKSE::log::debug("Gesture cast: '{}' equipped to {} hand", spell->GetName(), mode == 1 ? "left" : "right");
 					}
 				});
 				return 0;
@@ -6203,7 +6203,7 @@ namespace
 						queue->AddButtonEvent(RE::INPUT_DEVICE::kKeyboard, 0, scancode,
 							down ? 1.0f : 0.0f, down ? 0.0f : 0.06f);
 				});
-				SKSE::log::info("Gesture key {} scancode 0x{:X} queued into game input", down ? "DOWN" : "UP", scancode);
+				SKSE::log::debug("Gesture key {} scancode 0x{:X} queued into game input", down ? "DOWN" : "UP", scancode);
 				return 0;
 			}
 
@@ -6218,7 +6218,7 @@ namespace
 							nullptr);
 					}
 				});
-				SKSE::log::info("Console {} requested by VR keyboard", show ? "SHOW" : "HIDE");
+				SKSE::log::debug("Console {} requested by VR keyboard", show ? "SHOW" : "HIDE");
 				return 0;
 			}
 
@@ -6253,11 +6253,11 @@ namespace
 						overlay->GetKeyboardText(text, sizeof(text));
 					}
 
-					SKSE::log::info("Keyboard done, text: \"{}\"", text);
+					SKSE::log::debug("Keyboard done (entered text omitted)");
 					doneCb(userParam, text);
 				} else if (a_wParam == 0 && cancelCb) {
 					// Keyboard Cancelled
-					SKSE::log::info("Keyboard cancelled");
+					SKSE::log::debug("Keyboard cancelled");
 					cancelCb();
 				}
 			}
@@ -6450,25 +6450,25 @@ namespace
 			return;
 		}
 
-		SKSE::log::info("Virtual keyboard device found at {:p}", reinterpret_cast<void*>(vkbd));
+		SKSE::log::debug("Virtual keyboard device found at {:p}", reinterpret_cast<void*>(vkbd));
 
 		// Get vtable pointer
 		auto vtable = *reinterpret_cast<std::uintptr_t**>(vkbd);
-		SKSE::log::info("VTable at {:p}", reinterpret_cast<void*>(vtable));
+		SKSE::log::debug("VTable at {:p}", reinterpret_cast<void*>(vtable));
 
 		// Slot 0x0B = Start() virtual function
 		constexpr std::size_t kStartSlot = 0x0B;
 
 		// Save original (should be a no-op, but save it anyway)
 		g_originalStart = reinterpret_cast<Start_t>(vtable[kStartSlot]);
-		SKSE::log::info("Original Start() at {:p}", reinterpret_cast<void*>(g_originalStart));
+		SKSE::log::debug("Original Start() at {:p}", reinterpret_cast<void*>(g_originalStart));
 
 		// Patch vtable to point to our hook
 		DWORD oldProtect = 0;
 		if (VirtualProtect(&vtable[kStartSlot], sizeof(std::uintptr_t), PAGE_EXECUTE_READWRITE, &oldProtect)) {
 			vtable[kStartSlot] = reinterpret_cast<std::uintptr_t>(&HookedStart);
 			VirtualProtect(&vtable[kStartSlot], sizeof(std::uintptr_t), oldProtect, &oldProtect);
-			SKSE::log::info("BSVirtualKeyboardDevice::Start() hooked successfully");
+			SKSE::log::debug("BSVirtualKeyboardDevice::Start() hooked successfully");
 		} else {
 			SKSE::log::error("Failed to VirtualProtect vtable for Start() hook (error: {})", GetLastError());
 		}
@@ -6542,7 +6542,7 @@ namespace
 		for (auto& mapping : keyboardMappings) {
 			for (const auto& remap : remaps) {
 				if (mapping.eventID == remap.eventName) {
-					SKSE::log::info("RemapMovementKeys: {} (0x{:02X} -> 0x{:02X})",
+					SKSE::log::debug("RemapMovementKeys: {} (0x{:02X} -> 0x{:02X})",
 						remap.eventName, mapping.inputKey, remap.newKey);
 					mapping.inputKey = remap.newKey;
 					remapped++;
@@ -6551,7 +6551,7 @@ namespace
 			}
 		}
 
-		SKSE::log::info("RemapMovementKeys: Remapped {} keyboard bindings (WASD+E freed for typing)", remapped);
+		SKSE::log::debug("RemapMovementKeys: Remapped {} keyboard bindings (WASD+E freed for typing)", remapped);
 	}
 
 	// =========================================================================

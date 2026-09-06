@@ -305,14 +305,14 @@ static std::wstring GetOCDllDirectory()
 		return L"";
 	}
 
-	OOVR_LOGF("OpenComposite DLL loaded from: %S", path);
+	OOVR_DEBUG_LOGF("OpenComposite DLL loaded from: %S", path);
 
 	std::wstring dir(path);
 	auto pos = dir.find_last_of(L"\\/");
 	if (pos != std::wstring::npos)
 		dir = dir.substr(0, pos + 1);
 
-	OOVR_LOGF("OpenComposite DLL directory: %S", dir.c_str());
+	OOVR_DEBUG_LOGF("OpenComposite DLL directory: %S", dir.c_str());
 	return dir;
 }
 
@@ -355,13 +355,13 @@ static bool RequestGameConsole(bool show)
 static void TriggerHaptic(int side)
 {
 	if (s_hapticStrength <= 0) {
-		OOVR_LOGF("Haptic blocked: strength=%d", s_hapticStrength);
+		OOVR_DEBUG_LOGF("Haptic blocked: strength=%d", s_hapticStrength);
 		return;
 	}
 	auto system = GetBaseSystem();
 	auto input = GetBaseInput();
 	if (!system || !input) {
-		OOVR_LOG("Haptic blocked: no BaseSystem or BaseInput");
+		OOVR_LOG_LIMITEDF(5000, "Haptic blocked: no BaseSystem or BaseInput");
 		return;
 	}
 	vr::ETrackedControllerRole role = (side == 0)
@@ -369,13 +369,13 @@ static void TriggerHaptic(int side)
 		: vr::TrackedControllerRole_RightHand;
 	vr::TrackedDeviceIndex_t deviceIndex = system->GetTrackedDeviceIndexForControllerRole(role);
 	if (deviceIndex == vr::k_unTrackedDeviceIndexInvalid) {
-		OOVR_LOGF("Haptic blocked: invalid device index for side %d", side);
+		OOVR_LOG_LIMITEDF(5000, "Haptic blocked: invalid device index for side %d", side);
 		return;
 	}
 	// Scale haptic duration: 0-100% maps to 0-3000 microseconds
 	unsigned short duration = (unsigned short)(s_hapticStrength * 30);
 	float amplitude = s_hapticStrength / 100.0f;
-	OOVR_LOGF("Triggering haptic: side=%d, strength=%d, duration=%d, amplitude=%.2f", side, s_hapticStrength, duration, amplitude);
+	OOVR_DEBUG_LOGF("Triggering haptic: side=%d, strength=%d, duration=%d, amplitude=%.2f", side, s_hapticStrength, duration, amplitude);
 	// Call BaseInput directly — bypasses global Haptics() check so keyboard
 	// haptics work even when in-game haptics are disabled
 	input->TriggerLegacyHapticPulse(deviceIndex, (uint64_t)duration * 1000, amplitude);
@@ -831,10 +831,10 @@ static void SendSingleVK(WORD vk, bool pcMode = false)
 	const bool isFKey = (vk >= VK_F1 && vk <= VK_F12);
 
 	if (!pcMode && !isFKey && ShouldSuppressSkyrimInput()) {
-		OOVR_LOGF("[VKEMIT] SendSingleVK(vk=0x%02X) SUPPRESSED (Prisma focused, VR mode)", vk);
+		OOVR_DEBUG_LOGF("[VKEMIT] SendSingleVK(vk=0x%02X) SUPPRESSED (Prisma focused, VR mode)", vk);
 		return;
 	}
-	OOVR_LOGF("[VKEMIT] SendSingleVK(vk=0x%02X) firing SendInput%s%s",
+	OOVR_DEBUG_LOGF("[VKEMIT] SendSingleVK(vk=0x%02X) firing SendInput%s%s",
 	    vk,
 	    pcMode ? " (PC mode)" : "",
 	    isFKey ? " (F-key bypass)" : "");
@@ -889,7 +889,7 @@ static void SendPCVirtualKeyState(WORD vk, bool shift, bool scanOnly, bool down)
 	if (!down && shift)
 		append(VK_SHIFT, shiftScan, scanOnly, false);
 
-	OOVR_LOGF("[VKEMIT] PC hold vk=0x%02X %s shift=%d scanOnly=%d",
+	OOVR_DEBUG_LOGF("[VKEMIT] PC hold vk=0x%02X %s shift=%d scanOnly=%d",
 	    vk, down ? "DOWN" : "UP", shift ? 1 : 0, scanOnly ? 1 : 0);
 	EnsureGameForeground();
 	UINT sent = ::SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT));
@@ -933,7 +933,7 @@ static PrismaVR_DeliverCharFn GetPrismaVRDeliverChar()
 				GetProcAddress(hPrisma, "PrismaVR_DeliverChar"));
 		}
 		resolved = true;
-		OOVR_LOGF("PrismaVR_DeliverChar resolution: hPrisma=0x%llX, fn=0x%llX",
+		OOVR_DEBUG_LOGF("PrismaVR_DeliverChar resolution: hPrisma=0x%llX, fn=0x%llX",
 			(unsigned long long)(uintptr_t)hPrisma,
 			(unsigned long long)(uintptr_t)cached);
 	}
@@ -951,7 +951,7 @@ static PrismaVR_DeliverVKeyFn GetPrismaVRDeliverVKey()
 				GetProcAddress(hPrisma, "PrismaVR_DeliverVKey"));
 		}
 		resolved = true;
-		OOVR_LOGF("PrismaVR_DeliverVKey resolution: hPrisma=0x%llX, fn=0x%llX",
+		OOVR_DEBUG_LOGF("PrismaVR_DeliverVKey resolution: hPrisma=0x%llX, fn=0x%llX",
 			(unsigned long long)(uintptr_t)hPrisma,
 			(unsigned long long)(uintptr_t)cached);
 	}
@@ -1039,7 +1039,7 @@ static bool IsActionKey(wchar_t ch)
 // the DirectInput / game-hotkey path is desired (rare).
 static void SendVirtualKey(WORD vk, bool shift, wchar_t ch = 0, bool postChar = true, bool pcMode = false)
 {
-	OOVR_LOGF("[VKEMIT] SendVirtualKey(vk=0x%02X shift=%d ch=0x%04X postChar=%d pcMode=%d) prismaFocused=%d",
+	OOVR_DEBUG_LOGF("[VKEMIT] SendVirtualKey(vk=0x%02X shift=%d ch=0x%04X postChar=%d pcMode=%d) prismaFocused=%d",
 	    vk, shift ? 1 : 0, (unsigned)ch, postChar ? 1 : 0, pcMode ? 1 : 0, IsPrismaTextFocused() ? 1 : 0);
 	WORD scan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
 	WORD shiftScan = (WORD)MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC);
@@ -1187,7 +1187,7 @@ static void LoadSpaceBarImage()
 		s_spaceBarWidth = 0;
 		s_spaceBarHeight = 0;
 	} else {
-		OOVR_LOGF("Loaded SpaceBar.png from resource: %ux%u", s_spaceBarWidth, s_spaceBarHeight);
+		OOVR_DEBUG_LOGF("Loaded SpaceBar.png from resource: %ux%u", s_spaceBarWidth, s_spaceBarHeight);
 	}
 }
 
@@ -1200,7 +1200,7 @@ static void InitSounds()
 	s_hoverSoundData = loadResource(RES_O_SND_HOVER, RES_T_WAV);
 	s_pressSoundData = loadResource(RES_O_SND_PRESS, RES_T_WAV);
 
-	OOVR_LOGF("Loaded keyboard sounds from resources: hover=%zu bytes, press=%zu bytes",
+	OOVR_DEBUG_LOGF("Loaded keyboard sounds from resources: hover=%zu bytes, press=%zu bytes",
 		s_hoverSoundData.size(), s_pressSoundData.size());
 }
 
@@ -1811,7 +1811,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				if (GetFileAttributesExW(settingsPath.c_str(), GetFileExInfoStandard, &fad)) {
 					if (CompareFileTime(&fad.ftLastWriteTime, &lastWriteTime) != 0) {
 						lastWriteTime = fad.ftLastWriteTime;
-						OOVR_LOG("Config file changed, reloading settings...");
+						OOVR_DEBUG_LOG("Config file changed, reloading settings...");
 						if (ReloadKeyboardSettings()) {
 							// Apply new tilt orientation
 							if (headLocked) {
@@ -1825,7 +1825,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 							layer.size.width = 1.05f * sf;
 							layer.size.height = 0.49f * sf;
 							dirty = true;
-							OOVR_LOGF("Settings reloaded: tilt=%.1f opacity=%d scale=%d haptic=%d sounds=%d",
+							OOVR_DEBUG_LOGF("Settings reloaded: tilt=%.1f opacity=%d scale=%d haptic=%d sounds=%d",
 								s_tiltDegrees, s_opacityPercent, s_scalePercent, s_hapticStrength, s_soundsEnabled);
 						} else {
 							OOVR_LOG("Settings reload failed - could not read ini file");
@@ -1944,7 +1944,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 			if (trigJustPressed && laserOnConsole[side] && !grabActive) {
 				ReleaseAllHeldPCKeys();
 				sendInputOnly = !sendInputOnly;
-				OOVR_LOGF("Mode toggle: sendInputOnly=%d (%s)", sendInputOnly, sendInputOnly ? "PC MODE" : "VR MODE");
+				OOVR_DEBUG_LOGF("Mode toggle: sendInputOnly=%d (%s)", sendInputOnly, sendInputOnly ? "PC MODE" : "VR MODE");
 				dirty = true;
 				continue;
 			}
@@ -2173,7 +2173,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 								s_posRight = (right < -1.0f) ? -1.0f : ((right > 1.0f) ? 1.0f : right);
 								s_posDown = (down < -0.3f) ? -0.3f : ((down > 1.2f) ? 1.2f : down);
 								SaveKeyboardPosition();
-								OOVR_LOGF("[KB] Sticky position saved: fwd=%.2f down=%.2f right=%.2f",
+								OOVR_DEBUG_LOGF("[KB] Sticky position saved: fwd=%.2f down=%.2f right=%.2f",
 								    s_posForward, s_posDown, s_posRight);
 							}
 						}
@@ -2359,7 +2359,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 		static bool s_loggedBridgeProbe = false;
 		if (!s_loggedBridgeProbe) {
 			s_loggedBridgeProbe = true;
-			OOVR_LOGF("Console sync: first bridge probe = %d", gameConsole);
+			OOVR_DEBUG_LOGF("Console sync: first bridge probe = %d", gameConsole);
 		}
 		if (gameConsole >= 0 && (gameConsole != 0) != consoleActive) {
 			consoleActive = (gameConsole != 0);
@@ -2368,7 +2368,7 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				cursorPos = 0;
 			}
 			consoleDirty = true;
-			OOVR_LOGF("Console overlay synced to game console state: %s",
+			OOVR_DEBUG_LOGF("Console overlay synced to game console state: %s",
 			    consoleActive ? "OPEN" : "CLOSED");
 		}
 	}
@@ -2802,7 +2802,7 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 			consoleActive = false;
 			s_consoleToggleGraceUntil = GetTickCount64() + 700;
 			consoleDirty = true;
-			OOVR_LOG("Grip pressed with console open — requested console hide");
+			OOVR_DEBUG_LOG("Grip pressed with console open — requested console hide");
 		}
 		if (!sendInputOnly) {
 			// Send Escape to dismiss SkyUI text input dialogs (only when game opened the keyboard)
@@ -2987,11 +2987,11 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 			} else if (ch == '\x0F') {
 				// [M] key — toggle crosshair dot at gaze center
 				crosshairVisible = !crosshairVisible;
-				OOVR_LOGF("Crosshair: %s", crosshairVisible ? "ON" : "OFF");
+				OOVR_DEBUG_LOGF("Crosshair: %s", crosshairVisible ? "ON" : "OFF");
 			} else if (ch == '\x1C') {
 				// [T] key — toggle target mode (show dots from controllers and headset)
 				s_targetMode = !s_targetMode;
-				OOVR_LOGF("Target mode: %s", s_targetMode ? "ON" : "OFF");
+				OOVR_DEBUG_LOGF("Target mode: %s", s_targetMode ? "ON" : "OFF");
 			} else if (ch == '\x1D') {
 				sendHoldableControl(VK_END);
 			} else if (ch == '\x1E') {
@@ -3018,7 +3018,7 @@ void VRKeyboard::HandleOverlayInput(vr::EVREye side, vr::VRControllerState_t sta
 						cursorPos = 0;
 					}
 					consoleDirty = true;
-					OOVR_LOGF("Console overlay: %s", consoleActive ? "OPENED" : "CLOSED");
+					OOVR_DEBUG_LOGF("Console overlay: %s", consoleActive ? "OPENED" : "CLOSED");
 					// Explicit show/hide via the SKSE plugin (idempotent, no
 					// keystroke, immune to double-toggle). Keystroke fallback
 					// only when the plugin window is unavailable.
@@ -3257,7 +3257,7 @@ void VRKeyboard::LoadThemeAssets()
 	parchmentW = parchmentH = 0;
 	auto bgData = loadResource(theme->bgRes, RES_T_PNG);
 	lodepng::decode(parchmentBg, parchmentW, parchmentH, (const uint8_t*)bgData.data(), bgData.size(), LCT_RGBA, 8);
-	OOVR_LOGF("Keyboard theme '%s', font '%s' loaded: bg %ux%u",
+	OOVR_DEBUG_LOGF("Keyboard theme '%s', font '%s' loaded: bg %ux%u",
 	    theme->name, resolvedFont.c_str(), parchmentW, parchmentH);
 
 	// Per-theme space bar image (overrides the default loaded at startup)
@@ -3325,7 +3325,7 @@ void VRKeyboard::LoadKeyboardLayout()
 	LoadThemeAssets();
 	LoadKeyboardArtwork();
 	loadedLayoutName = requested;
-	OOVR_LOGF("Keyboard layout loaded: %s", loadedExternal ? filename.c_str() : "embedded en_gb.kb");
+	OOVR_DEBUG_LOGF("Keyboard layout loaded: %s", loadedExternal ? filename.c_str() : "embedded en_gb.kb");
 }
 
 void VRKeyboard::LoadKeyboardArtwork()
@@ -4732,7 +4732,7 @@ void VRKeyboard::Refresh()
 	uint32_t currentIndex = 0;
 	XrResult xrRes = xrAcquireSwapchainImage(chain, &acquireInfo, &currentIndex);
 	if (XR_FAILED(xrRes)) {
-		OOVR_LOGF("[VRKeyboard] Refresh: xrAcquireSwapchainImage failed %d — skipping frame", xrRes);
+		OOVR_LOG_LIMITEDF(5000, "[VRKeyboard] Refresh: xrAcquireSwapchainImage failed %d — skipping frame", xrRes);
 		return;
 	}
 
@@ -4741,7 +4741,7 @@ void VRKeyboard::Refresh()
 	waitInfo.timeout = 500000000; // 500ms
 	xrRes = xrWaitSwapchainImage(chain, &waitInfo);
 	if (XR_FAILED(xrRes)) {
-		OOVR_LOGF("[VRKeyboard] Refresh: xrWaitSwapchainImage failed %d — releasing and skipping", xrRes);
+		OOVR_LOG_LIMITEDF(5000, "[VRKeyboard] Refresh: xrWaitSwapchainImage failed %d — releasing and skipping", xrRes);
 		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 		xrReleaseSwapchainImage(chain, &rel);
 		return;
@@ -4763,7 +4763,7 @@ void VRKeyboard::Refresh()
 	const uint64_t now = GetTickCount64();
 	if (totalMs >= 4.0 && now - lastSlowRefreshLogMs >= 5000) {
 		lastSlowRefreshLogMs = now;
-		OOVR_LOGF("[VRKeyboard] Slow refresh: CPU %.2f ms, XR wait/upload %.2f ms, total %.2f ms",
+		OOVR_LOG_LIMITEDF(5000, "[VRKeyboard] Slow refresh: CPU %.2f ms, XR wait/upload %.2f ms, total %.2f ms",
 		    cpuMs, std::max(0.0, totalMs - cpuMs), totalMs);
 	}
 }
@@ -4968,14 +4968,14 @@ void VRKeyboard::RefreshConsole()
 	uint32_t idx = 0;
 	XrResult xrRes = xrAcquireSwapchainImage(consoleChain, &acq, &idx);
 	if (XR_FAILED(xrRes)) {
-		OOVR_LOGF("[VRKeyboard] RefreshConsole: xrAcquireSwapchainImage failed %d — skipping", xrRes);
+		OOVR_LOG_LIMITEDF(5000, "[VRKeyboard] RefreshConsole: xrAcquireSwapchainImage failed %d — skipping", xrRes);
 		return;
 	}
 	XrSwapchainImageWaitInfo wait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
 	wait.timeout = 500000000;
 	xrRes = xrWaitSwapchainImage(consoleChain, &wait);
 	if (XR_FAILED(xrRes)) {
-		OOVR_LOGF("[VRKeyboard] RefreshConsole: xrWaitSwapchainImage failed %d — releasing and skipping", xrRes);
+		OOVR_LOG_LIMITEDF(5000, "[VRKeyboard] RefreshConsole: xrWaitSwapchainImage failed %d — releasing and skipping", xrRes);
 		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 		xrReleaseSwapchainImage(consoleChain, &rel);
 		return;
@@ -5038,7 +5038,7 @@ void VRKeyboard::SubmitEvent(vr::EVREventType ev, wchar_t ch)
 
 void VRKeyboard::SetSendInputOnly(bool enabled)
 {
-	OOVR_LOGF("[VKMODE] SetSendInputOnly(%s) -> %s", enabled ? "true" : "false",
+	OOVR_DEBUG_LOGF("[VKMODE] SetSendInputOnly(%s) -> %s", enabled ? "true" : "false",
 	    enabled ? "PC MODE (scancodes for MCM/DirectInput)" : "VR MODE (text buffer, no scancodes)");
 	if (sendInputOnly != enabled)
 		ReleaseAllHeldPCKeys();
