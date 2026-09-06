@@ -432,10 +432,6 @@ static void UpdateIniKey(const std::wstring& iniPath, const char* key, const cha
 	}
 }
 
-// Set while the keyboard is grab-moved; BaseSystem::GetControllerState masks player
-// locomotion/turn/jump/action on both hands so dragging doesn't move the character.
-extern bool g_kbGrabActive;
-
 // Two-handed pinch scale: while one hand grab-drags, the second trigger on the grab
 // bar enters pinch mode — hand separation scales the keyboard (same 50-150% value as
 // the size arrows and Configurator).
@@ -601,12 +597,6 @@ static bool ReloadKeyboardSettings()
 				oovr_global_configuration.aswEdgeFadeWidth = val;
 			if (sscanf(line, "aswNearFadeDepth=%f", &val) == 1)
 				oovr_global_configuration.aswNearFadeDepth = val;
-			if (sscanf(line, "aswMVConfidence=%f", &val) == 1)
-				oovr_global_configuration.aswMVConfidence = val;
-			if (sscanf(line, "aswMVPixelScale=%f", &val) == 1)
-				oovr_global_configuration.aswMVPixelScale = val;
-			if (sscanf(line, "aswFPControllerScale=%f", &val) == 1)
-				oovr_global_configuration.aswFPControllerScale = val;
 		}
 	}
 	fclose(f);
@@ -1504,8 +1494,6 @@ VRKeyboard::VRKeyboard(ID3D11Device* dev, uint64_t userValue, uint32_t maxLength
 VRKeyboard::~VRKeyboard()
 {
 	ReleaseAllHeldPCKeys();
-	g_kbGrabActive = false; // never leave player movement masked if closed mid-grab
-
 	if (crosshairChain != XR_NULL_HANDLE) {
 		xrDestroySwapchain(crosshairChain);
 		crosshairChain = XR_NULL_HANDLE;
@@ -2142,7 +2130,6 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 				// The laser already hit the keyboard — use that hit point
 				if (laserActive[side]) {
 					grabActive = true;
-					g_kbGrabActive = true; // mask player movement while grabbing
 					grabbingSide = side;
 					grabPlaneOrigin = layer.pose.position;
 					// Offset from hit point to keyboard center
@@ -2157,7 +2144,6 @@ const std::vector<XrCompositionLayerBaseHeader*>& VRKeyboard::Update()
 			if (grabActive && grabbingSide == side) {
 				if (trigJustReleased) {
 					grabActive = false;
-					g_kbGrabActive = false; // restore player movement
 					grabbingSide = -1;
 					if (s_pinchActive) {
 						s_pinchActive = false;

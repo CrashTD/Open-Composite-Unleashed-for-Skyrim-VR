@@ -388,18 +388,6 @@
       font-weight: 700;
       letter-spacing: 0.01em;
     }
-    .badge {
-      display: inline-block;
-      margin-left: 6px;
-      padding: 2px 8px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      color: var(--muted);
-      font-size: 12px;
-      vertical-align: middle;
-      background: var(--input);
-    }
-
     @keyframes button-shine {
       from { left: -45%; }
       to { left: 125%; }
@@ -756,8 +744,6 @@
         <a href="#tab-gestures">Gestures</a>
         <a href="#tab-video">Video</a>
         <a href="#tab-steam-help">SteamVR / Help</a>
-        <a href="#tab-haptics">Haptics</a>
-        <a href="#tab-body">Body Tracking</a>
       </div>
 
       <details id="tab-settings" class="tab-reference" open>
@@ -913,13 +899,9 @@
             <li><strong>Advanced &mdash; Debug view:</strong> shows FSR inputs and intermediate buffers for diagnosis. Leave Off for normal play.</li>
           </ul>
 
-          <p class="subhead">DAPA &mdash; Depth-Assisted Positional Reprojection</p>
+          <p class="subhead">DAPA &mdash; Depth Aware Positional Approximation</p>
           <ul class="setting-list">
             <li><strong>Enable DAPA:</strong> generates synthetic frames from the previous color frame, depth, and positional change. It is not conventional ASW and does not apply per-pixel motion vectors. Do not combine it with SSW or runtime motion smoothing.</li>
-            <li><strong>Advanced &mdash; Experimental mode:</strong> enables additional experimental DAPA behavior intended for testing.</li>
-            <li><strong>Advanced &mdash; Upscaler reactive mask:</strong> feeds DAPA's changed/unsafe regions into a compatible upscaler's reactive handling.</li>
-            <li><strong>Advanced &mdash; Buffered scheduling:</strong> moves synthetic-frame work into the experimental buffered scheduling path.</li>
-            <li><strong>Advanced &mdash; Reset upscaler history:</strong> clears temporal-upscaler history on synthetic frames to reduce trails at some sharpness cost.</li>
             <li><strong>Advanced &mdash; Auto mode:</strong> leaves native rendering alone while the game is fast enough and engages DAPA below the FPS threshold.</li>
             <li><strong>Advanced &mdash; Debug highlight:</strong> tints synthetic frames so cadence and engagement can be verified.</li>
             <li><strong>Advanced &mdash; Warp Strength:</strong> master correction strength; zero shows the cached frame without pose correction and 1.0 applies full correction.</li>
@@ -945,15 +927,16 @@
             <li><strong>DLSS / FSR3 offset:</strong> per-upscaler correction added after the shared automatic bias.</li>
           </ul>
 
-          <p class="subhead">Foveated Rendering (NVIDIA VRS)</p>
+          <p class="subhead">Foveated Rendering</p>
           <ul class="setting-list">
+            <li><strong>Backend:</strong> Auto prefers native NVIDIA VRS and otherwise uses OCU's cross-vendor D3D11 Radial Density Mask. NVIDIA VRS forces the hardware path; Density Mask explicitly selects the AMD/Intel-compatible path. The backends never stack.</li>
             <li><strong>Eye Tracking AUTO:</strong> uses OpenXR gaze data when the headset/runtime exposes it. It does not silently enable fixed foveation on a headset without gaze.</li>
             <li><strong>Fixed ENABLE:</strong> enables head-centered fixed foveation for non-eye-tracking headsets. When Eye Tracking is also checked, Fixed is only the fallback if gaze becomes unavailable.</li>
             <li><strong>Preset:</strong> Compatibility avoids 2x2 shading; Conservative, Balanced, and Aggressive trade progressively more peripheral quality for performance; Custom preserves manual radius values.</li>
             <li><strong>Inner:</strong> radius of the full-rate 1x1 region around gaze or view center.</li>
             <li><strong>Mid:</strong> radius of the half-rate ring before the outer rate begins in performance presets.</li>
-            <li><strong>Compatibility (max 2x1):</strong> prevents 2x2 coarse shading, reducing Skyrim terrain, foliage, derivative, and mip-selection artifacts.</li>
-            <li><strong>Favor Horizontal:</strong> selects 2x1 rather than 1x2 for half-rate tiles.</li>
+            <li><strong>Compatibility (max 2x1):</strong> limits NVIDIA VRS to half-rate tiles and Density Mask to its half-density pattern, reducing Skyrim terrain, foliage, derivative, and mip-selection artifacts.</li>
+            <li><strong>Favor Horizontal:</strong> selects 2x1 rather than 1x2 for NVIDIA half-rate tiles. Density Mask uses its fixed checker reconstruction pattern.</li>
           </ul>
         </div>
       </details>
@@ -971,43 +954,6 @@
         </div>
       </details>
 
-      <details id="tab-haptics" class="tab-reference">
-        <summary>Haptics Tab <span class="badge">may be hidden in public builds</span></summary>
-        <div>
-          <ul class="setting-list">
-            <li><strong>Enable haptics:</strong> master gate for OCU haptics and vibration requests sent by the game.</li>
-            <li><strong>Game rumble strength:</strong> multiplier for ordinary engine-generated vibration such as native touch and interaction feedback.</li>
-            <li><strong>Shield / weapon block:</strong> pulses the blocking hand when OCU recognizes a block.</li>
-            <li><strong>Weapon &amp; fist hits:</strong> pulses the attacking hand on landed weapon or swinging-fist impacts.</li>
-            <li><strong>Bow release:</strong> enables the bow-release combat pulse.</li>
-            <li><strong>Magic casting:</strong> enables haptic feedback for supported magic casting events.</li>
-            <li><strong>Combat strength:</strong> common 0-100 strength applied to the enabled combat events.</li>
-            <li><strong>Key click strength:</strong> haptic tick produced when the OCU laser presses a VR keyboard key.</li>
-          </ul>
-        </div>
-      </details>
-
-      <details id="tab-body" class="tab-reference">
-        <summary>Body Tracking Tab <span class="badge">experimental developer feature</span></summary>
-        <div>
-          <div class="warn">The Body Tracking tab is compiled for development but hidden in normal public builds. It remains opt-in and does nothing until its output switches are enabled.</div>
-          <ul class="setting-list">
-            <li><strong>Camera:</strong> selects a local webcam or a phone/IP-camera URL. Start and Stop control local capture.</li>
-            <li><strong>Mirror:</strong> horizontally mirrors the camera interpretation to match a front-facing preview.</li>
-            <li><strong>Stream to OCU (OSC):</strong> sends locally derived body tracking data to OCU over OSC.</li>
-            <li><strong>Show preview:</strong> displays the camera/tracking preview; disabling it reduces UI and preview work.</li>
-            <li><strong>Skeleton only:</strong> hides the camera image and shows only tracking landmarks/silhouette information.</li>
-            <li><strong>Send trackers to the game:</strong> enables network tracker output consumed by the game-side FBT path. Requires save and game restart.</li>
-            <li><strong>AI device:</strong> selects the local pose-inference device. The present implementation uses local CPU MediaPipe World3D Lite.</li>
-            <li><strong>FBT tracker pose:</strong> selects the pose source used to construct tracker positions. The present implementation uses local MediaPipe World 3D landmarks.</li>
-            <li><strong>Preview crop/vertical trim controls:</strong> change only the preview framing unless the adjacent text explicitly identifies a saved calibration value.</li>
-            <li><strong>FBT motion calibration capture:</strong> records labeled view, action, leg, and take samples for classifier development; it is not required for ordinary controller play.</li>
-            <li><strong>Camera foot-placement calibration:</strong> enables the in-game calibration editor for leg trim and lift range. Follow the on-page controller instructions; changes auto-save.</li>
-            <li><strong>Enable Full-Body Walking:</strong> converts walking-in-place gait into Skyrim locomotion. Requires save and restart.</li>
-            <li><strong>Hold to activate:</strong> optionally requires a selected controller input before gait can start; None leaves walking activation always armed.</li>
-          </ul>
-        </div>
-      </details>
     </section>
 
     <section id="laser-alignment">
@@ -1051,7 +997,7 @@
     <section id="dapa">
       <h2>DAPA Experimental Notes</h2>
       <p>
-        OCU DAPA (Depth-Assisted Positional Reprojection) is experimental and currently for future testing. It can create parallax artifacts, ghosting,
+        OCU DAPA (Depth Aware Positional Approximation) is experimental and currently for future testing. It can create parallax artifacts, ghosting,
         flickering, or headset/runtime-specific issues.
       </p>
       <ul>
@@ -1080,20 +1026,8 @@
         <li><code>aswNearFadeDepth</code>: parallax fades out closer than this distance in meters. Useful if your hands or weapon smear. 0 = off.</li>
         <li><code>aswAutoNative</code> + <code>aswAutoEngageFps</code>: opt-in auto mode. DAPA stays out of the way while your natural fps is above the threshold and engages only when fps falls below it.</li>
         <li><code>aswDebugMode</code>: 10 tints synthetic frames so you can see the real:synthetic cadence. 0 = off.</li>
-        <li><code>aswUpscalerReset</code>: when DLSS/FSR upscaling runs on warp frames, resets temporal history each synthetic frame (spatial-only upscaling on warps). Reduces foliage trail artifacts at some sharpness cost.</li>
       </ul>
 
-      <h3>Buffered Scheduling And The Debug Tint</h3>
-      <p>
-        Buffered scheduling (<code>aswBufferEnabled</code>) is an experimental split-frame scheduling mode. It changes
-        when the warp is produced relative to the compositor deadline.
-      </p>
-      <ul>
-        <li>In the default inline mode, debug mode 10 tints every synthetic frame, so at a 45 fps throttle on a 90 Hz headset you should see a 1:1 flicker of tinted and clean frames.</li>
-        <li>In buffered mode the tint overlay is currently not reliable. Losing the tint usually means synthetic frames are being dropped rather than hidden, so treat missing tint in buffered mode as a warning sign, not a display bug.</li>
-        <li>If you are unsure whether DAPA is engaging through a wireless runtime (Steam Link, Virtual Desktop), set the fps throttle to half refresh, enable debug mode 10, and look for the alternating tint in the default inline mode first.</li>
-        <li>Buffered mode and <code>aswConcurrentFrameThread</code> are for testing only. If you just want smooth play, leave both off.</li>
-      </ul>
     </section>
 
     <section id="troubleshooting">

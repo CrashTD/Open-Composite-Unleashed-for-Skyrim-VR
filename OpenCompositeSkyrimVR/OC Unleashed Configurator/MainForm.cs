@@ -41,6 +41,7 @@ namespace OpenCompositeConfigurator
         private Panel _tabKeyboard = null!;
         private Panel _tabVideo = null!;
         private Panel _tabSteamHelp = null!;
+        private CheckBox _chkDiagnosticLogging = null!;
         private Panel _tabHaptics = null!;
 
         // Video tab controls
@@ -49,10 +50,6 @@ namespace OpenCompositeConfigurator
         private CheckBox _chkMotionVectorsEnabled = null!;
         private CheckBox _chkActorMV = null!;
         private CheckBox _chkAswEnabled = null!;
-        private CheckBox _chkAswExperimentalMode = null!;
-        private CheckBox _chkAswBufferEnabled = null!;
-        private CheckBox _chkAswUpscalerReset = null!;
-        private CheckBox _chkAswUpscalerReactiveMask = null!;
         private NumericUpDown _nudAswWarpStrength = null!;
         private NumericUpDown _nudAswRotationScale = null!;
         private NumericUpDown _nudAswTranslationScale = null!;
@@ -63,10 +60,7 @@ namespace OpenCompositeConfigurator
         private CheckBox _chkAswDebugMode = null!;
         // Advanced ASW + trigger settings (no UI controls — preserved through saves)
         private float _aswNearFadeDepth = 0.0f;
-        private float _aswFPControllerScale = 0.45f;
         private float _aswEdgeFadeWidth = 3.0f;
-        private float _aswMVConfidence = 0.0f;
-        private float _aswMVPixelScale = 1.0f;
         private float _triggerDeadzone = 0.0f;
         private float _triggerMax = 1.0f;
         private NumericUpDown _nudFsr3Sharpness = null!;
@@ -106,12 +100,19 @@ namespace OpenCompositeConfigurator
         // VRS controls
         private CheckBox _chkVrsFixedEnabled = null!;
         private CheckBox _chkVrsEyeTracked = null!;
+		private ComboBox _cboFoveatedBackend = null!;
         private NumericUpDown _nudVrsInnerRadius = null!;
         private NumericUpDown _nudVrsMidRadius = null!;
+        private NumericUpDown _nudVrsEyeInnerRadius = null!;
+        private NumericUpDown _nudVrsEyeMidRadius = null!;
+        private ComboBox _cboVrsEyePreset = null!;
+        private CheckBox _chkVrsEyeCustomRates = null!;
+        private ComboBox _cboVrsEyeInnerRate = null!;
+        private ComboBox _cboVrsEyeMidRate = null!;
+        private ComboBox _cboVrsEyeOuterRate = null!;
+        private Label _lblVrsEffectiveRates = null!;
         private CheckBox _chkVrsCompatibilityMode = null!;
         private CheckBox _chkVrsFavorHorizontal = null!;
-        private Label _lblVrsInnerRadius = null!;
-        private Label _lblVrsMidRadius = null!;
         private ComboBox _cboVrsPreset = null!;
         private bool _updatingVrsPreset;
         private Label _lblFsrStatus = null!;
@@ -295,7 +296,6 @@ namespace OpenCompositeConfigurator
         private Label _lblKbStatus = null!;
         private Button _btnSaveBindings = null!;
         private Button _btnVRDefaults = null!;
-        private Button _btnVRIKDefaults = null!;  // legacy, retained for binary compat — UI replaced by _cmbBindingPreset
         private Button _btnResetDefaults = null!;
         private Button _btnValidateBindings = null!;
         private ComboBox _cmbBindingPreset = null!;
@@ -915,23 +915,23 @@ namespace OpenCompositeConfigurator
         private void FitWindowToScreen()
         {
             Rectangle wa = Screen.FromControl(this).WorkingArea;
-            int overflow = Height - wa.Height;
-            if (overflow > 0)
-            {
-                if (MinimumSize.Height > wa.Height)
-                    MinimumSize = new Size(MinimumSize.Width, wa.Height);
+            if (MinimumSize.Height > wa.Height)
+                MinimumSize = new Size(MinimumSize.Width, wa.Height);
+            Height = Math.Min(Height, wa.Height);
 
-                int newTabH = Math.Max(300, _tabSettings.Height - overflow);
-                int delta = _tabSettings.Height - newTabH;
-                foreach (var tab in new[] { _tabSettings, _tabKeyboard, _tabGestures, _tabVideo, _tabSteamHelp, _tabHaptics, _tabBody })
-                {
-                    tab.AutoScroll = true;
-                    tab.Height = newTabH;
-                }
-                foreach (Control c in _footerControls)
-                    c.Top -= delta;
-                Height -= delta;
+            // Windows may already have constrained the form before OnShown.
+            // Use the actual client space, not Height - WorkingArea, which then
+            // reports zero overflow even while the tab and Save extend outside it.
+            int newTabH = Math.Max(200, Math.Min(_tabSettings.Height,
+                ClientSize.Height - _tabSettings.Top - 40));
+            int delta = _tabSettings.Height - newTabH;
+            foreach (var tab in new[] { _tabSettings, _tabKeyboard, _tabGestures, _tabVideo, _tabSteamHelp, _tabHaptics, _tabBody })
+            {
+                tab.AutoScroll = true;
+                tab.Height = newTabH;
             }
+            foreach (Control c in _footerControls)
+                c.Top -= delta;
             if (Bottom > wa.Bottom)
                 Top = wa.Bottom - Height;
             if (Top < wa.Top)
@@ -1848,6 +1848,19 @@ namespace OpenCompositeConfigurator
             lblInstallHelp.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
             container.Controls.Add(lblInstallHelp);
             y += 28;
+
+            _chkDiagnosticLogging = MakeCheckBox("Turn on logging", leftMargin, y);
+            _chkDiagnosticLogging.Name = "DiagnosticLogging";
+            container.Controls.Add(_chkDiagnosticLogging);
+            y += 28;
+            var loggingHelp = MakeLabel(
+                "Detailed OCU runtime + SKSE diagnostics. Off keeps basic startup/error logs. Save, then restart Skyrim.\nDoes not enable DAPA recording or change CSX / other mods' logging.",
+                leftMargin, y, rightEdge - leftMargin);
+            loggingHelp.Font = new Font("Segoe UI", 8.5f);
+            loggingHelp.ForeColor = Color.FromArgb(175, 175, 180);
+            loggingHelp.Height = 36;
+            container.Controls.Add(loggingHelp);
+            y += 42;
 
             container.Size = new Size(container.Width, y + 10);
         }
@@ -5131,12 +5144,11 @@ namespace OpenCompositeConfigurator
                 // Do not mirror it into the FSR render-scale control; that setting belongs to FSR.
             };
             container.Controls.Add(_cmbDlssPreset);
-            y += 30;
 
             // Quick preset buttons
-            var lblDlssPresets = MakeLabel("Quick Presets:", leftMargin, y + 5, 90);
+            var lblDlssPresets = MakeLabel("Quick Presets:", leftMargin + 300, y + 5, 90);
             container.Controls.Add(lblDlssPresets);
-            int dlssPx = leftMargin + 94;
+            int dlssPx = leftMargin + 394;
             var btnDlssQuality = MakeButton("Quality", dlssPx, y, 75, 26);
             btnDlssQuality.Click += (s, e) => { _chkDlssEnabled.Checked = true; _cmbDlssPreset.SelectedIndex = 0; };
             container.Controls.Add(btnDlssQuality); dlssPx += 79;
@@ -5507,7 +5519,7 @@ namespace OpenCompositeConfigurator
 
             // ── OCU DAPA ──
             Panel aswAdv = null!;
-            var lblSwSection = MakeSectionLabel("DAPA — Depth-Assisted Positional Reprojection", leftMargin, y);
+            var lblSwSection = MakeSectionLabel("DAPA — Depth Aware Positional Approximation", leftMargin, y);
             container.Controls.Add(lblSwSection);
             var btnAswAdv = MakeButton("\u25bc Advanced", rightEdge - 100, y + 2, 94, 22);
             btnAswAdv.Font = new Font("Segoe UI", 7.5f);
@@ -5526,7 +5538,7 @@ namespace OpenCompositeConfigurator
             _chkAswEnabled.CheckedChanged += (s, e) => { };
             container.Controls.Add(_chkAswEnabled);
 
-            var lblSwDesc = MakeLabel("Experimental depth-assisted positional reprojection. Uses the previous color frame, depth, and positional changes; it does not use per-pixel motion vectors. Expect artifacts on moving objects, walls, foliage, and overlays. Never combine DAPA with SSW or runtime motion smoothing.", leftMargin + 230, y + 3, rightEdge - leftMargin - 250);
+            var lblSwDesc = MakeLabel("Experimental depth-aware positional approximation. Uses the previous color frame, depth, and positional changes; it does not use per-pixel motion vectors. Expect artifacts on moving objects, walls, foliage, and overlays. Never combine DAPA with SSW or runtime motion smoothing.", leftMargin + 230, y + 3, rightEdge - leftMargin - 250);
             lblSwDesc.ForeColor = Color.FromArgb(130, 130, 130);
             lblSwDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
             lblSwDesc.Height = 60;
@@ -5563,16 +5575,6 @@ namespace OpenCompositeConfigurator
                 aswAdv.Controls.Add(btnAswClose);
                 ap += 26;
 
-                _chkAswExperimentalMode = MakeCheckBox("Experimental mode", 20, ap);
-                aswAdv.Controls.Add(_chkAswExperimentalMode);
-                _chkAswUpscalerReactiveMask = MakeCheckBox("Upscaler reactive mask", 180, ap);
-                aswAdv.Controls.Add(_chkAswUpscalerReactiveMask);
-                _chkAswBufferEnabled = MakeCheckBox("Buffered scheduling", 380, ap);
-                aswAdv.Controls.Add(_chkAswBufferEnabled);
-                _chkAswUpscalerReset = MakeCheckBox("Reset upscaler history", 560, ap);
-                aswAdv.Controls.Add(_chkAswUpscalerReset);
-                ap += 26;
-
                 _chkAswAutoNative = MakeCheckBox("Auto mode (native FPS when fast)", 20, ap);
                 aswAdv.Controls.Add(_chkAswAutoNative);
                 _chkAswDebugMode = MakeCheckBox("Debug: highlight synthetic frames", 280, ap);
@@ -5605,7 +5607,7 @@ namespace OpenCompositeConfigurator
                     BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
                 };
                 aswAdv.Controls.Add(_nudAswRotationScale);
-                var lblRotDesc = MakeLabel("Head turn correction. Reduce if you see double-vision on head rotation.", 195, ap + 3, advW - 211);
+                var lblRotDesc = MakeLabel("Stick-turn approximation: 1.0 = full, 0 = off. Headset rotation stays with the runtime.", 195, ap + 3, advW - 211);
                 lblRotDesc.ForeColor = Color.FromArgb(130, 130, 130);
                 lblRotDesc.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
                 aswAdv.Controls.Add(lblRotDesc);
@@ -5889,232 +5891,151 @@ namespace OpenCompositeConfigurator
             container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
             y += 10;
 
-            Panel vrsAdv = null!;
-            var lblVrsSection = MakeSectionLabel("Foveated Rendering (NVIDIA VRS)", leftMargin, y);
-            container.Controls.Add(lblVrsSection);
-            var btnVrsAdv = MakeButton("\u25bc Advanced", rightEdge - 100, y + 2, 94, 22);
-            btnVrsAdv.Font = new Font("Segoe UI", 7.5f);
-            btnVrsAdv.BackColor = Color.FromArgb(45, 48, 62);
-            btnVrsAdv.Click += (s, e) =>
-            {
-                bool show = !vrsAdv.Visible;
-                vrsAdv.Visible = show;
-                if (show) vrsAdv.BringToFront();
-                btnVrsAdv.Text = show ? "\u25b2 Advanced" : "\u25bc Advanced";
-            };
-            container.Controls.Add(btnVrsAdv);
+            container.Controls.Add(MakeSectionLabel("Foveated Rendering", leftMargin, y));
+            container.Controls.Add(MakeLabel("Save and restart Skyrim after changes.", rightEdge - 330, y + 3, 325));
+            var foveationTips = new ToolTip { AutoPopDelay = 20000, InitialDelay = 300 };
             y += 26;
-
-            var lblVrsInfo = MakeLabel("NVIDIA RTX/GTX 16xx. Compatibility avoids 2x2 terrain artifacts. CSX and menus stay full-rate.", leftMargin + 20, y, rightEdge - leftMargin - 20);
-            lblVrsInfo.ForeColor = Color.White;
-            lblVrsInfo.Font = new Font("Segoe UI", 8.5f, FontStyle.Italic);
-            container.Controls.Add(lblVrsInfo);
-            y += 24;
-
-
-            var lblVrsEyeHeading = MakeLabel("EYE TRACKING", leftMargin, y + 2, 150);
-            lblVrsEyeHeading.ForeColor = Color.FromArgb(110, 180, 255);
-            lblVrsEyeHeading.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-            container.Controls.Add(lblVrsEyeHeading);
-
-            _chkVrsEyeTracked = MakeCheckBox("AUTO", leftMargin + 160, y);
+            container.Controls.Add(MakeLabel("Backend:", leftMargin + 20, y + 3, 80));
+            _cboFoveatedBackend = new ComboBox
+            {
+                Location = new Point(leftMargin + 105, y), Width = 215,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+            };
+            _cboFoveatedBackend.Items.AddRange(new[] { "Auto (recommended)", "NVIDIA VRS", "Density Mask (AMD / Intel)" });
+            _cboFoveatedBackend.SelectedIndex = 0;
+            container.Controls.Add(_cboFoveatedBackend);
+            container.Controls.Add(MakeLabel("Leave on Auto; override only for GPU detection or compatibility troubleshooting.",
+                leftMargin + 345, y + 3, rightEdge - leftMargin - 345));
+            y += 28;
+            _chkVrsEyeTracked = MakeCheckBox("Auto eye tracking", leftMargin + 20, y);
             _chkVrsEyeTracked.Checked = true;
             container.Controls.Add(_chkVrsEyeTracked);
-            var lblVrsEyeHint = MakeLabel("Uses gaze when available. Never turns on Fixed by itself.", leftMargin + 250, y + 2, rightEdge - leftMargin - 250);
-            lblVrsEyeHint.ForeColor = Color.FromArgb(150, 150, 155);
-            lblVrsEyeHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-            container.Controls.Add(lblVrsEyeHint);
-            y += 26;
-
-            var lblVrsFixedHeading = MakeLabel("FIXED", leftMargin, y + 2, 150);
-            lblVrsFixedHeading.ForeColor = Color.FromArgb(110, 180, 255);
-            lblVrsFixedHeading.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-            container.Controls.Add(lblVrsFixedHeading);
-
-            _chkVrsFixedEnabled = MakeCheckBox("ENABLE", leftMargin + 160, y);
-            _chkVrsFixedEnabled.CheckedChanged += (s, e) =>
-            {
-                bool en = _chkVrsFixedEnabled.Checked || _chkVrsEyeTracked.Checked;
-                _cboVrsPreset.Enabled = en;
-                _nudVrsInnerRadius.Enabled = en;
-                _nudVrsMidRadius.Enabled = en;
-                _chkVrsCompatibilityMode.AutoCheck = en;
-                _chkVrsCompatibilityMode.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
-                // Don't use .Enabled on CheckBox — WinForms renders disabled text black on dark backgrounds
-                _chkVrsFavorHorizontal.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
-                _chkVrsFavorHorizontal.AutoCheck = en;
-                CheckPotatoMode();
-            };
-            _chkVrsEyeTracked.CheckedChanged += (s, e) =>
-            {
-                bool en = _chkVrsFixedEnabled.Checked || _chkVrsEyeTracked.Checked;
-                _cboVrsPreset.Enabled = en;
-                _nudVrsInnerRadius.Enabled = en;
-                _nudVrsMidRadius.Enabled = en;
-                _chkVrsCompatibilityMode.AutoCheck = en;
-                _chkVrsCompatibilityMode.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
-                _chkVrsFavorHorizontal.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
-                _chkVrsFavorHorizontal.AutoCheck = en;
-                CheckPotatoMode();
-            };
+            _chkVrsFixedEnabled = MakeCheckBox("Enable fixed fallback", leftMargin + 235, y);
             container.Controls.Add(_chkVrsFixedEnabled);
-            var lblVrsFixedHint = MakeLabel("For non-eye-tracking headsets. With both checked, this is only the gaze fallback.", leftMargin + 250, y + 2, rightEdge - leftMargin - 250);
-            lblVrsFixedHint.ForeColor = Color.FromArgb(150, 150, 155);
-            lblVrsFixedHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-            container.Controls.Add(lblVrsFixedHint);
-            y += 26;
+            container.Controls.Add(MakeLabel("Valid gaze = eye profile. No gaze = fixed fallback, or full detail if unchecked.",
+                leftMargin + 460, y + 3, rightEdge - leftMargin - 460));
+            y += 28;
 
-            // Preset dropdown — same row as checkbox
-            var lblVrsPreset = MakeLabel("Preset:", leftMargin + 20, y + 3, 50);
-            container.Controls.Add(lblVrsPreset);
-
-            _cboVrsPreset = new ComboBox
+            container.Controls.Add(MakeLabel("Profile", leftMargin + 20, y, 140));
+            container.Controls.Add(MakeLabel("Size preset", leftMargin + 180, y, 130));
+            container.Controls.Add(MakeLabel("Center size", leftMargin + 345, y, 115));
+            container.Controls.Add(MakeLabel("Middle boundary", leftMargin + 495, y, 140));
+            container.Controls.Add(MakeLabel("Center rate", leftMargin + 720, y, 110));
+            container.Controls.Add(MakeLabel("Middle rate", leftMargin + 860, y, 110));
+            container.Controls.Add(MakeLabel("Outer rate", leftMargin + 1000, y, 110));
+            y += 22;
+            int eyeRowY = y;
+            void addProfileRow(bool eyeTracked, string title, ref ComboBox presetField,
+                ref NumericUpDown innerField, ref NumericUpDown midField)
             {
-                Location = new Point(leftMargin + 82, y), Width = 120,
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
-            };
-            _cboVrsPreset.Items.AddRange(new[] { "Compatibility", "Conservative", "Balanced", "Aggressive", "Custom" });
-            _cboVrsPreset.SelectedIndex = 0;
-            _cboVrsPreset.SelectedIndexChanged += (s, e) =>
-            {
-                if (_updatingVrsPreset)
-                    return;
-
-                _updatingVrsPreset = true;
-                try
+                container.Controls.Add(MakeLabel(title, leftMargin + 20, y + 3, 150));
+                var preset = new ComboBox
                 {
-                    switch (_cboVrsPreset.SelectedIndex)
+                    Location = new Point(leftMargin + 180, y), Width = 135,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+                };
+                preset.Items.AddRange(new[] { "Comfort", "Balanced", "Performance", "Custom" });
+                presetField = preset;
+                container.Controls.Add(preset);
+                var inner = new NumericUpDown
+                {
+                    Location = new Point(leftMargin + 355, y), Width = 85,
+                    AccessibleName = eyeTracked ? "Eye-tracked center size" : "Fixed full-detail size",
+                    DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.10m, Maximum = 1.00m,
+                    BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+                };
+                innerField = inner;
+                container.Controls.Add(inner);
+                var mid = new NumericUpDown
+                {
+                    Location = new Point(leftMargin + 520, y), Width = 85,
+                    AccessibleName = eyeTracked ? "Eye-tracked middle boundary" : "Fixed half-rate boundary",
+                    DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.10m, Maximum = 1.50m,
+                    BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+                };
+                midField = mid;
+                container.Controls.Add(mid);
+                foveationTips.SetToolTip(inner, "Radius relative to this eye's texture, not degrees. Larger center = more central coverage.");
+                foveationTips.SetToolTip(mid, "Outer boundary of the middle ring. Fixed/default compatibility mode ignores this boundary.");
+                preset.SelectedIndexChanged += (s, e) =>
+                {
+                    if (_updatingVrsPreset || _isLoading || preset.SelectedIndex is < 0 or > 2) return;
+                    var radii = FoveationProfiles.Preset(eyeTracked, preset.SelectedIndex);
+                    _updatingVrsPreset = true;
+                    try { inner.Value = radii.Inner; mid.Value = radii.Mid; }
+                    finally { _updatingVrsPreset = false; }
+                };
+                void edited(object? sender, EventArgs e)
+                {
+                    if (_updatingVrsPreset || _isLoading) return;
+                    _updatingVrsPreset = true;
+                    try
                     {
-                        case 0: // Skyrim compatibility: never use 2x2
-                            _chkVrsCompatibilityMode.Checked = true;
-                            _nudVrsInnerRadius.Value = 0.70m;
-                            _nudVrsMidRadius.Value = 0.85m;
-                            break;
-                        case 1: // Conservative performance
-                            _chkVrsCompatibilityMode.Checked = false;
-                            _nudVrsInnerRadius.Value = 0.70m;
-                            _nudVrsMidRadius.Value = 0.85m;
-                            break;
-                        case 2: // Balanced performance
-                            _chkVrsCompatibilityMode.Checked = false;
-                            _nudVrsInnerRadius.Value = 0.60m;
-                            _nudVrsMidRadius.Value = 0.80m;
-                            break;
-                        case 3: // Aggressive performance
-                            _chkVrsCompatibilityMode.Checked = false;
-                            _nudVrsInnerRadius.Value = 0.50m;
-                            _nudVrsMidRadius.Value = 0.70m;
-                            break;
-                        case 4: // Custom — don't change values
-                            break;
+                        if (mid.Value < inner.Value) mid.Value = inner.Value;
+                        preset.SelectedIndex = FoveationProfiles.Detect(eyeTracked, new(inner.Value, mid.Value));
                     }
+                    finally { _updatingVrsPreset = false; }
                 }
-                finally
-                {
-                    _updatingVrsPreset = false;
-                }
-            };
-            container.Controls.Add(_cboVrsPreset);
-
-            var lblPresetHint = MakeLabel("Compatibility is recommended for Skyrim terrain and foliage.", leftMargin + 212, y + 3, rightEdge - leftMargin - 212);
-            lblPresetHint.ForeColor = Color.FromArgb(110, 110, 110);
-            lblPresetHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-            container.Controls.Add(lblPresetHint);
-            y += 26;
-
-            // ── VRS ADVANCED OVERLAY PANEL (does not advance y — floats over content below) ──
-            {
-                int advW = rightEdge - leftMargin;
-                vrsAdv = new Panel
-                {
-                    Location = new Point(leftMargin, y),
-                    Size = new Size(advW, 64),
-                    BackColor = Color.FromArgb(26, 28, 40),
-                    BorderStyle = BorderStyle.FixedSingle,
-                    Visible = false
-                };
-                int ap = 4;
-
-                var lblVrsAdvHdr = new Label
-                {
-                    Location = new Point(6, ap), AutoSize = false,
-                    Size = new Size(advW - 58, 20),
-                    Text = "\u26a0  Expert settings \u2014 do not adjust unless you know what you're doing",
-                    ForeColor = Color.FromArgb(255, 185, 35),
-                    Font = new Font("Segoe UI", 8f, FontStyle.Bold)
-                };
-                vrsAdv.Controls.Add(lblVrsAdvHdr);
-
-                var btnVrsClose = MakeButton("\u00d7", advW - 50, ap - 2, 42, 22);
-                btnVrsClose.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
-                btnVrsClose.BackColor = Color.FromArgb(90, 40, 40);
-                btnVrsClose.Click += (s, e) => { vrsAdv.Visible = false; btnVrsAdv.Text = "\u25bc Advanced"; };
-                vrsAdv.Controls.Add(btnVrsClose);
-                ap += 26;
-
-                // VRS Radii — all three on one row + Favor Horizontal
-                _lblVrsInnerRadius = MakeLabel("Inner:", 20, ap + 3, 42);
-                vrsAdv.Controls.Add(_lblVrsInnerRadius);
-                _nudVrsInnerRadius = new NumericUpDown
-                {
-                    Location = new Point(62, ap), Width = 60,
-                    DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.10m, Maximum = 1.00m, Value = 0.60m,
-                    BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
-                };
-                _nudVrsInnerRadius.ValueChanged += (s, e) =>
-                {
-                    if (!_updatingVrsPreset && _cboVrsPreset.SelectedIndex != 4)
-                        _cboVrsPreset.SelectedIndex = 4;
-                };
-                vrsAdv.Controls.Add(_nudVrsInnerRadius);
-                var lblInnerHint = MakeLabel("1x1", 125, ap + 3, 30);
-                lblInnerHint.ForeColor = Color.FromArgb(110, 110, 110);
-                lblInnerHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-                vrsAdv.Controls.Add(lblInnerHint);
-
-                _lblVrsMidRadius = MakeLabel("Mid:", 170, ap + 3, 32);
-                vrsAdv.Controls.Add(_lblVrsMidRadius);
-                _nudVrsMidRadius = new NumericUpDown
-                {
-                    Location = new Point(202, ap), Width = 60,
-                    DecimalPlaces = 2, Increment = 0.05m, Minimum = 0.10m, Maximum = 1.50m, Value = 0.80m,
-                    BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White, Enabled = false
-                };
-                _nudVrsMidRadius.ValueChanged += (s, e) =>
-                {
-                    if (!_updatingVrsPreset && _cboVrsPreset.SelectedIndex != 4)
-                        _cboVrsPreset.SelectedIndex = 4;
-                };
-                vrsAdv.Controls.Add(_nudVrsMidRadius);
-                var lblMidHint = MakeLabel("2x1", 265, ap + 3, 30);
-                lblMidHint.ForeColor = Color.FromArgb(110, 110, 110);
-                lblMidHint.Font = new Font("Segoe UI", 8f, FontStyle.Italic);
-                vrsAdv.Controls.Add(lblMidHint);
-
-                _chkVrsCompatibilityMode = MakeCheckBox("Compatibility (max 2x1)", 310, ap);
-                _chkVrsCompatibilityMode.Checked = true;
-                _chkVrsCompatibilityMode.ForeColor = Color.FromArgb(90, 90, 90);
-                _chkVrsCompatibilityMode.AutoCheck = false;
-                _chkVrsCompatibilityMode.CheckedChanged += (s, e) =>
-                {
-                    if (!_updatingVrsPreset && _cboVrsPreset.SelectedIndex != 4)
-                        _cboVrsPreset.SelectedIndex = 4;
-                };
-                vrsAdv.Controls.Add(_chkVrsCompatibilityMode);
-
-                // Favor Horizontal — far right on same row
-                _chkVrsFavorHorizontal = MakeCheckBox("Favor Horizontal", 500, ap);
-                _chkVrsFavorHorizontal.Checked = true;
-                _chkVrsFavorHorizontal.ForeColor = Color.FromArgb(90, 90, 90);
-                _chkVrsFavorHorizontal.AutoCheck = false;
-                vrsAdv.Controls.Add(_chkVrsFavorHorizontal);
-
-                container.Controls.Add(vrsAdv);
+                inner.ValueChanged += edited;
+                mid.ValueChanged += edited;
+                preset.SelectedIndex = eyeTracked ? 1 : 0;
+                y += 28;
             }
+            addProfileRow(true, "Eye-tracked", ref _cboVrsEyePreset, ref _nudVrsEyeInnerRadius, ref _nudVrsEyeMidRadius);
+            addProfileRow(false, "Fixed / fallback", ref _cboVrsPreset, ref _nudVrsInnerRadius, ref _nudVrsMidRadius);
+            container.Controls.Add(MakeLabel("Fixed shading rates unchanged", leftMargin + 720, eyeRowY + 31, 390));
 
+            ComboBox addRate(string label, int x, string initial)
+            {
+                var combo = new ComboBox {
+                    Location = new Point(x, eyeRowY), Width = 95, AccessibleName = label,
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.White
+                };
+                combo.Items.AddRange(FoveationProfiles.RateChoices);
+                combo.SelectedItem = initial;
+                combo.SelectedIndexChanged += (s, e) => UpdateFoveationControls();
+                container.Controls.Add(combo);
+                foveationTips.SetToolTip(combo,
+                    "1x1 = full density. 1x2/2x1 = half; 2x2 = quarter; 2x4/4x2 = eighth; 4x4 = sixteenth. " +
+                    "NVIDIA uses hardware VRS; Density Mask keeps 2x2 quads at equivalent density, with different reconstruction quality. " +
+                    "Coarse rates can increase terrain artifacts and shimmering. Keep the center at 1x1 for best detail.");
+                return combo;
+            }
+            _cboVrsEyeInnerRate = addRate("Eye-tracked center rate", leftMargin + 720, "1x1");
+            _cboVrsEyeMidRate = addRate("Eye-tracked middle rate", leftMargin + 860, "2x1");
+            _cboVrsEyeOuterRate = addRate("Eye-tracked outer rate", leftMargin + 1000, "2x2");
+            _chkVrsEyeCustomRates = MakeCheckBox("Custom eye-tracked rates", leftMargin + 20, y);
+            container.Controls.Add(_chkVrsEyeCustomRates);
+            _chkVrsCompatibilityMode = MakeCheckBox("Compatibility (max half-rate)", leftMargin + 330, y);
+            _chkVrsCompatibilityMode.Checked = true;
+            container.Controls.Add(_chkVrsCompatibilityMode);
+            _chkVrsFavorHorizontal = MakeCheckBox("Favor Horizontal", leftMargin + 670, y);
+            _chkVrsFavorHorizontal.Checked = true;
+            container.Controls.Add(_chkVrsFavorHorizontal);
+            foveationTips.SetToolTip(_chkVrsCompatibilityMode,
+                "Caps custom rates at half density; the effective readout shows the actual rates. " +
+                "Fixed/default profiles also ignore the middle boundary with this enabled.");
+            foveationTips.SetToolTip(_chkVrsFavorHorizontal,
+                "Selects the default half-rate axis and the compatibility cap for square coarse rates. Does not change ring width.");
+            y += 28;
+            _lblVrsEffectiveRates = MakeLabel("", leftMargin + 20, y, rightEdge - leftMargin - 20);
+            _lblVrsEffectiveRates.ForeColor = Color.Gold;
+            container.Controls.Add(_lblVrsEffectiveRates);
+            y += 24;
+            container.Controls.Add(MakeLabel("Sizes are relative to each eye, not degrees. 1x1 = full density; larger NxN = less shading. Hover rates for details.",
+                leftMargin + 20, y, rightEdge - leftMargin - 20));
+            y += 24;
+            _chkVrsCompatibilityMode.CheckedChanged += (s, e) => UpdateFoveationControls();
+            _chkVrsFavorHorizontal.CheckedChanged += (s, e) => UpdateFoveationControls();
+            _chkVrsEyeCustomRates.CheckedChanged += (s, e) => UpdateFoveationControls();
+            _chkVrsEyeTracked.CheckedChanged += (s, e) => { UpdateFoveationControls(); CheckPotatoMode(); };
+            _chkVrsFixedEnabled.CheckedChanged += (s, e) => { UpdateFoveationControls(); CheckPotatoMode(); };
+            UpdateFoveationControls();
             container.Controls.Add(MakeSeparator(leftMargin, y, rightEdge - leftMargin));
-            y += 12;
+            y += 8;
 
             // ── SAVE BUTTON ──
             var btnSaveVideo = MakeButton("Save opencomposite.ini", leftMargin, y, 200, 30);
@@ -6140,14 +6061,22 @@ namespace OpenCompositeConfigurator
             container.Size = new Size(container.Width, y + 10);
         }
 
-        private int DetectVrsPreset()
+        private void UpdateFoveationControls()
         {
-            decimal ir = _nudVrsInnerRadius.Value, mr = _nudVrsMidRadius.Value;
-            if (_chkVrsCompatibilityMode.Checked && ir == 0.70m && mr == 0.85m) return 0;
-            if (!_chkVrsCompatibilityMode.Checked && ir == 0.70m && mr == 0.85m) return 1;
-            if (!_chkVrsCompatibilityMode.Checked && ir == 0.60m && mr == 0.80m) return 2;
-            if (!_chkVrsCompatibilityMode.Checked && ir == 0.50m && mr == 0.70m) return 3;
-            return 4; // Custom
+            // Both profiles stay editable even when only one mode is active.
+            // Never hide sizing controls behind an Advanced overlay.
+            if (_nudVrsEyeMidRadius == null || _chkVrsCompatibilityMode == null) return;
+            _nudVrsMidRadius.Enabled = !_chkVrsCompatibilityMode.Checked;
+            bool custom = _chkVrsEyeCustomRates?.Checked == true;
+            _nudVrsEyeMidRadius.Enabled = custom || !_chkVrsCompatibilityMode.Checked;
+            if (_lblVrsEffectiveRates == null) return;
+            _cboVrsEyeInnerRate.Enabled = _cboVrsEyeMidRate.Enabled = _cboVrsEyeOuterRate.Enabled = custom;
+            string effective(ComboBox combo) => FoveationProfiles.EffectiveRate(
+                combo.SelectedItem?.ToString() ?? "1x1", _chkVrsCompatibilityMode.Checked, _chkVrsFavorHorizontal.Checked);
+            _lblVrsEffectiveRates.Text = custom
+                ? $"Effective eye-tracked rates: center {effective(_cboVrsEyeInnerRate)} / middle {effective(_cboVrsEyeMidRate)} / outer {effective(_cboVrsEyeOuterRate)}"
+                    + (_chkVrsCompatibilityMode.Checked ? "  [half-density cap ON]" : "  [uncapped]")
+                : "Default rates active. Enable custom rates to choose each eye-tracked ring; fixed fallback stays unchanged.";
         }
 
         private void UpdateFsrStatus()
@@ -6427,7 +6356,8 @@ namespace OpenCompositeConfigurator
                 return;
 
             KeyboardDesignOption? previous = _cmbKeyboardDesign.SelectedItem as KeyboardDesignOption;
-            string? preferredPath = previous?.SourcePath;
+            bool explicitPreference = !string.IsNullOrWhiteSpace(preferredId);
+            string? preferredPath = explicitPreference ? null : previous?.SourcePath;
             preferredId = string.IsNullOrWhiteSpace(preferredId) ? previous?.Id : preferredId;
 
             bool priorLoading = _isLoading;
@@ -6440,10 +6370,13 @@ namespace OpenCompositeConfigurator
                     new("parchment", "Parchment", null, IsParchment: true)
                 };
                 var paths = new List<string>();
+                string stockDesignDirectory = Path.Combine(
+                    AppContext.BaseDirectory, "OCU Keyboard Studio", "Assets", "Stock Designs");
+                string stockDesignRoot = Path.GetFullPath(stockDesignDirectory)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    + Path.DirectorySeparatorChar;
                 try
                 {
-                    string stockDesignDirectory = Path.Combine(
-                        AppContext.BaseDirectory, "OCU Keyboard Studio", "Assets", "Stock Designs");
                     if (Directory.Exists(stockDesignDirectory))
                         paths.AddRange(Directory.EnumerateFiles(
                             stockDesignDirectory, "*.kb", SearchOption.AllDirectories));
@@ -6465,15 +6398,16 @@ namespace OpenCompositeConfigurator
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(Path.GetFileNameWithoutExtension))
                 {
-                    string id = Path.GetFileNameWithoutExtension(path);
+                    bool isStock = Path.GetFullPath(path).StartsWith(stockDesignRoot, StringComparison.OrdinalIgnoreCase);
+                    string stem = Path.GetFileNameWithoutExtension(path);
+                    string id = isStock ? stem : CustomKeyboardDesignId(path, stem);
                     if (designs.Any(item => item.SourcePath is not null
                         && KeyboardLayoutFilesEquivalent(item.SourcePath, path)))
                         continue;
-                    string name = FriendlyKeyboardDesignName(id);
-                    // Keep a single clean entry when an older managed-library copy has
-                    // the same friendly name as the bundled replacement. Stock paths
-                    // are enumerated first, so the current bundled design wins.
-                    if (designs.Any(item => item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                    string name = FriendlyKeyboardDesignName(stem);
+                    if (!isStock)
+                        name = UniqueCustomKeyboardDesignName(designs, name);
+                    else if (designs.Any(item => item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
                         continue;
                     designs.Add(new KeyboardDesignOption(id, name, path, IsParchment: false));
                 }
@@ -6482,11 +6416,17 @@ namespace OpenCompositeConfigurator
                 string? installedPath = NormalizeKeyboardDesignPath(installed);
                 bool requestedCustom = !string.IsNullOrWhiteSpace(preferredId)
                     && !preferredId.Equals("parchment", StringComparison.OrdinalIgnoreCase);
-                if (requestedCustom && designs.All(item => !item.Id.Equals(preferredId, StringComparison.OrdinalIgnoreCase))
-                    && installedPath is not null)
+                KeyboardDesignOption? preferredDesign = requestedCustom
+                    ? designs.FirstOrDefault(item => item.Id.Equals(preferredId, StringComparison.OrdinalIgnoreCase))
+                    : null;
+                bool preferredMatchesInstalled = preferredDesign?.SourcePath is not null
+                    && installedPath is not null
+                    && KeyboardLayoutFilesEquivalent(preferredDesign.SourcePath, installedPath);
+                if (requestedCustom && installedPath is not null && !preferredMatchesInstalled)
                 {
-                    designs.Add(new KeyboardDesignOption(preferredId!,
-                        $"{FriendlyKeyboardDesignName(preferredId!)} (Installed)", installedPath, IsParchment: false));
+                    designs.Add(new KeyboardDesignOption("installed",
+                        "Installed Custom", installedPath, IsParchment: false));
+                    preferredId = "installed";
                 }
                 else if (string.IsNullOrWhiteSpace(preferredId) && installedPath is not null)
                 {
@@ -6532,8 +6472,14 @@ namespace OpenCompositeConfigurator
             foreach (string assetName in KeyboardDesignAssetNames(sourceLayout))
             {
                 string sourceAsset = Path.Combine(sourceDirectory, assetName);
-                if (File.Exists(sourceAsset))
-                    CopyKeyboardDesignFile(sourceAsset, Path.Combine(root, assetName));
+                if (!File.Exists(sourceAsset))
+                    throw new FileNotFoundException(
+                        $"Keyboard design '{design.Name}' references missing artwork '{assetName}'. Re-import or re-save the .ocukb before applying it.",
+                        sourceAsset);
+                string targetAsset = Path.Combine(root, assetName);
+                CopyKeyboardDesignFile(sourceAsset, targetAsset);
+                if (!File.Exists(targetAsset))
+                    throw new IOException($"Configurator could not verify installed keyboard artwork at {targetAsset}.");
             }
         }
 
@@ -6543,7 +6489,24 @@ namespace OpenCompositeConfigurator
             foreach (string raw in File.ReadLines(layoutPath))
             {
                 string line = raw.Trim();
-                if (line.Length == 0 || line.StartsWith('#'))
+                if (line.Length == 0)
+                    continue;
+                const string consoleInputPrefix = "# ocu_console_input_background ";
+                const string stateArtworkPrefix = "# ocu_top_state_art ";
+                if (line.StartsWith(consoleInputPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    AddKeyboardDesignAssetName(names, line[consoleInputPrefix.Length..]);
+                    continue;
+                }
+                if (line.StartsWith(stateArtworkPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    string[] tokens = line[stateArtworkPrefix.Length..]
+                        .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                    if (tokens.Length >= 2)
+                        AddKeyboardDesignAssetName(names, tokens[1]);
+                    continue;
+                }
+                if (line.StartsWith('#'))
                     continue;
                 int separator = line.IndexOfAny(new[] { ' ', '\t' });
                 if (separator < 0)
@@ -6567,6 +6530,13 @@ namespace OpenCompositeConfigurator
                 }
             }
             return names;
+        }
+
+        private static void AddKeyboardDesignAssetName(HashSet<string> names, string token)
+        {
+            string fileName = Path.GetFileName(FirstKeyboardLayoutToken(token.Trim()));
+            if (!string.IsNullOrWhiteSpace(fileName))
+                names.Add(fileName);
         }
 
         private static string FirstKeyboardLayoutToken(string text)
@@ -6619,6 +6589,29 @@ namespace OpenCompositeConfigurator
             string name = System.Text.RegularExpressions.Regex.Replace(
                 value.Replace('_', ' ').Replace('-', ' '), "(?<=[a-z0-9])(?=[A-Z])", " ").Trim();
             return string.IsNullOrWhiteSpace(name) ? "Unnamed Keyboard" : name;
+        }
+
+        private static string CustomKeyboardDesignId(string path, string stem)
+        {
+            string safeStem = string.Concat(stem.Select(character =>
+                char.IsLetterOrDigit(character) || character is '-' or '_' ? character : '-')).Trim('-');
+            if (string.IsNullOrWhiteSpace(safeStem))
+                safeStem = "keyboard";
+            byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(path).ToUpperInvariant());
+            string suffix = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pathBytes))[..8];
+            return $"custom-{safeStem}-{suffix}";
+        }
+
+        private static string UniqueCustomKeyboardDesignName(
+            IReadOnlyCollection<KeyboardDesignOption> designs, string baseName)
+        {
+            if (!designs.Any(item => item.Name.Equals(baseName, StringComparison.OrdinalIgnoreCase)))
+                return baseName;
+            string candidate = $"{baseName} (Custom)";
+            int suffix = 2;
+            while (designs.Any(item => item.Name.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
+                candidate = $"{baseName} (Custom {suffix++})";
+            return candidate;
         }
 
         private void SwitchTab(int index)
@@ -7125,6 +7118,7 @@ namespace OpenCompositeConfigurator
                 _chkInvertShaders.Checked = false;
                 _chkPreserveControllerProfileOnSleep.Checked = true;
                 _chkAudioSwitch.Checked = false;
+                _chkDiagnosticLogging.Checked = false;
                 _txtAudioDevice.Text = "quest";
 
                 _chkInputSmoothing.Checked = false;
@@ -7497,6 +7491,7 @@ namespace OpenCompositeConfigurator
 
         private void ReadFromIni()
         {
+            _chkDiagnosticLogging.Checked = string.Equals(_ini.Get("", "logLevel", "normal").Trim(), "debug", StringComparison.OrdinalIgnoreCase);
             _chkShortcutEnabled.Checked = ParseBool(_ini.Get("keyboard", "shortcutEnabled", "true"));
 
             string btnRaw = _ini.Get("keyboard", "shortcutButton", "left_stick").ToLowerInvariant().Trim();
@@ -7745,10 +7740,6 @@ namespace OpenCompositeConfigurator
             if (float.TryParse(_ini.Get("", "motionVectorScale", "1.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float mvs))
                 _nudMotionVectorScale.Value = (decimal)Math.Clamp(mvs, 0.1f, 2.0f);
             _chkAswEnabled.Checked = ParseBool(_ini.Get("", "aswEnabled", "false"));
-            _chkAswExperimentalMode.Checked = ParseBool(_ini.Get("", "aswExperimentalMode", "false"));
-            _chkAswBufferEnabled.Checked = ParseBool(_ini.Get("", "aswBufferEnabled", "false"));
-            _chkAswUpscalerReset.Checked = ParseBool(_ini.Get("", "aswUpscalerReset", "false"));
-            _chkAswUpscalerReactiveMask.Checked = ParseBool(_ini.Get("", "aswUpscalerReactiveMask", "true"));
             if (float.TryParse(_ini.Get("", "aswWarpStrength", "1.00"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float aws))
                 _nudAswWarpStrength.Value = (decimal)Math.Clamp(aws, 0f, 3f);
             if (float.TryParse(_ini.Get("", "aswRotationScale", "1.00"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ars))
@@ -7761,14 +7752,8 @@ namespace OpenCompositeConfigurator
                 _nudAswDepthScale.Value = (decimal)Math.Clamp(ads, 0f, 2f);
             if (float.TryParse(_ini.Get("", "aswNearFadeDepth", "0.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float anfd))
                 _aswNearFadeDepth = Math.Clamp(anfd, 0f, 10f);
-            if (float.TryParse(_ini.Get("", "aswFPControllerScale", "0.45"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float afp))
-                _aswFPControllerScale = Math.Clamp(afp, 0f, 3f);
             if (float.TryParse(_ini.Get("", "aswEdgeFadeWidth", "3.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float aef))
                 _aswEdgeFadeWidth = Math.Clamp(aef, 0f, 10f);
-            if (float.TryParse(_ini.Get("", "aswMVConfidence", "0.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float amc))
-                _aswMVConfidence = Math.Clamp(amc, 0f, 5f);
-            if (float.TryParse(_ini.Get("", "aswMVPixelScale", "1.0"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float amps))
-                _aswMVPixelScale = Math.Clamp(amps, 0f, 3f);
             _chkAswAutoNative.Checked = ParseBool(_ini.Get("", "aswAutoNative", "false"));
             if (float.TryParse(_ini.Get("", "aswAutoEngageFps", "50"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float aengf))
                 _nudAswAutoEngageFps.Value = (decimal)Math.Clamp(aengf, 20f, 90f);
@@ -7850,27 +7835,35 @@ namespace OpenCompositeConfigurator
                 _nudFsr3MipBiasOffset.Enabled = en;
             }
 
-            // VRS settings
+            // Cross-vendor foveated rendering settings
             _chkVrsFixedEnabled.Checked = ParseBool(_ini.Get("", "vrsEnabled", "false"));
             _chkVrsEyeTracked.Checked = ParseBool(_ini.Get("", "vrsEyeTracked", "true"));
-            if (float.TryParse(_ini.Get("", "vrsInnerRadius", "0.60"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float vrsIR))
-                _nudVrsInnerRadius.Value = (decimal)Math.Clamp(vrsIR, 0.10f, 1.00f);
-            if (float.TryParse(_ini.Get("", "vrsMidRadius", "0.80"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float vrsMR))
-                _nudVrsMidRadius.Value = (decimal)Math.Clamp(vrsMR, 0.10f, 1.50f);
+            _chkVrsEyeCustomRates.Checked = ParseBool(_ini.Get("", "vrsEyeCustomRates", "false"));
+            _cboVrsEyeInnerRate.SelectedItem = FoveationProfiles.ReadRate(_ini, "Inner", "1x1");
+            _cboVrsEyeMidRate.SelectedItem = FoveationProfiles.ReadRate(_ini, "Mid", "2x1");
+            _cboVrsEyeOuterRate.SelectedItem = FoveationProfiles.ReadRate(_ini, "Outer", "2x2");
+            _cboFoveatedBackend.SelectedIndex = _ini.Get("", "foveatedBackend", "auto").Trim().ToLowerInvariant() switch
+            {
+                "vrs" => 1,
+                "rdm" => 2,
+                _ => 0
+            };
+            _updatingVrsPreset = true;
+            try
+            {
+                var fixedRadii = FoveationProfiles.Read(_ini, false);
+                var eyeRadii = FoveationProfiles.Read(_ini, true);
+                _nudVrsInnerRadius.Value = fixedRadii.Inner;
+                _nudVrsMidRadius.Value = fixedRadii.Mid;
+                _nudVrsEyeInnerRadius.Value = eyeRadii.Inner;
+                _nudVrsEyeMidRadius.Value = eyeRadii.Mid;
+                _cboVrsPreset.SelectedIndex = FoveationProfiles.Detect(false, fixedRadii);
+                _cboVrsEyePreset.SelectedIndex = FoveationProfiles.Detect(true, eyeRadii);
+            }
+            finally { _updatingVrsPreset = false; }
             _chkVrsCompatibilityMode.Checked = ParseBool(_ini.Get("", "vrsCompatibilityMode", "true"));
             _chkVrsFavorHorizontal.Checked = ParseBool(_ini.Get("", "vrsFavorHorizontal", "true"));
-            {
-                bool en = _chkVrsFixedEnabled.Checked || _chkVrsEyeTracked.Checked;
-                _cboVrsPreset.Enabled = en;
-                _nudVrsInnerRadius.Enabled = en;
-                _nudVrsMidRadius.Enabled = en;
-                _chkVrsCompatibilityMode.AutoCheck = en;
-                _chkVrsCompatibilityMode.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
-                _chkVrsFavorHorizontal.ForeColor = en ? Color.FromArgb(210, 210, 210) : Color.FromArgb(90, 90, 90);
-                _chkVrsFavorHorizontal.AutoCheck = en;
-            }
-            // Detect which preset matches
-            _cboVrsPreset.SelectedIndex = DetectVrsPreset();
+            UpdateFoveationControls();
 
             UpdateTimingLabel();
             _picControllers.Invalidate();
@@ -7901,6 +7894,7 @@ namespace OpenCompositeConfigurator
             }
 
             _ini.Set("keyboard", "shortcutEnabled", _chkShortcutEnabled.Checked ? "true" : "false");
+            _ini.Set("", "logLevel", _chkDiagnosticLogging.Checked ? "debug" : "normal");
 
             var selected = GetSelectedButtons();
             string btnValue = selected.Count > 0 ? string.Join("+", selected) : "left_stick";
@@ -8045,20 +8039,13 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "actorMV", _chkActorMV.Checked ? "true" : "false");
             _ini.Set("", "motionVectorScale", _nudMotionVectorScale.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswEnabled", _chkAswEnabled.Checked ? "true" : "false");
-            _ini.Set("", "aswExperimentalMode", _chkAswExperimentalMode.Checked ? "true" : "false");
-            _ini.Set("", "aswBufferEnabled", _chkAswBufferEnabled.Checked ? "true" : "false");
-            _ini.Set("", "aswUpscalerReset", _chkAswUpscalerReset.Checked ? "true" : "false");
-            _ini.Set("", "aswUpscalerReactiveMask", _chkAswUpscalerReactiveMask.Checked ? "true" : "false");
             _ini.Set("", "aswWarpStrength", _nudAswWarpStrength.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswRotationScale", _nudAswRotationScale.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswTranslationScale", _nudAswTranslationScale.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswDepthScale", _nudAswDepthScale.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswLocoScale", _nudAswLocoScale.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswNearFadeDepth", _aswNearFadeDepth.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
-            _ini.Set("", "aswFPControllerScale", _aswFPControllerScale.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswEdgeFadeWidth", _aswEdgeFadeWidth.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
-            _ini.Set("", "aswMVConfidence", _aswMVConfidence.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
-            _ini.Set("", "aswMVPixelScale", _aswMVPixelScale.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswAutoNative", _chkAswAutoNative.Checked ? "true" : "false");
             _ini.Set("", "aswAutoEngageFps", _nudAswAutoEngageFps.Value.ToString("0", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "aswDebugMode", _chkAswDebugMode.Checked ? "10" : "0");
@@ -8096,11 +8083,24 @@ namespace OpenCompositeConfigurator
             _ini.Set("", "dlssMipBiasOffset", _nudDlssMipBiasOffset.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
             _ini.Set("", "fsr3MipBiasOffset", _nudFsr3MipBiasOffset.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
 
-            // VRS settings (NVIDIA only)
+            // Cross-vendor foveated rendering settings
             _ini.Set("", "vrsEnabled", _chkVrsFixedEnabled.Checked ? "true" : "false");
             _ini.Set("", "vrsEyeTracked", _chkVrsEyeTracked.Checked ? "true" : "false");
-            _ini.Set("", "vrsInnerRadius", _nudVrsInnerRadius.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
-            _ini.Set("", "vrsMidRadius", _nudVrsMidRadius.Value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            _ini.Set("", "vrsEyeCustomRates", _chkVrsEyeCustomRates.Checked ? "true" : "false");
+            FoveationProfiles.WriteRate(_ini, "Inner", _cboVrsEyeInnerRate.SelectedItem?.ToString() ?? "1x1");
+            FoveationProfiles.WriteRate(_ini, "Mid", _cboVrsEyeMidRate.SelectedItem?.ToString() ?? "1x1");
+            FoveationProfiles.WriteRate(_ini, "Outer", _cboVrsEyeOuterRate.SelectedItem?.ToString() ?? "1x1");
+            _ini.Set("", "foveatedBackend", _cboFoveatedBackend.SelectedIndex switch
+            {
+                1 => "vrs",
+                2 => "rdm",
+                _ => "auto"
+            });
+            FoveationProfiles.Write(_ini, false, new(_nudVrsInnerRadius.Value, _nudVrsMidRadius.Value));
+            FoveationProfiles.Write(_ini, true, new(_nudVrsEyeInnerRadius.Value, _nudVrsEyeMidRadius.Value));
+            // Independent profiles supersede the old shared radii after migration.
+            _ini.Remove("", "vrsInnerRadius");
+            _ini.Remove("", "vrsMidRadius");
             _ini.Set("", "vrsCompatibilityMode", _chkVrsCompatibilityMode.Checked ? "true" : "false");
             _ini.Remove("", "vrsOuterRadius");
             _ini.Set("", "vrsFavorHorizontal", _chkVrsFavorHorizontal.Checked ? "true" : "false");

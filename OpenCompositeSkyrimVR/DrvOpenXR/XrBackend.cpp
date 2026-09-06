@@ -3,6 +3,7 @@
 //
 
 #include "XrBackend.h"
+#include "DapaTiming.h"
 #include "generated/interfaces/vrtypes.h"
 
 #ifdef _WIN32
@@ -49,7 +50,6 @@
 #include "../OpenOVR/Misc/Config.h"
 #include "../OpenOVR/Misc/LaserCalibration.h"
 #include "ASWProvider.h"
-#include "SpaceWarpProvider.h"
 
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
 #include <d3d11.h>
@@ -206,7 +206,7 @@ void XrBackend::GetDeviceToAbsoluteTrackingPose(
 		}
 	}
 
-	// ── Controller pose caching: used by ASW for hand detection + PrismaVR ──
+	// Controller pose caching for PrismaVR lasers.
 	// Read from poseArray (populated above for ALL games via legacy or action API).
 	// Device indices: 1 = left controller, 2 = right controller.
 	{
@@ -217,13 +217,8 @@ void XrBackend::GetDeviceToAbsoluteTrackingPose(
 				g_aimPoses.valid[h] = true;
 				g_aimPoses.matrix[h] = poseArray[devIdx].mDeviceToAbsoluteTracking;
 				oovr_laser_calibration::ApplyToPoseMatrix(h, g_aimPoses.matrix[h]);
-				if (g_aswProvider) {
-					auto& m = poseArray[devIdx].mDeviceToAbsoluteTracking;
-					g_aswProvider->SetControllerPos(h, m.m[0][3], m.m[1][3], m.m[2][3], true);
-				}
 			} else {
 				g_aimPoses.valid[h] = false;
-				if (g_aswProvider) g_aswProvider->SetControllerPos(h, 0, 0, 0, false);
 			}
 		}
 		if (s_ctrlDbg++ < 3) {
@@ -481,42 +476,6 @@ void XrBackend::CheckOrInitCompositors(const vr::Texture_t* tex)
 }
 
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-namespace {
-constexpr float kAswWaitStallThresholdMs = 30.0f;
-}
-
-void XrBackend::ResetAswSplitFrameState()
-{
-	aswSplitPhase = AswSplitPhase::None;
-	aswWarpFrameState = XrFrameState{ XR_TYPE_FRAME_STATE };
-	aswRealFrameState = XrFrameState{ XR_TYPE_FRAME_STATE };
-	aswEstimatedRealDisplayTime = 0;
-}
-
-bool XrBackend::ShouldUseAswSplitPipeline() const
-{
-	// Split-frame pipeline is only for custom PC-side ASW, not Meta space warp.
-	// When g_spaceWarpProvider is active, the runtime handles reprojection —
-	// no warp frames needed from our side.
-	if (g_spaceWarpProvider && g_spaceWarpProvider->IsReady())
-		return false;
-
-	return g_aswProvider && g_aswProvider->IsReady() && g_aswProvider->HasPreviousCachedFrame()
-	    && !g_aswProvider->IsPaused()
-	    && oovr_global_configuration.ASWEnabled() && sessionActive
-	    && oovr_global_configuration.ASWBufferEnabled()
-	    && aswStallCount < 5;
-}
-
-void XrBackend::EndActiveFrameEmpty(XrTime displayTime)
-{
-	XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
-	endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-	endInfo.displayTime = displayTime;
-	endInfo.layers = nullptr;
-	endInfo.layerCount = 0;
-	xrEndFrame(xr_session.get(), &endInfo);
-}
 
 void XrBackend::LatchViewsForDisplayTime(XrTime displayTime)
 {
@@ -571,282 +530,6 @@ void XrBackend::LatchViewsForDisplayTime(XrTime displayTime)
 	}
 }
 
-bool XrBackend::SubmitAswWarpFrame(const XrFrameState& frameState,
-    XrCompositionLayerBaseHeader const* const* extraLayers,
-    int extraLayerCount)
-{
-	if (!g_aswProvider || !g_aswProvider->IsReady()) {
-		EndActiveFrameEmpty(frameState.predictedDisplayTime);
-		return false;
-	}
-
-	ID3D11DeviceContext* aswCtx = nullptr;
-	if (g_aswProvider->GetDevice())
-		g_aswProvider->GetDevice()->GetImmediateContext(&aswCtx);
-	if (!aswCtx) {
-		EndActiveFrameEmpty(frameState.predictedDisplayTime);
-		return false;
-	}
-
-	bool submittedWarp = false;
-
-	XrViewLocateInfo locateInfo = { XR_TYPE_VIEW_LOCATE_INFO };
-	locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-	locateInfo.displayTime = frameState.predictedDisplayTime;
-	locateInfo.space = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
-	XrViewState viewState = { XR_TYPE_VIEW_STATE };
-	uint32_t viewCount = 0;
-	XrView views[XruEyeCount] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
-	xrLocateViews(xr_session.get(), &locateInfo, &viewState, XruEyeCount, &viewCount, views);
-
-	// Read thumbstick state at warp time. When sticks are idle, zero out the loco
-	// direction signal so forward scatter uses the correct fill direction, and zero
-	// yaw injection so poseDeltaMatrix doesn't include stale stick rotation.
-	// The game MV residual (totalMV - c2cHeadMV) naturally handles loco deceleration.
-	{
-		static constexpr float kStickDead = 0.10f;
-		auto readStick = [](XrAction action) -> float {
-			if (action == XR_NULL_HANDLE || xr_session.get() == XR_NULL_HANDLE) return 0.0f;
-			XrActionStateGetInfo info = { XR_TYPE_ACTION_STATE_GET_INFO };
-			info.action = action;
-			XrActionStateFloat state = { XR_TYPE_ACTION_STATE_FLOAT };
-			if (XR_SUCCEEDED(xrGetActionStateFloat(xr_session.get(), &info, &state)) && state.isActive)
-				return state.currentState;
-			return 0.0f;
-		};
-
-		float leftX = readStick(xr_leftStickX_action);
-		float leftY = readStick(xr_leftStickY_action);
-		float rightX = readStick(xr_rightStickX_action);
-
-		bool locoStickIdle = (leftX * leftX + leftY * leftY) < (kStickDead * kStickDead);
-		bool rotStickIdle = fabsf(rightX) < kStickDead;
-
-		if (locoStickIdle)
-			g_aswProvider->SetLocomotionTranslation(0.0f, 0.0f, 0.0f);
-		if (rotStickIdle)
-			g_aswProvider->SetLocomotionYaw(0.0f);
-
-		// Proportional MV scaling from live stick deflection at warp time.
-		// Instead of detecting stops after the fact (which causes jerk from
-		// overshoot), scale the MV correction by how much the stick is deflected.
-		// Analog stick → smooth transition → no jerk on release.
-		float locoStickMag = sqrtf(leftX * leftX + leftY * leftY);
-		float rotStickMag = fabsf(rightX);
-
-		// Compute per-stick scales with quick ramp (dead zone → 20% = proportional, above = 1.0)
-		auto rampScale = [](float mag, float dead) -> float {
-			if (mag < dead) return 0.0f;
-			if (mag < 0.2f) return (mag - dead) / (0.2f - dead);
-			return 1.0f;
-		};
-		float locoScale = rampScale(locoStickMag, kStickDead);
-		float rotScale = rampScale(rotStickMag, kStickDead);
-
-		// Track when each stick was last active for transition detection
-		static bool s_locoWasActive = false;
-		static bool s_rotWasActive = false;
-		static int s_locoReleaseFrames = 99;
-		static int s_rotReleaseFrames = 99;
-
-		if (locoScale > 0.5f) { s_locoWasActive = true; s_locoReleaseFrames = 99; }
-		else if (s_locoWasActive && locoScale < 0.1f) { s_locoWasActive = false; s_locoReleaseFrames = 0; }
-		if (s_locoReleaseFrames < 99) s_locoReleaseFrames++;
-
-		if (rotScale > 0.5f) { s_rotWasActive = true; s_rotReleaseFrames = 99; }
-		else if (s_rotWasActive && rotScale < 0.1f) { s_rotWasActive = false; s_rotReleaseFrames = 0; }
-		if (s_rotReleaseFrames < 99) s_rotReleaseFrames++;
-
-		// Combined scale: full when both active, suppressed when one just released.
-		// When one stick releases while the other is active, the cached MVs still
-		// contain the released component → brief suppression prevents overshoot.
-		float stickScale = std::max(locoScale, rotScale);
-		if (s_locoReleaseFrames < 3 || s_rotReleaseFrames < 3) {
-			stickScale = 0.0f; // suppress during transition
-		}
-		g_aswProvider->SetMVConfidenceScale(stickScale);
-	}
-
-	// When stick is near-idle, use the newest cache slot (N-0) instead of N-1.
-	// With reduced MV confidence, this shows the freshest content with minimal overshoot.
-	bool stopping = (g_aswProvider->GetMVConfidenceScale() < 0.5f);
-	int slotOverride = stopping ? g_aswProvider->GetPublishedSlot() : -1;
-
-	// Fetch FRESH controller positions at warp time using the same coordinate path
-	// as CacheFrame (GetDeviceToAbsoluteTrackingPose → g_aimPoses → SetControllerPos).
-	// This ensures the warp-time positions are in the same space as the cached UVs.
-	{
-		vr::TrackedDevicePose_t warpPoses[3] = {};
-		GetDeviceToAbsoluteTrackingPose(
-		    vr::TrackingUniverseStanding, 0.0f, warpPoses, 3);
-		// Device 1 = left, 2 = right (same as CacheFrame path)
-		for (int h = 0; h < 2; h++) {
-			uint32_t devIdx = (h == 0) ? 1 : 2;
-			if (warpPoses[devIdx].bPoseIsValid) {
-				auto& m = warpPoses[devIdx].mDeviceToAbsoluteTracking;
-				g_aswProvider->SetControllerPos(h, m.m[0][3], m.m[1][3], m.m[2][3], true);
-			}
-		}
-	}
-
-	bool warpOk = true;
-	for (int eye = 0; eye < 2; eye++) {
-		if (!g_aswProvider->WarpFrame(eye, views[eye].pose, slotOverride,
-		        frameState.predictedDisplayTime)) {
-			warpOk = false;
-			break;
-		}
-	}
-
-	if (warpOk && g_aswProvider->SubmitWarpedOutput(aswCtx)) {
-		XrCompositionLayerProjectionView warpedViews[2] = {};
-		XrCompositionLayerDepthInfoKHR depthInfo[2] = {};
-		bool hasDepth = (g_aswProvider->GetDepthSwapchain() != XR_NULL_HANDLE) && g_aswProvider->DepthLayerValid();
-
-		for (int eye = 0; eye < 2; eye++) {
-			warpedViews[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
-			warpedViews[eye].pose = g_aswProvider->GetPrecompPose(eye);
-			warpedViews[eye].fov = g_aswProvider->GetCachedFov(eye);
-			warpedViews[eye].subImage.swapchain = g_aswProvider->GetOutputSwapchain();
-			warpedViews[eye].subImage.imageArrayIndex = 0;
-			warpedViews[eye].subImage.imageRect = g_aswProvider->GetOutputRect(eye);
-
-			if (hasDepth) {
-				depthInfo[eye].type = XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR;
-				depthInfo[eye].next = nullptr;
-				depthInfo[eye].subImage.swapchain = g_aswProvider->GetDepthSwapchain();
-				depthInfo[eye].subImage.imageArrayIndex = 0;
-				depthInfo[eye].subImage.imageRect = g_aswProvider->GetOutputRect(eye);
-				depthInfo[eye].minDepth = 0.0f;
-				depthInfo[eye].maxDepth = 1.0f;
-				depthInfo[eye].nearZ = g_aswProvider->GetCachedNear();
-				depthInfo[eye].farZ = g_aswProvider->GetCachedFar();
-				warpedViews[eye].next = &depthInfo[eye];
-			}
-		}
-
-		XrCompositionLayerProjection warpedLayer{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
-		warpedLayer.space = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
-		warpedLayer.views = warpedViews;
-		warpedLayer.viewCount = 2;
-
-		std::vector<XrCompositionLayerBaseHeader const*> aswLayers;
-		aswLayers.push_back((XrCompositionLayerBaseHeader*)&warpedLayer);
-		for (int i = 1; i < extraLayerCount; i++)
-			aswLayers.push_back(extraLayers[i]);
-
-		XrFrameEndInfo endInfo{ XR_TYPE_FRAME_END_INFO };
-		endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-		endInfo.displayTime = frameState.predictedDisplayTime;
-		endInfo.layers = aswLayers.data();
-		endInfo.layerCount = (uint32_t)aswLayers.size();
-		xrEndFrame(xr_session.get(), &endInfo);
-		submittedWarp = true;
-	} else {
-		EndActiveFrameEmpty(frameState.predictedDisplayTime);
-	}
-
-	aswCtx->Release();
-	return submittedWarp;
-}
-
-bool XrBackend::BeginAswWarpFrameForSplit()
-{
-	XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
-	aswWarpFrameState = XrFrameState{ XR_TYPE_FRAME_STATE };
-
-	QueryPerformanceCounter(&waitFrameStart);
-	XrResult waitRes = xrWaitFrame(xr_session.get(), &waitInfo, &aswWarpFrameState);
-	QueryPerformanceCounter(&waitFrameEnd);
-	measuredWaitFrameMs = (float)(waitFrameEnd.QuadPart - waitFrameStart.QuadPart) * 1000.0f / (float)qpcFrequency.QuadPart;
-
-	if (XR_FAILED(waitRes)) {
-		OOVR_LOGF("ASW split: xrWaitFrame(warp) failed result=%d", (int)waitRes);
-		return false;
-	}
-
-	if (aswWarpFrameState.predictedDisplayPeriod > 0) {
-		predictedDisplayPeriodMs = (float)(aswWarpFrameState.predictedDisplayPeriod / 1000000.0);
-		xr_gbl->nextPredictedFramePeriod.store(aswWarpFrameState.predictedDisplayPeriod, std::memory_order_release);
-	}
-
-	if (measuredWaitFrameMs > kAswWaitStallThresholdMs) {
-		aswStallCount++;
-		OOVR_LOGF("ASW split: xrWaitFrame(warp) stalled %.1fms (stall %d/5)",
-		    measuredWaitFrameMs, aswStallCount);
-		XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
-		xrBeginFrame(xr_session.get(), &beginInfo);
-		EndActiveFrameEmpty(aswWarpFrameState.predictedDisplayTime);
-		return false;
-	}
-
-	aswStallCount = 0;
-
-	XrDuration realOffset = aswWarpFrameState.predictedDisplayPeriod;
-	if (realOffset <= 0 && predictedDisplayPeriodMs > 0.0f)
-		realOffset = (XrDuration)(predictedDisplayPeriodMs * 1000000.0f);
-	if (realOffset <= 0) {
-		OOVR_LOG("ASW split: runtime gave no predicted display period; falling back to inline warp");
-		XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
-		xrBeginFrame(xr_session.get(), &beginInfo);
-		EndActiveFrameEmpty(aswWarpFrameState.predictedDisplayTime);
-		return false;
-	}
-
-	XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
-	OOVR_FAILED_XR_ABORT(xrBeginFrame(xr_session.get(), &beginInfo));
-
-	aswEstimatedRealDisplayTime = aswWarpFrameState.predictedDisplayTime + realOffset;
-	LatchViewsForDisplayTime(aswEstimatedRealDisplayTime);
-	aswSplitPhase = AswSplitPhase::WarpFrameBegun;
-
-	return true;
-}
-
-bool XrBackend::BeginRealFrameAfterAswWarp(float* outWaitMs)
-{
-	XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
-	aswRealFrameState = XrFrameState{ XR_TYPE_FRAME_STATE };
-	auto t0 = std::chrono::high_resolution_clock::now();
-	XrResult waitRes = xrWaitFrame(xr_session.get(), &waitInfo, &aswRealFrameState);
-	auto t1 = std::chrono::high_resolution_clock::now();
-	float realWaitMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
-	if (outWaitMs)
-		*outWaitMs = realWaitMs;
-
-	if (XR_FAILED(waitRes)) {
-		OOVR_LOGF("ASW split: xrWaitFrame(real) failed result=%d", (int)waitRes);
-		renderingFrame = false;
-		submittedEyeTextures = false;
-		ResetAswSplitFrameState();
-		return false;
-	}
-
-	if (aswRealFrameState.predictedDisplayPeriod > 0) {
-		predictedDisplayPeriodMs = (float)(aswRealFrameState.predictedDisplayPeriod / 1000000.0);
-		xr_gbl->nextPredictedFramePeriod.store(aswRealFrameState.predictedDisplayPeriod, std::memory_order_release);
-	}
-
-	XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
-	OOVR_FAILED_XR_ABORT(xrBeginFrame(xr_session.get(), &beginInfo));
-	QueryPerformanceCounter(&beginFrameQpc);
-
-	aswSplitPhase = AswSplitPhase::RealFrameBegun;
-	return true;
-}
-
-void XrBackend::FinishAswWarpFrameAfterFirstEye(float cpuToFirstSubmitMs, float firstSubmitInvokeMs)
-{
-	if (aswSplitPhase != AswSplitPhase::WarpFrameBegun)
-		return;
-
-	(void)cpuToFirstSubmitMs;
-	(void)firstSubmitInvokeMs;
-
-	SubmitAswWarpFrame(aswWarpFrameState, nullptr, 0);
-	BeginRealFrameAfterAswWarp(nullptr);
-}
-
 #endif
 
 void XrBackend::WaitForTrackingData()
@@ -854,9 +537,6 @@ void XrBackend::WaitForTrackingData()
 	// Make sure the OpenXR session is active before doing anything else, and if not then skip
 	if (!sessionActive) {
 		renderingFrame = false;
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-		ResetAswSplitFrameState();
-#endif
 		return;
 	}
 
@@ -869,17 +549,10 @@ void XrBackend::WaitForTrackingData()
 		qpcInitialized = true;
 	}
 
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	ResetAswSplitFrameState();
-#endif
 
 	{
 		auto lock = xr_session.lock_shared();
 
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-		if (ShouldUseAswSplitPipeline() && BeginAswWarpFrameForSplit())
-			goto wait_done;
-#endif
 
 		QueryPerformanceCounter(&waitFrameStart);
 		OOVR_FAILED_XR_ABORT(xrWaitFrame(xr_session.get(), &waitInfo, &state));
@@ -906,7 +579,6 @@ void XrBackend::WaitForTrackingData()
 	}
 
 	LatchViewsForDisplayTime(xr_gbl->nextPredictedFrameTime);
-wait_done:
 
 	// If we're not on the game's graphics API yet, don't actually mark us as having started the frame.
 	// Instead, set a different flag so we'll call this method again when it's available.
@@ -937,29 +609,13 @@ void XrBackend::StoreEyeTexture(
 	Compositor& comp = *compPtr;
 
 	bool eyeStored = false;
-	float submitInvokeMs = 0.0f;
 
 	// If the session is inactive, we may be unable to write to the surface
 	if (sessionActive && renderingFrame) {
-		auto invokeStart = std::chrono::high_resolution_clock::now();
 		comp.Invoke((XruEye)eye, texture, bounds, submitFlags, layer);
-		auto invokeEnd = std::chrono::high_resolution_clock::now();
-		submitInvokeMs = std::chrono::duration<float, std::milli>(invokeEnd - invokeStart).count();
 		eyeStored = true;
 	}
 
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	if (eyeStored && isFirstEye && aswSplitPhase == AswSplitPhase::WarpFrameBegun) {
-		float cpuToFirstSubmitMs = 0.0f;
-		if (qpcInitialized && cpuFrameStart.QuadPart > 0) {
-			LARGE_INTEGER firstSubmitQpc = {};
-			QueryPerformanceCounter(&firstSubmitQpc);
-			cpuToFirstSubmitMs = (float)(firstSubmitQpc.QuadPart - cpuFrameStart.QuadPart)
-			    * 1000.0f / (float)qpcFrequency.QuadPart;
-		}
-		FinishAswWarpFrameAfterFirstEye(cpuToFirstSubmitMs, submitInvokeMs);
-	}
-#endif
 
 	if (eyeStored && renderingFrame)
 		submittedEyeTextures = true;
@@ -980,6 +636,7 @@ void XrBackend::StoreEyeTexture(
 
 void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 {
+	if (g_aswProvider) g_aswProvider->CaptureTick();
 	static std::mutex submitMutex;
 	std::lock_guard<std::mutex> lock(submitMutex);
 
@@ -1002,19 +659,12 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	// Note that if the session becomes ready after WaitGetTrackingPoses was called, then
 	// renderingFrame will still be false so this won't be a problem in that case.
 	if (!sessionActive) {
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-		ResetAswSplitFrameState();
-#endif
 		return;
 	}
 
 	XrFrameEndInfo info{ XR_TYPE_FRAME_END_INFO };
 	info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 	info.displayTime = xr_gbl->nextPredictedFrameTime;
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	if (aswSplitPhase == AswSplitPhase::RealFrameBegun && aswRealFrameState.predictedDisplayTime != 0)
-		info.displayTime = aswRealFrameState.predictedDisplayTime;
-#endif
 
 	XrCompositionLayerBaseHeader const* const* headers = nullptr;
 	XrCompositionLayerBaseHeader* app_layer = nullptr;
@@ -1038,21 +688,6 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 				app_layer = nullptr;
 		}
 
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-		// Chain XR_FB_space_warp info to each projection view when Meta space warp is active.
-		// The SpaceWarpProvider's info structs were filled during SubmitFrame() in dx11compositor.
-		if (g_spaceWarpProvider && g_spaceWarpProvider->IsReady() && app_layer) {
-			for (int i = 0; i < 2; i++) {
-				auto* swInfo = g_spaceWarpProvider->GetLayerInfo(i);
-				// Chain space warp after any existing next (e.g. depth info set by compositor)
-				swInfo->next = projectionViews[i].next;
-				projectionViews[i].next = swInfo;
-			}
-			static int s_log = 0;
-			if (s_log++ < 5)
-				OOVR_LOG("SpaceWarp: Chained layer info to projection views");
-		}
-#endif
 
 		submittedEyeTextures = false;
 	}
@@ -1088,7 +723,8 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 
 	// Compositor time: measure xrEndFrame duration
 	QueryPerformanceCounter(&endFrameStart);
-	OOVR_FAILED_XR_SOFT_ABORT(xrEndFrame(xr_session.get(), &info));
+	const XrResult realEndResult = xrEndFrame(xr_session.get(), &info);
+	OOVR_FAILED_XR_SOFT_ABORT(realEndResult);
 	QueryPerformanceCounter(&endFrameEnd);
 	if (qpcInitialized) {
 		measuredEndFrameMs = (float)(endFrameEnd.QuadPart - endFrameStart.QuadPart) * 1000.0f / (float)qpcFrequency.QuadPart;
@@ -1181,47 +817,56 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 
 	// ── OCU ASW: Inject warped frame ──
 	// After the real frame is submitted, claim the next display slot and submit
-	// a warped version of the cached frame. This doubles the effective framerate
-	// sent to the VR runtime, eliminating the need for SSW.
+	// a warped version of the cached frame. One synthetic submission per real
+	// frame is possible; this is not proof of compositor presentation or doubled FPS.
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	// Adaptive backoff: stalls/spikes skip injection for escalating durations;
-	// sustained clean injection de-escalates. Never permanently disables.
-	static int s_aswBackoffFrames = 0; // frames left to skip
-	static int s_aswBackoffLevel = 0; // escalation index
-	static int s_aswCleanStreak = 0; // consecutive clean injections
-	static constexpr int kAswBackoffFrames[] = { 8, 32, 128, 512 };
-	static constexpr int kAswBackoffMaxLevel = 3; // ≈ 11s max — aggressive re-engage, native fps during backoffs
-	static bool s_aswForceRelease = false; // chronic backpressure → auto-native releases the engagement
-	static int s_aswEngagedClean = 0; // engaged frames since last trouble (resets engage hold when sustained)
-	static int s_aswEngageHold = 270; // min native dwell before re-engaging; escalates per forced release
-	auto aswTrouble = [](const char* what, float ms) {
-		s_aswCleanStreak = 0;
-		s_aswEngagedClean = 0;
-		s_aswBackoffFrames = kAswBackoffFrames[s_aswBackoffLevel];
-		if (s_aswBackoffLevel < kAswBackoffMaxLevel)
-			s_aswBackoffLevel++;
-		// Second trouble within one engagement = the zone can't take 90 submits/s — release instead of grinding
-		if (s_aswBackoffLevel >= 2)
-			s_aswForceRelease = true;
-		OOVR_LOGF("ASW: %s %.1fms — backing off %d frames (level %d)",
-		    what, ms, s_aswBackoffFrames, s_aswBackoffLevel);
+	static DapaTiming::Recovery recovery;
+	static DapaTiming::PacingGuard pacing;
+	struct DapaStats {
+		uint64_t real = 0, synthetic = 0, errors = 0, empty = 0, attempts = 0;
+		uint64_t held = 0;
+		double waitMs = 0, endMs = 0, maxEndMs = 0;
 	};
-	if (s_aswBackoffFrames > 0)
-		s_aswBackoffFrames--;
+	static DapaStats dapaStats;
+	static auto statsStart = std::chrono::steady_clock::now();
+	if (DapaTiming::Accepted(realEndResult) && app_layer) ++dapaStats.real;
+	else if (!DapaTiming::Accepted(realEndResult)) ++dapaStats.errors;
+	const auto recoveryNow = std::chrono::steady_clock::now();
+	static auto recoveryLast = recoveryNow;
+	const double recoveryElapsedMs = std::chrono::duration<double, std::milli>(recoveryNow - recoveryLast).count();
+	recoveryLast = recoveryNow;
+	recovery.Advance(recoveryElapsedMs);
+	pacing.Advance(recoveryElapsedMs);
+	auto aswTrouble = [&](const char* what, float ms) {
+		++dapaStats.errors;
+		recovery.Trouble();
+		OOVR_LOGF("ASW: %s %.1fms — backing off %.0fms (level %d)",
+		    what, ms, recovery.backoffMs, recovery.level);
+	};
+	auto observePacing = [&](float waitMs, float endMs) {
+		if (pacing.Observe(waitMs, endMs, oovr_global_configuration.ASWEndSpikeMs(), predictedDisplayPeriodMs)) {
+			static auto lastPacingLog = std::chrono::steady_clock::now() - std::chrono::seconds(2);
+			const auto now = std::chrono::steady_clock::now();
+			if (now - lastPacingLog >= std::chrono::seconds(1)) {
+				lastPacingLog = now;
+				OOVR_LOGF("DAPA PACING: wait=%.1fms end=%.1fms; yielding %.1fms to real frames (timing guard)",
+				    waitMs, endMs, pacing.backoffMs);
+			}
+		}
+	};
 	// Canary: the real frame's xrEndFrame sees the same compositor backpressure as warp
 	// frames. Only gates re-entry during/after trouble episodes (backoffLevel > 0) —
 	// VD has routine isolated end-spikes even at native 90 that shouldn't park ASW.
-	static constexpr int kAswCanaryFrames = 8;
-	static int s_aswRealCleanStreak = kAswCanaryFrames;
+	static constexpr double kAswCanaryMs = 90.0;
 	{
 		// Spike thresholds are calibrated at 90Hz (11.1ms period); scale with actual refresh
-		float aswPeriodScale = (predictedDisplayPeriodMs > 0.0f) ? (predictedDisplayPeriodMs / 11.1f) : 1.0f;
-		float canaryMs = oovr_global_configuration.ASWEndSpikeMs() * aswPeriodScale;
+		float canaryMs = static_cast<float>(DapaTiming::EndPressureLimitMs(
+		    oovr_global_configuration.ASWEndSpikeMs(), predictedDisplayPeriodMs));
 		if (canaryMs > 0.0f && measuredEndFrameMs > canaryMs) {
 			// Canary only acts in auto mode (gates re-entry after trouble). With auto off,
 			// injection policy is purely backoff-driven — inject whenever clean.
-			if (oovr_global_configuration.ASWAutoNative() && s_aswBackoffLevel > 0
-			    && s_aswRealCleanStreak >= kAswCanaryFrames) {
+			if (oovr_global_configuration.ASWAutoNative() && recovery.level > 0
+			    && recovery.realCleanMs >= kAswCanaryMs) {
 				static auto s_lastCanaryLog = std::chrono::steady_clock::now() - std::chrono::seconds(20);
 				auto cnow = std::chrono::steady_clock::now();
 				if (cnow - s_lastCanaryLog > std::chrono::seconds(10)) {
@@ -1229,9 +874,9 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 					OOVR_LOGF("ASW: real xrEndFrame %.1fms — holding injection until clean", measuredEndFrameMs);
 				}
 			}
-			s_aswRealCleanStreak = 0;
-		} else if (s_aswRealCleanStreak < kAswCanaryFrames) {
-			s_aswRealCleanStreak++;
+			recovery.realCleanMs = 0.0;
+		} else {
+			recovery.realCleanMs = std::min(kAswCanaryMs, recovery.realCleanMs + recoveryElapsedMs);
 		}
 	}
 
@@ -1241,61 +886,77 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	// engage → native: idle time per pinned cycle (real wait + warp wait) shows the game
 	//                   could comfortably run at refresh, or it can't even hold half-rate.
 	static bool s_aswEngaged = true;
-	static int s_aswInjectCount = 1; // cadence ladder: 1 = pin refresh/2, 2 = pin refresh/3 (e.g. 30→90)
+	static constexpr int s_aswInjectCount = 1; // At most one synthetic slot between real frames.
 	static float s_aswIntervalEma = 0.0f;
 	static float s_aswIdleEma = 0.0f;
-	static int s_aswDwell = 0;
 	static float s_aswLastWarpWaitMs = 0.0f; // sum of warp slot waits this frame (injection block below)
+	static bool lastDapaEnabled = false;
+	static bool lastDapaAuto = false;
+	static float lastDapaPeriod = 0.0f;
+	if (lastDapaEnabled != oovr_global_configuration.ASWEnabled() ||
+	    lastDapaAuto != oovr_global_configuration.ASWAutoNative() ||
+	    std::abs(lastDapaPeriod - predictedDisplayPeriodMs) > 0.05f) {
+		recovery = {};
+		pacing = {};
+		s_aswIntervalEma = s_aswIdleEma = s_aswLastWarpWaitMs = 0.0f;
+		s_aswEngaged = true;
+		lastDapaEnabled = oovr_global_configuration.ASWEnabled();
+		lastDapaAuto = oovr_global_configuration.ASWAutoNative();
+		lastDapaPeriod = predictedDisplayPeriodMs;
+		OOVR_LOGF("DAPA CONFIG: enabled=%d auto=%d runtimePeriod=%.3fms (%.2fHz) translation=%.3f loco=%.3f; build=recovery-v2",
+		    (int)lastDapaEnabled, (int)lastDapaAuto, predictedDisplayPeriodMs,
+		    1000.0 / DapaTiming::PeriodMs(predictedDisplayPeriodMs),
+		    oovr_global_configuration.ASWTranslationScale(), oovr_global_configuration.ASWLocoScale());
+	}
 	{
 		float period = (predictedDisplayPeriodMs > 0.0f) ? predictedDisplayPeriodMs : 11.1f;
 		if (measuredFrameIntervalMs > 0.0f && measuredFrameIntervalMs < 200.0f)
 			s_aswIntervalEma = (s_aswIntervalEma <= 0.0f) ? measuredFrameIntervalMs
 			                                              : s_aswIntervalEma * 0.92f + measuredFrameIntervalMs * 0.08f;
-		if (s_aswDwell < 1000000)
-			s_aswDwell++;
 
 		if (!oovr_global_configuration.ASWAutoNative()) {
 			s_aswEngaged = true; // legacy: always pin while enabled
-			s_aswForceRelease = false;
+			recovery.forceRelease = false;
 		} else if (!s_aswEngaged) {
 			// Native mode: engage only when natural fps drops below aswAutoEngageFps (hold escalates per chronic zone)
-			float engageFps = oovr_global_configuration.ASWAutoEngageFps();
-			engageFps = (engageFps < 20.0f) ? 20.0f : engageFps;
+			float engageFps = static_cast<float>(DapaTiming::AutoEngageFps(
+			    oovr_global_configuration.ASWAutoEngageFps(), period));
 			float engageIntervalMs = 1000.0f / engageFps;
 			if (engageIntervalMs < period * 1.15f)
 				engageIntervalMs = period * 1.15f;
-			if (s_aswDwell > s_aswEngageHold && s_aswIntervalEma > engageIntervalMs && s_aswIntervalEma < period * 2.05f) {
+			if (recovery.dwellMs > recovery.engageHoldMs && s_aswIntervalEma > engageIntervalMs && s_aswIntervalEma < period * 2.05f) {
 				s_aswEngaged = true;
-				s_aswDwell = 0;
+				recovery.dwellMs = 0.0;
 				s_aswIdleEma = 0.0f;
-				s_aswEngagedClean = 0;
+				recovery.engagedCleanMs = 0.0;
 				OOVR_LOGF("ASW AUTO: engaging half-rate (interval %.1fms, period %.1fms)",
 				    s_aswIntervalEma, period);
 			}
-		} else if (s_aswForceRelease) {
+		} else if (recovery.forceRelease) {
 			// Chronic backpressure: go native and stay there longer each time this zone proves hostile
-			s_aswForceRelease = false;
+			recovery.forceRelease = false;
 			s_aswEngaged = false;
-			s_aswDwell = 0;
-			s_aswBackoffFrames = 0;
-			s_aswBackoffLevel = 0;
-			s_aswEngageHold = (s_aswEngageHold < 10800) ? s_aswEngageHold * 4 : 10800;
-			OOVR_LOGF("ASW AUTO: chronic backpressure — native, re-engage hold %d frames", s_aswEngageHold);
+			recovery.dwellMs = recovery.backoffMs = 0.0;
+			recovery.level = 0;
+			recovery.engageHoldMs = std::min(120000.0, recovery.engageHoldMs * 4.0);
+			OOVR_LOGF("ASW AUTO: chronic backpressure — native, re-engage hold %.0fms", recovery.engageHoldMs);
 		} else {
 			// Sustained clean engagement → zone is fine, reset the escalating hold
-			if (s_aswBackoffLevel == 0 && ++s_aswEngagedClean >= 1350)
-				s_aswEngageHold = 270;
+			if (recovery.level == 0) {
+				recovery.engagedCleanMs = std::min(30000.0, recovery.engagedCleanMs + recoveryElapsedMs);
+				if (recovery.engagedCleanMs >= 30000.0) recovery.engageHoldMs = 3000.0;
+			}
 			// Release when estimated game work fits ~10fps above the engage point (hysteresis),
 			// not only at full refresh — otherwise a 65fps-capable town stays pinned forever.
-			float engageFps = oovr_global_configuration.ASWAutoEngageFps();
-			engageFps = (engageFps < 20.0f) ? 20.0f : engageFps;
+			float engageFps = static_cast<float>(DapaTiming::AutoEngageFps(
+			    oovr_global_configuration.ASWAutoEngageFps(), period));
 			float releaseWorkMs = 1000.0f / (engageFps + 10.0f);
 			float releaseIdleMs = 2.0f * period - releaseWorkMs - 1.5f; // 1.5ms ≈ injection cpu overhead
 			bool aboveBand = s_aswIdleEma > releaseIdleMs;
 			bool belowHalfRate = s_aswIntervalEma > period * 2.3f; // can't hold the pin — release
-			if (s_aswDwell > 270 && (aboveBand || belowHalfRate)) {
+			if (recovery.dwellMs > 6000.0 && (aboveBand || belowHalfRate)) {
 				s_aswEngaged = false;
-				s_aswDwell = 0;
+				recovery.dwellMs = 0.0;
 				OOVR_LOGF("ASW AUTO: releasing to native (%s: idle %.1fms, interval %.1fms)",
 				    aboveBand ? "above engage band" : "below half-rate",
 				    s_aswIdleEma, s_aswIntervalEma);
@@ -1304,25 +965,23 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 
 		// ── Cadence rule: max ONE warp between two real frames (multi-warp field-tested worse).
 		// Engaged = pin refresh/2 at whatever refresh the headset runs; below that, release.
-		s_aswInjectCount = 1;
 		if (s_aswEngaged) {
 			float idle = measuredWaitFrameMs + s_aswLastWarpWaitMs;
 			s_aswIdleEma = (s_aswIdleEma <= 0.0f) ? idle : s_aswIdleEma * 0.92f + idle * 0.08f;
 		}
 	}
+	// The next real frame must not inherit a warp wait from a skipped attempt.
+	s_aswLastWarpWaitMs = 0.0f;
+	const bool canInject = oovr_global_configuration.ASWEnabled() && sessionActive && s_aswEngaged
+	    && recovery.backoffMs == 0.0 && pacing.backoffMs == 0.0
+	    && (!oovr_global_configuration.ASWAutoNative() || recovery.level == 0 || recovery.realCleanMs >= kAswCanaryMs);
 	if (g_aswProvider)
-		g_aswProvider->SetInjectionWanted(s_aswEngaged && oovr_global_configuration.ASWEnabled()
-		    && !oovr_global_configuration.ASWBufferEnabled());
+		g_aswProvider->SetInjectionWanted(canInject && !g_aswProvider->IsPaused());
+	if (!canInject) ++dapaStats.held;
 
 	if (g_aswProvider && g_aswProvider->IsReady() && g_aswProvider->HasCachedFrame()
-	    && oovr_global_configuration.ASWEnabled() && sessionActive
-	    && !g_aswProvider->IsPaused()
-	    && !oovr_global_configuration.ASWBufferEnabled()
-	    && s_aswEngaged
-	    && s_aswBackoffFrames == 0
-	    && (!oovr_global_configuration.ASWAutoNative()
-	        || s_aswBackoffLevel == 0
-	        || s_aswRealCleanStreak >= kAswCanaryFrames)) {
+	    && canInject && DapaTiming::Accepted(realEndResult) && app_layer
+	    && !g_aswProvider->IsPaused()) {
 
 		// Get D3D11 context from ASWProvider's device (independent of GPU timing)
 		ID3D11DeviceContext* aswCtx = nullptr;
@@ -1333,33 +992,41 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 			auto lock = xr_session.lock_shared();
 
 			s_aswLastWarpWaitMs = 0.0f;
-			// Cadence ladder: claim 1 or 2 warp slots per real frame (pin refresh/2 or refresh/3)
+			// Claim only one slot. No synthetic frame is used as another warp's input.
 			for (int aswInj = 0; aswInj < s_aswInjectCount; aswInj++) {
-			if (s_aswBackoffFrames > 0)
+			if (recovery.backoffMs > 0.0)
 				break; // trouble on a previous injection this frame — stop claiming slots
 
 			// 1. Claim next display slot (measure time — xrWaitFrame can block the game)
 			auto t0 = std::chrono::high_resolution_clock::now();
 			XrFrameWaitInfo aswWaitInfo{ XR_TYPE_FRAME_WAIT_INFO };
 			XrFrameState aswState{ XR_TYPE_FRAME_STATE };
+			++dapaStats.attempts;
 			XrResult res = xrWaitFrame(xr_session.get(), &aswWaitInfo, &aswState);
 			auto t1 = std::chrono::high_resolution_clock::now();
 			float waitMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
 			s_aswLastWarpWaitMs += waitMs; // feeds the auto-native idle estimate
+			dapaStats.waitMs += waitMs;
 
 			if (XR_SUCCEEDED(res)) {
-				// Check if xrWaitFrame took unreasonably long (>30ms = missed a whole frame)
-				if (waitMs > 30.0f) {
+				// Preserve the 90Hz tolerance in display intervals at every refresh rate.
+				if (waitMs > DapaTiming::StallLimitMs(predictedDisplayPeriodMs)
+				    || aswState.shouldRender != XR_TRUE || res != XR_SUCCESS) {
 					// Submit empty frame to keep runtime in sync, then back off
 					XrFrameBeginInfo aswBeginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
-					xrBeginFrame(xr_session.get(), &aswBeginInfo);
+					const XrResult beginResult = xrBeginFrame(xr_session.get(), &aswBeginInfo);
 					XrFrameEndInfo aswEndInfo{ XR_TYPE_FRAME_END_INFO };
 					aswEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 					aswEndInfo.displayTime = aswState.predictedDisplayTime;
 					aswEndInfo.layers = nullptr;
 					aswEndInfo.layerCount = 0;
-					xrEndFrame(xr_session.get(), &aswEndInfo);
-					aswTrouble("xrWaitFrame stall", waitMs);
+					if (XR_SUCCEEDED(beginResult)) {
+						const XrResult emptyResult = xrEndFrame(xr_session.get(), &aswEndInfo);
+						++dapaStats.empty;
+						if (!DapaTiming::Accepted(emptyResult)) aswTrouble("empty xrEndFrame error/status", 0);
+					} else aswTrouble("xrBeginFrame error", 0);
+					if (res != XR_SUCCESS) aswTrouble("xrWaitFrame status", waitMs);
+					else if (waitMs > DapaTiming::StallLimitMs(predictedDisplayPeriodMs)) observePacing(waitMs, 0);
 					aswCtx->Release();
 					goto asw_done;
 				}
@@ -1379,7 +1046,7 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 					XrView views[XruEyeCount] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
 					XrResult locateRes = xrLocateViews(xr_session.get(), &locateInfo, &viewState, XruEyeCount, &viewCount, views);
 
-					// 4. Warp cached frame — translation/parallax only (rotation=0, handled by runtime ATW)
+					// 4. Warp cached frame with actor translation and stick yaw; tracked head rotation belongs to ATW.
 					bool warpOk = true;
 					bool poseValid = XR_SUCCEEDED(locateRes)
 					    && viewCount == XruEyeCount
@@ -1393,12 +1060,9 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 						}
 						warpOk = false;
 					} else {
-						// Loco shift scales with where this warp sits in the game frame (¼, ½, ¾...)
-						g_aswProvider->SetWarpSlotFraction(
-						    (float)(aswInj + 1) / (float)(s_aswInjectCount + 1));
+						g_aswProvider->SetWarpDisplayTime(aswState.predictedDisplayTime);
 						for (int eye = 0; eye < 2; eye++) {
-							if (!g_aswProvider->WarpFrame(eye, views[eye].pose, -1,
-							        aswState.predictedDisplayTime)) {
+							if (!g_aswProvider->WarpFrame(eye, aswCtx, views[eye].pose)) {
 								warpOk = false;
 								break;
 							}
@@ -1407,7 +1071,7 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 
 					// 5. Submit warped frame to XR swapchain
 					auto tWarpDone = std::chrono::high_resolution_clock::now();
-					bool submitOk = warpOk && g_aswProvider->SubmitWarpedOutput(aswCtx);
+					bool submitOk = warpOk && g_aswProvider->SubmitWarpedOutput(aswCtx, predictedDisplayPeriodMs);
 					auto tSubmitDone = std::chrono::high_resolution_clock::now();
 					if (submitOk) {
 						// 6. Build projection layer — use CACHED pose so runtime ATW corrects to current
@@ -1415,11 +1079,11 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 
 						// Attach depth info if depth swapchain is available
 						XrCompositionLayerDepthInfoKHR depthInfo[2] = {};
-						bool hasDepth = (g_aswProvider->GetDepthSwapchain() != XR_NULL_HANDLE) && g_aswProvider->DepthLayerValid();
+						bool hasDepth = (g_aswProvider->GetDepthSwapchain() != XR_NULL_HANDLE) && g_aswProvider->HasSubmittedDepth();
 
 						for (int eye = 0; eye < 2; eye++) {
 							warpedViews[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
-							warpedViews[eye].pose = g_aswProvider->GetPrecompPose(eye);
+							warpedViews[eye].pose = g_aswProvider->GetCachedPose(eye);
 							warpedViews[eye].fov = g_aswProvider->GetCachedFov(eye);
 							warpedViews[eye].subImage.swapchain = g_aswProvider->GetOutputSwapchain();
 							warpedViews[eye].subImage.imageArrayIndex = 0;
@@ -1461,10 +1125,11 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 						auto tEndStart = std::chrono::high_resolution_clock::now();
 						XrResult endRes = xrEndFrame(xr_session.get(), &aswEndInfo);
 						auto tEndDone = std::chrono::high_resolution_clock::now();
+						g_aswProvider->CaptureSubmission(aswState.predictedDisplayTime, endRes);
 						{
 							static int s = 0;
 							if (s++ < 5)
-								OOVR_LOGF("ASW: Warped frame injected (result=%d)", (int)endRes);
+								OOVR_LOGF("ASW: Warped frame submission accepted=%d (result=%d)", (int)DapaTiming::Accepted(endRes), (int)endRes);
 						}
 						{
 							auto waitUs = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
@@ -1474,26 +1139,30 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 							auto totalUs = waitUs + warpUs + submitUs + endUs;
 							static auto s_lastAswLatencyLog = std::chrono::steady_clock::now() - std::chrono::seconds(2);
 							auto now = std::chrono::steady_clock::now();
-							if (totalUs > 8000 && now - s_lastAswLatencyLog > std::chrono::seconds(1)) {
+							const bool stageStall=warpUs>2000 || submitUs>2000
+							    || double(waitUs)/1000>DapaTiming::StallLimitMs(predictedDisplayPeriodMs)
+							    || double(endUs)/1000>DapaTiming::EndPressureLimitMs(12.0,predictedDisplayPeriodMs);
+							if (oovr_global_configuration.DebugLogging() && (stageStall || totalUs>8000)
+							    && now-s_lastAswLatencyLog>std::chrono::seconds(1)) {
 								s_lastAswLatencyLog = now;
-								OOVR_LOGF("ASW LATENCY: wait=%lldus warp=%lldus submit=%lldus end=%lldus total=%lldus result=%d",
+								OOVR_LOGF("DAPA CPU LATENCY: wait=%lldus warpDispatch=%lldus swapchainCopy=%lldus end=%lldus total=%lldus result=%d realEnd=%.2fms captureBusy=%d recording=%d (CPU call times, not GPU execution or encoder latency)",
 								    (long long)waitUs, (long long)warpUs, (long long)submitUs,
-								    (long long)endUs, (long long)totalUs, (int)endRes);
+								    (long long)endUs, (long long)totalUs, (int)endRes,measuredEndFrameMs,
+								    int(g_aswProvider->CaptureBusy()),int(g_aswProvider->CaptureRecording()));
 							}
 
-							// Slow warp xrEndFrame = compositor backpressure; pushing more warp frames compounds it
-							// (threshold calibrated at 90Hz — scale with actual refresh)
-							float spikeMs = oovr_global_configuration.ASWEndSpikeMs()
-							    * ((predictedDisplayPeriodMs > 0.0f) ? (predictedDisplayPeriodMs / 11.1f) : 1.0f);
-							if (spikeMs > 0.0f && endUs > (long long)(spikeMs * 1000.0f)) {
-								aswTrouble("xrEndFrame backpressure", (float)endUs / 1000.0f);
-							} else if (++s_aswCleanStreak >= 450 && s_aswBackoffLevel > 0) {
-								// ~10s clean at 45fps → step escalation back down
-								s_aswBackoffLevel--;
-								s_aswCleanStreak = 0;
-							}
+							const float endMs = (float)endUs / 1000.0f;
+							dapaStats.endMs += endMs;
+							dapaStats.maxEndMs = std::max(dapaStats.maxEndMs, (double)endMs);
+							if (DapaTiming::Accepted(endRes)) {
+								++dapaStats.synthetic;
+								observePacing(waitMs, endMs);
+								// A cooldown cannot count as successful injection time.
+								recovery.CleanInjection(std::min(recoveryElapsedMs, 2.0 * DapaTiming::PeriodMs(predictedDisplayPeriodMs)));
+							} else aswTrouble("synthetic xrEndFrame error/status", endMs);
 						}
 					} else {
+						aswTrouble("warp output unavailable", std::chrono::duration<float, std::milli>(tSubmitDone - tWarpDone).count());
 						// Warp failed — submit empty frame to keep runtime in sync
 						XrFrameEndInfo aswEndInfo{ XR_TYPE_FRAME_END_INFO };
 						aswEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -1501,9 +1170,11 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 						aswEndInfo.layers = nullptr;
 						aswEndInfo.layerCount = 0;
 						xrEndFrame(xr_session.get(), &aswEndInfo);
+						++dapaStats.empty;
 					}
-				}
+				} else aswTrouble("xrBeginFrame error", 0);
 			} else {
+				aswTrouble("xrWaitFrame error", waitMs);
 				static int s = 0;
 				if (s++ < 3)
 					OOVR_LOGF("ASW: xrWaitFrame for warped slot failed result=%d", (int)res);
@@ -1514,6 +1185,30 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 		}
 	}
 asw_done:
+	// Suppress next-frame cache copies while held; re-entry requests a fresh cache.
+	if (g_aswProvider && (recovery.backoffMs > 0 || pacing.backoffMs > 0))
+		g_aswProvider->SetInjectionWanted(false);
+	{
+		const auto now = std::chrono::steady_clock::now();
+		const double seconds = std::chrono::duration<double>(now - statsStart).count();
+		if (seconds >= 5.0) {
+			if (oovr_global_configuration.ASWEnabled() && oovr_global_configuration.DebugLogging()) {
+				const char* state = !sessionActive ? "inactive" : !g_aswProvider ? "no-provider"
+				    : !g_aswProvider->IsReady() ? "not-ready" : g_aswProvider->IsPaused() ? "paused"
+				    : recovery.backoffMs > 0 ? "error-backoff" : pacing.backoffMs > 0 ? "pacing-yield"
+				    : !s_aswEngaged ? "auto-native" : !canInject ? "waiting-clean-real-frame"
+				    : !g_aswProvider->HasCachedFrame() ? "waiting-cache" : "injecting";
+				OOVR_LOGF("DAPA STATUS: %s runtime=%.2fHz period=%.3fms window=%.2fs realAccepted=%.1f/s syntheticAccepted=%.1f/s attempts=%llu errors=%llu empty=%llu held=%llu errorHold=%.0fms pacingHold=%.0fms waitCpuTotal=%.1fms endCpuTotal=%.1fms maxEndCpu=%.1fms (submitted, NOT presented FPS)",
+				    state, 1000.0 / DapaTiming::PeriodMs(predictedDisplayPeriodMs), predictedDisplayPeriodMs, seconds,
+				    dapaStats.real / seconds, dapaStats.synthetic / seconds,
+				    (unsigned long long)dapaStats.attempts, (unsigned long long)dapaStats.errors,
+				    (unsigned long long)dapaStats.empty, (unsigned long long)dapaStats.held,
+				    recovery.backoffMs, pacing.backoffMs, dapaStats.waitMs, dapaStats.endMs, dapaStats.maxEndMs);
+			}
+			dapaStats = {};
+			statsStart = now;
+		}
+	}
 #endif
 
 	BaseSystem* sys = GetUnsafeBaseSystem();
@@ -1529,9 +1224,6 @@ asw_done:
 	// Release pose latch so next frame gets fresh xrLocateViews data
 	xr_gbl->viewsLatched = false;
 	xr_gbl->viewSpaceViewsLatched = false;
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	ResetAswSplitFrameState();
-#endif
 }
 
 IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextures, uint32_t unTextureCount)

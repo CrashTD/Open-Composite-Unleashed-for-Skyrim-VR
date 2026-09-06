@@ -8,7 +8,6 @@
 #include "../OpenOVR/Misc/android_api.h"
 #include "../OpenOVR/Misc/xr_ext.h"
 #include "../OpenOVR/Reimpl/BaseInput.h"
-#include "SpaceWarpProvider.h"
 #include "XrBackend.h"
 #include "generated/static_bases.gen.h"
 
@@ -240,11 +239,14 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	// SteamVR OpenXR; other runtimes/headsets may expose it directly. Auto eye
 	// tracking never enables fixed VRS when gaze is unavailable; Fixed is a
 	// separate explicit setting.
-	if (oovr_global_configuration.VrsEyeTracked() &&
-	    availableExtensions.count(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) {
-		extensions.push_back(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
-		xr_extEyeGazeInteraction = true;
-		OOVR_LOG("XR_EXT_eye_gaze_interaction extension available and enabled");
+	if (oovr_global_configuration.VrsEyeTracked()) {
+		if (availableExtensions.count(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME)) {
+			extensions.push_back(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
+			xr_extEyeGazeInteraction = true;
+			OOVR_LOG("Eye gaze capability: XR_EXT_eye_gaze_interaction advertised and enabled");
+		} else {
+			OOVR_LOG("Eye gaze capability: requested, but this OpenXR runtime did not advertise XR_EXT_eye_gaze_interaction");
+		}
 	}
 
 	if (availableExtensions.contains(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME))
@@ -265,13 +267,6 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	if (availableExtensions.count("XR_HTCX_vive_tracker_interaction")) {
 		extensions.push_back("XR_HTCX_vive_tracker_interaction");
 		xr_htcxViveTrackers = true;
-	}
-
-	// XR_FB_space_warp — runtime-side ASW (Meta Quest via Link/AirLink)
-	if (availableExtensions.count("XR_FB_space_warp")) {
-		extensions.push_back("XR_FB_space_warp");
-		g_spaceWarpAvailable = true;
-		OOVR_LOG("XR_FB_space_warp extension available and enabled");
 	}
 
 	const char* const layers[] = {

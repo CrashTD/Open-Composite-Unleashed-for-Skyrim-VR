@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dxcompositor.h"
+#include "DensityMaskManager.h"
 #include "VRSManager.h"
 
 class DX11Compositor : public Compositor {
@@ -20,7 +21,11 @@ public:
 
 	ID3D11Device* GetDevice() { return device; }
 
-	// VRS manager — accessible from BaseCompositor for per-eye control
+	// Called from WaitGetPoses, immediately before Skyrim renders the next frame.
+	// This is the only safe point to bind a scene-rendering VRS pattern.
+	void BeginVRSGameFrame();
+
+	// VRS manager — exposed for diagnostics and teardown.
 	VRSManager* GetVRSManager() { return &vrsManager; }
 
 protected:
@@ -81,8 +86,9 @@ protected:
 	ID3D11PixelShader* alphaFix_pshader = nullptr;
 	ID3D11BlendState* alphaFix_blendState = nullptr;
 
-	// NVIDIA Variable Rate Shading
+	// Foveated rendering backends: native NVIDIA VRS and cross-vendor RDM.
 	VRSManager vrsManager;
+	DensityMaskManager densityMaskManager;
 
 	std::vector<XrSwapchainImageD3D11KHR> imagesHandles;
 	std::vector<ID3D11RenderTargetView*> swapchain_rtvs;

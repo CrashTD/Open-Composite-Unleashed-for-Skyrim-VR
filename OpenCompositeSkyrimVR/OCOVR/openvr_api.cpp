@@ -457,6 +457,13 @@ VR_INTERFACE void VR_CALLTYPE VR_ShutdownInternal()
 // release, 4=spell release (fire-and-forget), 5=concentration stream tick
 // (sent repeatedly while streaming; low amplitude reads as steady rumble).
 // durationMicros is clamped to 400ms.
+// Query the resolved policy, including runtime/app/extended INI precedence.
+// SKSE reads this at startup; it must not reparse a different INI itself.
+extern "C" __declspec(dllexport) int OCU_DebugLoggingEnabled()
+{
+	return oovr_global_configuration.DebugLogging() ? 1 : 0;
+}
+
 extern "C" __declspec(dllexport) void OCU_CombatHaptic(int hand, int kind, unsigned int durationMicros)
 {
 	if (!oovr_global_configuration.Haptics())

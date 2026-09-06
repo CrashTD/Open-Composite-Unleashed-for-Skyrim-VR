@@ -87,99 +87,151 @@ void VRSManager::SetProjectionCenters(float leftPX, float leftPY, float rightPX,
 	for (int eye = 0; eye < 2; ++eye) {
 		if (std::fabs(projX[eye] - nextX[eye]) > 0.0001f ||
 		    std::fabs(projY[eye] - nextY[eye]) > 0.0001f)
-			patternDirty[eye] = true;
+			patternDirty = true;
 		projX[eye] = nextX[eye];
 		projY[eye] = nextY[eye];
 	}
 }
 
-void VRSManager::UpdatePatterns(int eyeWidth, int eyeHeight)
+static bool SameRegion(const VRSManager::EyeRegion& a, const VRSManager::EyeRegion& b)
+{
+	return a.left == b.left && a.top == b.top &&
+	    a.width == b.width && a.height == b.height;
+}
+
+bool VRSManager::UpdateStereoPattern(int nextRenderWidth, int nextRenderHeight,
+    const EyeRegion& leftEye, const EyeRegion& rightEye, float innerR, float midR,
+    const ocu_foveation::RingRates& rates)
 {
 	if (!available)
-		return;
+		return false;
+	if (nextRenderWidth <= 0 || nextRenderHeight <= 0 ||
+	    leftEye.width <= 0 || leftEye.height <= 0 ||
+	    rightEye.width <= 0 || rightEye.height <= 0) {
+		OOVR_LOG("VRSManager: rejected invalid stereo render-target geometry");
+		Disable();
+		return false;
+	}
+	auto regionFits = [nextRenderWidth, nextRenderHeight](const EyeRegion& region) {
+		return region.left >= 0 && region.top >= 0 &&
+		    region.left + region.width <= nextRenderWidth &&
+		    region.top + region.height <= nextRenderHeight;
+	};
+	const bool regionsOverlap = leftEye.left < rightEye.left + rightEye.width &&
+	    leftEye.left + leftEye.width > rightEye.left &&
+	    leftEye.top < rightEye.top + rightEye.height &&
+	    leftEye.top + leftEye.height > rightEye.top;
+	if (!regionFits(leftEye) || !regionFits(rightEye) || regionsOverlap) {
+		OOVR_LOG("VRSManager: stereo eye regions are overlapping or outside the bound render target; VRS withheld");
+		Disable();
+		return false;
+	}
 
-	// Check if config changed
-	float innerR = oovr_global_configuration.VrsInnerRadius();
-	float midR = oovr_global_configuration.VrsMidRadius();
-	bool compatibilityMode = oovr_global_configuration.VrsCompatibilityMode();
-	bool favorH = oovr_global_configuration.VrsFavorHorizontal();
-
+	// Mode-specific radii are selected once by the compositor for both backends.
 	bool configChanged = (innerR != cachedInnerRadius || midR != cachedMidRadius ||
-	    compatibilityMode != cachedCompatibilityMode || favorH != cachedFavorHorizontal);
+	    rates != cachedRates);
 
 	cachedInnerRadius = innerR;
 	cachedMidRadius = midR;
-	cachedCompatibilityMode = compatibilityMode;
-	cachedFavorHorizontal = favorH;
+	cachedRates = rates;
 	if (configChanged) {
-		OOVR_LOGF("VRS pattern: %s, inner=%.2f mid=%.2f half-axis=%s",
-		    compatibilityMode ? "compatibility (max half-rate)" : "performance (up to 2x2)",
-		    innerR, midR, favorH ? "horizontal" : "vertical");
+		OOVR_LOGF("VRS pattern: inner=%.2f mid=%.2f effective rates=%s/%s/%s",
+		    innerR, midR, ocu_foveation::RateName(rates.inner),
+		    ocu_foveation::RateName(rates.mid), ocu_foveation::RateName(rates.outer));
 	}
 
-	// Force shading rate table re-upload on next ApplyForEye if config changed
+	// Force shading rate table re-upload on next ApplyStereo if config changed.
 	if (configChanged)
 		shadingRatesSet = false;
 
-	// Recreate patterns for each eye if needed
-	int tileW = eyeWidth / NV_VARIABLE_PIXEL_SHADING_TILE_WIDTH;
-	int tileH = eyeHeight / NV_VARIABLE_PIXEL_SHADING_TILE_HEIGHT;
+	const int tileW = ocu_vrs_pattern::TileCount(
+	    nextRenderWidth, NV_VARIABLE_PIXEL_SHADING_TILE_WIDTH);
+	const int tileH = ocu_vrs_pattern::TileCount(
+	    nextRenderHeight, NV_VARIABLE_PIXEL_SHADING_TILE_HEIGHT);
+	const bool geometryChanged = nextRenderWidth != renderWidth || nextRenderHeight != renderHeight ||
+	    !SameRegion(leftEye, eyeRegions[0]) || !SameRegion(rightEye, eyeRegions[1]);
+	const bool sizeChanged = tileW != patternWidth || tileH != patternHeight;
 
-	for (int eye = 0; eye < 2; ++eye) {
-		bool sizeChanged = (tileW != patternWidth[eye] || tileH != patternHeight[eye]);
-		if (sizeChanged || configChanged || !vrsTex[eye])
-			SetupEyePattern(eye, eyeWidth, eyeHeight);
-		else if (patternDirty[eye])
-			UploadEyePattern(eye);
-	}
+	renderWidth = nextRenderWidth;
+	renderHeight = nextRenderHeight;
+	eyeRegions[0] = leftEye;
+	eyeRegions[1] = rightEye;
+	if (geometryChanged)
+		patternDirty = true;
+
+	if (sizeChanged || !vrsTex || !vrsView)
+		SetupStereoPattern();
+	else if (configChanged || patternDirty)
+		UploadStereoPattern();
+
+	return available && vrsTex != nullptr && vrsView != nullptr && !patternDirty;
 }
 
-std::vector<uint8_t> VRSManager::CreatePattern(int tileWidth, int tileHeight, float pX, float pY)
+std::vector<uint8_t> VRSManager::CreateStereoPattern() const
 {
-	float innerR = oovr_global_configuration.VrsInnerRadius();
-	float midR = oovr_global_configuration.VrsMidRadius();
-	bool compatibilityMode = oovr_global_configuration.VrsCompatibilityMode();
+	float innerR = cachedInnerRadius;
+	float midR = cachedMidRadius;
 
-	std::vector<uint8_t> data(tileWidth * tileHeight);
+	std::vector<uint8_t> data(patternWidth * patternHeight,
+	    static_cast<uint8_t>(ocu_vrs_pattern::Level::Full));
 
-	for (int y = 0; y < tileHeight; ++y) {
-		for (int x = 0; x < tileWidth; ++x) {
-			float fx = (float)x / (float)tileWidth;
-			float fy = (float)y / (float)tileHeight;
-			// Distance from projection center, scaled by 2 so radius 1.0 = edge of screen
-			float distance = 2.0f * sqrtf((fx - pX) * (fx - pX) + (fy - pY) * (fy - pY));
+	for (int y = 0; y < patternHeight; ++y) {
+		for (int x = 0; x < patternWidth; ++x) {
+			// Sample the center of the hardware VRS tile in render-target pixels.
+			// The submitted eye bounds may be horizontal, vertical, or asymmetric.
+			const float pixelX = (float)(x * NV_VARIABLE_PIXEL_SHADING_TILE_WIDTH) +
+			    NV_VARIABLE_PIXEL_SHADING_TILE_WIDTH * 0.5f;
+			const float pixelY = (float)(y * NV_VARIABLE_PIXEL_SHADING_TILE_HEIGHT) +
+			    NV_VARIABLE_PIXEL_SHADING_TILE_HEIGHT * 0.5f;
 
-			data[y * tileWidth + x] = static_cast<uint8_t>(
-			    ocu_vrs_pattern::SelectLevel(distance, innerR, midR, compatibilityMode));
+			for (int eye = 0; eye < 2; ++eye) {
+				const EyeRegion& region = eyeRegions[eye];
+				float fx = 0.0f;
+				float fy = 0.0f;
+				if (!ocu_vrs_pattern::NormalizeInEyeRegion(pixelX, pixelY,
+				        region.left, region.top, region.width, region.height, fx, fy))
+					continue;
+
+				// Distance from that eye's projection/gaze center, scaled so a
+				// radius of 1.0 reaches the edge from a centered gaze.
+				const float dx = fx - projX[eye];
+				const float dy = fy - projY[eye];
+				const float distance = 2.0f * std::sqrt(dx * dx + dy * dy);
+				data[y * patternWidth + x] = static_cast<uint8_t>(
+				    1 + static_cast<unsigned>(ocu_vrs_pattern::SelectLevel(distance, innerR, midR, false)));
+				break;
+			}
 		}
 	}
 
 	return data;
 }
 
-void VRSManager::SetupEyePattern(int eye, int eyeWidth, int eyeHeight)
+void VRSManager::SetupStereoPattern()
 {
 	if (!available || !device)
 		return;
 
-	ReleaseEyeResources(eye);
+	ReleasePatternResources();
 
-	int tileW = eyeWidth / NV_VARIABLE_PIXEL_SHADING_TILE_WIDTH;
-	int tileH = eyeHeight / NV_VARIABLE_PIXEL_SHADING_TILE_HEIGHT;
+	patternWidth = ocu_vrs_pattern::TileCount(
+	    renderWidth, NV_VARIABLE_PIXEL_SHADING_TILE_WIDTH);
+	patternHeight = ocu_vrs_pattern::TileCount(
+	    renderHeight, NV_VARIABLE_PIXEL_SHADING_TILE_HEIGHT);
 
-	patternWidth[eye] = tileW;
-	patternHeight[eye] = tileH;
+	OOVR_LOGF(
+	    "VRSManager: Creating stereo-atlas VRS pattern: %dx%d tiles for %dx%d target; L=(%d,%d %dx%d @ %.3f,%.3f) R=(%d,%d %dx%d @ %.3f,%.3f)",
+	    patternWidth, patternHeight, renderWidth, renderHeight,
+	    eyeRegions[0].left, eyeRegions[0].top, eyeRegions[0].width, eyeRegions[0].height,
+	    projX[0], projY[0], eyeRegions[1].left, eyeRegions[1].top,
+	    eyeRegions[1].width, eyeRegions[1].height, projX[1], projY[1]);
 
-	OOVR_LOGF("VRSManager: Creating VRS pattern for eye %d: %dx%d tiles (eye res %dx%d, projCenter %.2f,%.2f)",
-	    eye, tileW, tileH, eyeWidth, eyeHeight, projX[eye], projY[eye]);
-
-	// Create the pattern data
-	auto data = CreatePattern(tileW, tileH, projX[eye], projY[eye]);
+	auto data = CreateStereoPattern();
 
 	// Create R8_UINT texture
 	D3D11_TEXTURE2D_DESC td = {};
-	td.Width = tileW;
-	td.Height = tileH;
+	td.Width = patternWidth;
+	td.Height = patternHeight;
 	td.ArraySize = 1;
 	td.Format = DXGI_FORMAT_R8_UINT;
 	td.SampleDesc.Count = 1;
@@ -192,12 +244,12 @@ void VRSManager::SetupEyePattern(int eye, int eyeWidth, int eyeHeight)
 
 	D3D11_SUBRESOURCE_DATA srd = {};
 	srd.pSysMem = data.data();
-	srd.SysMemPitch = tileW;
+	srd.SysMemPitch = patternWidth;
 	srd.SysMemSlicePitch = 0;
 
-	HRESULT hr = device->CreateTexture2D(&td, &srd, &vrsTex[eye]);
+	HRESULT hr = device->CreateTexture2D(&td, &srd, &vrsTex);
 	if (FAILED(hr)) {
-		OOVR_LOGF("VRSManager: Failed to create VRS texture for eye %d: 0x%08X", eye, hr);
+		OOVR_LOGF("VRSManager: Failed to create stereo-atlas VRS texture: 0x%08X", hr);
 		available = false;
 		return;
 	}
@@ -210,87 +262,105 @@ void VRSManager::SetupEyePattern(int eye, int eyeWidth, int eyeHeight)
 	vd.Texture2D.MipSlice = 0;
 
 	ID3D11NvShadingRateResourceView* view = nullptr;
-	NvAPI_Status status = NvAPI_D3D11_CreateShadingRateResourceView(device, vrsTex[eye], &vd, &view);
-	vrsView[eye] = view;
+	NvAPI_Status status = NvAPI_D3D11_CreateShadingRateResourceView(device, vrsTex, &vd, &view);
+	vrsView = view;
 	if (status != NVAPI_OK) {
-		OOVR_LOGF("VRSManager: Failed to create VRS resource view for eye %d: %d", eye, status);
+		OOVR_LOGF("VRSManager: Failed to create stereo-atlas VRS resource view: %d", status);
+		ReleasePatternResources();
 		available = false;
 		return;
 	}
-	patternDirty[eye] = false;
+	patternDirty = false;
 }
 
-void VRSManager::UploadEyePattern(int eye)
+void VRSManager::UploadStereoPattern()
 {
-	if (!available || !context || !vrsTex[eye] || patternWidth[eye] <= 0 || patternHeight[eye] <= 0)
+	if (!available || !context || !vrsTex || patternWidth <= 0 || patternHeight <= 0)
 		return;
 
-	auto data = CreatePattern(patternWidth[eye], patternHeight[eye], projX[eye], projY[eye]);
-	context->UpdateSubresource(vrsTex[eye], 0, nullptr, data.data(), patternWidth[eye], 0);
-	patternDirty[eye] = false;
+	auto data = CreateStereoPattern();
+	context->UpdateSubresource(vrsTex, 0, nullptr, data.data(), patternWidth, 0);
+	patternDirty = false;
 }
 
-void VRSManager::EnableShadingRates()
+bool VRSManager::EnableShadingRates()
 {
-	NV_D3D11_VIEWPORT_SHADING_RATE_DESC vsrd[2];
-	for (int i = 0; i < 2; ++i) {
+	auto nativeRate = [](ocu_foveation::Rate rate) {
+		using ocu_foveation::Rate;
+		switch (rate) {
+		case Rate::X1x2: return NV_PIXEL_X1_PER_1X2_RASTER_PIXELS;
+		case Rate::X2x1: return NV_PIXEL_X1_PER_2X1_RASTER_PIXELS;
+		case Rate::X2x2: return NV_PIXEL_X1_PER_2X2_RASTER_PIXELS;
+		case Rate::X2x4: return NV_PIXEL_X1_PER_2X4_RASTER_PIXELS;
+		case Rate::X4x2: return NV_PIXEL_X1_PER_4X2_RASTER_PIXELS;
+		case Rate::X4x4: return NV_PIXEL_X1_PER_4X4_RASTER_PIXELS;
+		default: return NV_PIXEL_X1_PER_RASTER_PIXEL;
+		}
+	};
+	NV_D3D11_VIEWPORT_SHADING_RATE_DESC vsrd[NV_MAX_NUM_VIEWPORTS] = {};
+	for (int i = 0; i < NV_MAX_NUM_VIEWPORTS; ++i) {
 		vsrd[i].enableVariablePixelShadingRate = true;
-		// Fill table: default to max rate (2x2)
-		memset(vsrd[i].shadingRateTable, NV_PIXEL_X1_PER_2X2_RASTER_PIXELS, sizeof(vsrd[i].shadingRateTable));
+		// This is an enum array, so byte-wise memset would create invalid values.
+		for (int rate = 0; rate < NV_MAX_PIXEL_SHADING_RATES; ++rate)
+			vsrd[i].shadingRateTable[rate] = NV_PIXEL_X1_PER_RASTER_PIXEL;
 		// Set the rings: full → half → quarter
 		vsrd[i].shadingRateTable[0] = NV_PIXEL_X1_PER_RASTER_PIXEL;
-		vsrd[i].shadingRateTable[1] = cachedFavorHorizontal
-		    ? NV_PIXEL_X1_PER_2X1_RASTER_PIXELS
-		    : NV_PIXEL_X1_PER_1X2_RASTER_PIXELS;
-		vsrd[i].shadingRateTable[2] = NV_PIXEL_X1_PER_2X2_RASTER_PIXELS;
+		// Index zero remains full rate for pixels outside either eye region.
+		vsrd[i].shadingRateTable[1] = nativeRate(cachedRates.inner);
+		vsrd[i].shadingRateTable[2] = nativeRate(cachedRates.mid);
+		vsrd[i].shadingRateTable[3] = nativeRate(cachedRates.outer);
 	}
 
-	NV_D3D11_VIEWPORTS_SHADING_RATE_DESC srd;
+	NV_D3D11_VIEWPORTS_SHADING_RATE_DESC srd = {};
 	srd.version = NV_D3D11_VIEWPORTS_SHADING_RATE_DESC_VER;
-	srd.numViewports = 2;
+	// Skyrim and runtime wrappers vary between one, two, and array viewports.
+	// Configure every D3D11 viewport slot so VRS remains active when the game
+	// changes RS viewport count after WaitGetPoses.
+	srd.numViewports = NV_MAX_NUM_VIEWPORTS;
 	srd.pViewports = vsrd;
 
 	NvAPI_Status status = NvAPI_D3D11_RSSetViewportsPixelShadingRates(context, &srd);
 	if (status != NVAPI_OK) {
 		OOVR_LOGF("VRSManager: Failed to set viewport shading rates: %d", status);
 		Shutdown();
+		return false;
 	}
+	return true;
 }
 
-void VRSManager::ApplyForEye(int eye)
+bool VRSManager::ApplyStereo()
 {
-	if (!available || eye < 0 || eye > 1) {
-		OOVR_LOGF("VRSManager::ApplyForEye(%d): skipped (available=%d)", eye, (int)available);
-		return;
+	if (!available) {
+		OOVR_LOGF("VRSManager::ApplyStereo: skipped (available=%d)", (int)available);
+		return false;
 	}
-	if (!vrsView[eye]) {
-		OOVR_LOGF("VRSManager::ApplyForEye(%d): skipped — vrsView is null (view[0]=%p, view[1]=%p)",
-		    eye, vrsView[0], vrsView[1]);
-		return;
+	if (!vrsView) {
+		OOVR_LOG("VRSManager::ApplyStereo: skipped — resource view is null");
+		return false;
 	}
 
 	// Set the viewport shading rate table once (persists until config changes)
 	if (!shadingRatesSet) {
-		EnableShadingRates();
+		if (!EnableShadingRates())
+			return false;
 		shadingRatesSet = true;
 	}
 
-	// Only NVAPI call per-frame: swap the per-tile resource view for this eye
-	auto* view = static_cast<ID3D11NvShadingRateResourceView*>(vrsView[eye]);
+	auto* view = static_cast<ID3D11NvShadingRateResourceView*>(vrsView);
 	NvAPI_Status status = NvAPI_D3D11_RSSetShadingRateResourceView(context, view);
 	if (status != NVAPI_OK) {
-		OOVR_LOGF("VRSManager: Failed to set shading rate resource view for eye %d: %d", eye, status);
+		OOVR_LOGF("VRSManager: Failed to set stereo-atlas shading rate resource view: %d", status);
 		Shutdown();
-		return;
+		return false;
 	}
 
-	// Log first few applications per eye to confirm both eyes get VRS
-	static int logCount[2] = { 0, 0 };
-	if (logCount[eye] < 3) {
-		OOVR_LOGF("VRSManager: Applied VRS pattern for eye %d (projCenter=%.3f,%.3f, tiles=%dx%d)",
-		    eye, projX[eye], projY[eye], patternWidth[eye], patternHeight[eye]);
-		logCount[eye]++;
+	static int logCount = 0;
+	if (logCount < 3) {
+		OOVR_LOGF("VRSManager: Applied stereo-atlas VRS before scene render (L=%.3f,%.3f R=%.3f,%.3f tiles=%dx%d)",
+		    projX[0], projY[0], projX[1], projY[1], patternWidth, patternHeight);
+		++logCount;
 	}
+	return true;
 }
 
 void VRSManager::Disable()
@@ -304,19 +374,20 @@ void VRSManager::Disable()
 	NvAPI_D3D11_RSSetShadingRateResourceView(context, nullptr);
 }
 
-void VRSManager::ReleaseEyeResources(int eye)
+void VRSManager::ReleasePatternResources()
 {
-	if (vrsView[eye]) {
-		// NVAPI views don't use COM Release — they're freed when the texture is released
-		vrsView[eye] = nullptr;
+	if (vrsView) {
+		// ID3D11NvShadingRateResourceView derives from ID3D11View/IUnknown.
+		static_cast<ID3D11NvShadingRateResourceView*>(vrsView)->Release();
+		vrsView = nullptr;
 	}
-	if (vrsTex[eye]) {
-		vrsTex[eye]->Release();
-		vrsTex[eye] = nullptr;
+	if (vrsTex) {
+		vrsTex->Release();
+		vrsTex = nullptr;
 	}
-	patternWidth[eye] = 0;
-	patternHeight[eye] = 0;
-	patternDirty[eye] = true;
+	patternWidth = 0;
+	patternHeight = 0;
+	patternDirty = true;
 }
 
 void VRSManager::Shutdown()
@@ -325,23 +396,16 @@ void VRSManager::Shutdown()
 		// Full cleanup: clear resource view AND viewport shading rates
 		NvAPI_D3D11_RSSetShadingRateResourceView(context, nullptr);
 
-		NV_D3D11_VIEWPORT_SHADING_RATE_DESC vsrd[2];
-		vsrd[0].enableVariablePixelShadingRate = false;
-		vsrd[1].enableVariablePixelShadingRate = false;
-		memset(vsrd[0].shadingRateTable, 0, sizeof(vsrd[0].shadingRateTable));
-		memset(vsrd[1].shadingRateTable, 0, sizeof(vsrd[1].shadingRateTable));
-
-		NV_D3D11_VIEWPORTS_SHADING_RATE_DESC srd;
+		// NVAPI specifies numViewports=0 as the global VRS disable operation.
+		NV_D3D11_VIEWPORTS_SHADING_RATE_DESC srd = {};
 		srd.version = NV_D3D11_VIEWPORTS_SHADING_RATE_DESC_VER;
-		srd.numViewports = 2;
-		srd.pViewports = vsrd;
+		srd.numViewports = 0;
+		srd.pViewports = nullptr;
 		NvAPI_D3D11_RSSetViewportsPixelShadingRates(context, &srd);
 	}
 	shadingRatesSet = false;
 
-	for (int i = 0; i < 2; ++i) {
-		ReleaseEyeResources(i);
-	}
+	ReleasePatternResources();
 
 	if (context) {
 		context->Release();

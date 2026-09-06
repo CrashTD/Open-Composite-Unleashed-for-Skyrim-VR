@@ -63,6 +63,11 @@
 ; Default: true
 ;vrsEyeTracked=true
 
+; Foveated-rendering backend: auto, vrs, or rdm. Auto prefers NVIDIA's
+; hardware VRS when available and otherwise uses the cross-vendor D3D11
+; Radial Density Mask backend (AMD/Intel/NVIDIA). Default: auto
+;foveatedBackend=auto
+
 ; Skyrim shader compatibility. Caps peripheral VRS at half-rate (2x1/1x2)
 ; instead of 2x2 to avoid terrain and alpha-tested foliage corruption.
 ; Disable only when deliberately selecting a more aggressive performance preset.

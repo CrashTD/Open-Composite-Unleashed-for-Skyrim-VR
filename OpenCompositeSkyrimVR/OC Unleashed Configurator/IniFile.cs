@@ -33,6 +33,7 @@ namespace OpenCompositeConfigurator
 
         private static readonly Dictionary<string, string> RootKeySections = new(StringComparer.OrdinalIgnoreCase)
         {
+            ["logLevel"] = "debug",
             ["supersampleRatio"] = "general",
             ["renderCustomHands"] = "general",
             ["useLegacyGreyHands"] = "general",
@@ -179,26 +180,14 @@ namespace OpenCompositeConfigurator
             ["actorMV"] = "motion_vectors",
 
             ["aswEnabled"] = "asw",
-            ["aswForceCustom"] = "asw",
             ["aswWarpStrength"] = "asw",
             ["aswRotationScale"] = "asw",
             ["aswTranslationScale"] = "asw",
             ["aswLocoScale"] = "asw",
-            ["aswFPControllerScale"] = "asw",
             ["aswDepthScale"] = "asw",
             ["aswEdgeFadeWidth"] = "asw",
             ["aswNearFadeDepth"] = "asw",
-            ["aswMVConfidence"] = "asw",
-            ["aswMVPixelScale"] = "asw",
             ["aswDebugMode"] = "asw",
-            ["aswCaptureEnabled"] = "asw",
-            ["aswForceLegacy"] = "asw",
-            ["aswExperimentalMode"] = "asw",
-            ["aswConcurrentFrameThread"] = "asw",
-            ["aswSpeculativeTrackingLead"] = "asw",
-            ["aswBufferEnabled"] = "asw",
-            ["aswUpscalerReset"] = "asw",
-            ["aswUpscalerReactiveMask"] = "asw",
 
             ["casEnabled"] = "cas",
             ["casSharpness"] = "cas",
@@ -215,6 +204,14 @@ namespace OpenCompositeConfigurator
             ["vrsEyeTracked"] = "vrs",
             ["vrsInnerRadius"] = "vrs",
             ["vrsMidRadius"] = "vrs",
+            ["vrsFixedInnerRadius"] = "vrs",
+            ["vrsFixedMidRadius"] = "vrs",
+            ["vrsEyeInnerRadius"] = "vrs",
+            ["vrsEyeMidRadius"] = "vrs",
+            ["vrsEyeCustomRates"] = "vrs",
+            ["vrsEyeInnerRate"] = "vrs",
+            ["vrsEyeMidRate"] = "vrs",
+            ["vrsEyeOuterRate"] = "vrs",
             ["vrsCompatibilityMode"] = "vrs",
             ["vrsOuterRadius"] = "vrs",
             ["vrsFavorHorizontal"] = "vrs",
@@ -422,6 +419,14 @@ namespace OpenCompositeConfigurator
 
         public void Save(string path)
         {
+            // Retired experimental rendering keys are removed on save, not exposed as controls.
+            foreach (string key in new[] {
+                "aswBufferEnabled", "aswExperimentalMode", "aswCaptureEnabled",
+                "aswForceLegacy", "aswConcurrentFrameThread", "aswSpeculativeTrackingLead",
+                "aswUpscalerReset", "aswUpscalerReactiveMask",
+                "aswForceCustom", "aswFPControllerScale", "aswMVConfidence", "aswMVPixelScale"
+            })
+                Remove("", key);
             _filePath = path;
             var sb = new StringBuilder();
             foreach (var line in _lines)

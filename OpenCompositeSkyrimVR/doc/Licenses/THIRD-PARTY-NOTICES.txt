@@ -9,6 +9,13 @@ https://github.com/Wondernuttz/Open-Composite-Unleashed-for-Skyrim-VR
 Components redistributed with this package
 ------------------------------------------
 
+HIGGS C++ interface declaration prefix (adapted in the SKSE plugin)
+  Author/source: adamhynek / https://github.com/adamhynek/higgs
+  License: GPLv3 (OpenComposite-OCU-GPLv3.txt)
+  Provenance commit: 93bf67b1bc4c4a11a20ccaef0d5012781d0d7eee
+  Modified 2026-09-06: CommonLib type names, interface prefix only.
+  HIGGS itself is an optional, separately installed mod; its DLL is not bundled.
+
 OpenComposite (OpenOVR)
   License: GPLv3 (OpenComposite-OCU-GPLv3.txt)
   Source:  https://gitlab.com/znixian/OpenOVR
@@ -25,6 +32,11 @@ NVIDIA NVAPI (statically linked)
 AMD FidelityFX / FSR3 (amd_fidelityfx_*.dll)
   License: MIT (AMD-FidelityFX-MIT.txt)
   Source:  https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+
+VRPerfKit_RSF Radial Density Mask algorithm (modified source)
+  License: MIT (VRPerfKit-RSF-MIT.txt)
+  Source:  https://github.com/RavenSystem/VRPerfKit_RSF
+  Provenance commit: b2150204fc9886ee0b6fb8be81bb9f795118d1bc
 
 Google MediaPipe Pose Landmarker v0.10.35 (libmediapipe.dll,
 pose_landmarker_full.task, pose_landmarker_lite.task)

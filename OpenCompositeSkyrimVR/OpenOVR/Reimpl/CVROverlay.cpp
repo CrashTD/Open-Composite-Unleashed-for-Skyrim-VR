@@ -23,6 +23,9 @@ GEN_INTERFACE("Overlay", "026")
 // 027 (OpenVR SDK 2.5.1, requested by CommonLibVR 4.x plugins) removed the two
 // TransformOverlayRelative methods; header lives in custom_interfaces
 GEN_INTERFACE("Overlay", "027", CUSTOM)
+// 028 (OpenVR SDK 2.12+) adds subview creation and positioning at two specific
+// vtable slots. Keep 027 registered separately for CommonLibVR and older apps.
+GEN_INTERFACE("Overlay", "028", CUSTOM)
 
 #include "generated/GVROverlay.gen.h"
 

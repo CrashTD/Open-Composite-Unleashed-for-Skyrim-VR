@@ -1,5 +1,8 @@
 #pragma once
 
+#include "FoveationProfiles.h"
+#include "FoveationRates.h"
+
 class Config {
 public:
 	Config();
@@ -200,24 +203,14 @@ public:
 
 	// OCU ASW — Asynchronous SpaceWarp
 	inline bool ASWEnabled() const { return aswEnabled; }
-	inline bool ASWForceCustom() const { return aswForceCustom; } // Deprecated: ASW always uses OCU PC-side legacy/simple modes
 	inline float ASWWarpStrength() const { return aswWarpStrength; }
 	inline float ASWRotationScale() const { return aswRotationScale; }
 	inline float ASWTranslationScale() const { return aswTranslationScale; }
 	inline float ASWLocoScale() const { return aswLocoScale; }
-	inline float ASWFPControllerScale() const { return aswFPControllerScale; }
 	inline float ASWDepthScale() const { return aswDepthScale; }
 	inline float ASWEdgeFadeWidth() const { return aswEdgeFadeWidth; }
 	inline float ASWNearFadeDepth() const { return aswNearFadeDepth; }
-	inline float ASWMVConfidence() const { return aswMVConfidence; }
-	inline float ASWMVPixelScale() const { return aswMVPixelScale; }
 	inline int ASWDebugMode() const { return aswDebugMode; }
-	inline bool ASWCaptureEnabled() const { return aswCaptureEnabled; }
-	inline bool ASWConcurrentFrameThread() const { return aswConcurrentFrameThread; }
-	inline bool ASWSpeculativeTrackingLead() const { return aswSpeculativeTrackingLead; }
-	inline bool ASWBufferEnabled() const { return aswBufferEnabled; }
-	inline bool ASWUpscalerReset() const { return aswUpscalerReset; }
-	inline bool ASWUpscalerReactiveMask() const { return aswUpscalerReactiveMask; }
 	inline float ASWEndSpikeMs() const { return aswEndSpikeMs; }
 	inline bool ASWAutoNative() const { return aswAutoNative; }
 	inline float ASWAutoEngageFps() const { return aswAutoEngageFps; }
@@ -237,15 +230,24 @@ public:
 	inline float DlssMipBiasOffset() const { return dlssMipBiasOffset; }
 	inline float Fsr3MipBiasOffset() const { return fsr3MipBiasOffset; }
 
-	// NVIDIA VRS foveated rendering. The legacy vrsEnabled key now means the
+	// Cross-vendor foveated rendering. The legacy vrsEnabled key now means the
 	// explicit fixed-center mode; Auto eye tracking is an independent mode.
 	inline bool VrsEnabled() const { return vrsEnabled; }
 	inline bool VrsFixedEnabled() const { return vrsEnabled; }
 	inline bool VrsEyeTracked() const { return vrsEyeTracked; }
 	inline bool VrsAnyEnabled() const { return vrsEnabled || vrsEyeTracked; }
-	inline float VrsInnerRadius() const { return vrsInnerRadius; }
-	inline float VrsMidRadius() const { return vrsMidRadius; }
+	inline const std::string& FoveatedBackend() const { return foveatedBackend; }
+	inline ocu_foveation::Radii FoveationRadii(bool eyeTracked) const {
+		return ocu_foveation::Resolve(eyeTracked, vrsInnerRadius, vrsMidRadius,
+		    vrsFixedInnerRadius, vrsFixedMidRadius, vrsEyeInnerRadius, vrsEyeMidRadius);
+	}
 	inline bool VrsCompatibilityMode() const { return vrsCompatibilityMode; }
+	inline bool VrsEyeCustomRates() const { return vrsEyeCustomRates; }
+	inline ocu_foveation::RingRates FoveationRates(bool eyeTracked) const {
+		return ocu_foveation::ResolveRates(eyeTracked, vrsEyeCustomRates, vrsCompatibilityMode, vrsFavorHorizontal,
+		    {ocu_foveation::ParseRate(vrsEyeInnerRate), ocu_foveation::ParseRate(vrsEyeMidRate),
+		        ocu_foveation::ParseRate(vrsEyeOuterRate)});
+	}
 	inline bool VrsFavorHorizontal() const { return vrsFavorHorizontal; }
 
 	// ASW tuning variables — public for hot-reload from ini file watcher
@@ -253,19 +255,13 @@ public:
 	float aswRotationScale = 0.0f; // 0.0 = no rotation correction, 1.0 = full
 	float aswTranslationScale = 1.0f; // 0.0 = no translation correction, 1.0 = full
 	float aswLocoScale = 1.0f;     // locomotion correction scale (0=off, 1=full). Multiplied by timingRatio (~0.5).
-	float aswFPControllerScale = 0.63f; // FP hand/weapon controller delta scale (0=off, 0.63=tuned, 1=raw)
 	float aswDepthScale = 1.0f;    // multiplier on linearized depth (parallax intensity)
 	float aswEdgeFadeWidth = 3.0f;   // depth-edge fade threshold (depth ratio units)
 	float aswNearFadeDepth = 0.0f;   // parallax fades to 0 below this depth (meters); 0 = disabled
-	float aswMVConfidence = 1.5f;    // MV extrapolation scale: 1.5 = correct for N-1 warping (1.5 periods from cache to display). 0 = off.
-	float aswMVPixelScale = 1.0f;    // overall MV magnitude multiplier (1.0 = identity)
 	float aswEndSpikeMs = 12.0f;     // warp xrEndFrame above this (ms) = compositor backpressure → skip injection briefly; 0 = off
 	bool aswAutoNative = false;      // default: inject whenever enabled (1.1.0-familiar). true = opt-in auto mode: native when fast, engage only in the help band
 	float aswAutoEngageFps = 50.0f;  // auto mode engages only when natural fps falls below this; releases ~10fps above it
 	int aswDebugMode = 0;            // 0=normal, 1=depth viz, 2=linearized depth, 3=MV magnitude, 50=black warp frame, 56=stationary NPC dest-depth reject, 57=stationary NPC path overview
-	bool aswCaptureEnabled = false;  // true = capture warp diagnostics (color/depth/MV/CB) to TestWarp folder
-	bool aswForceLegacy = false;     // Deprecated: Alpha legacy ASW is now the default when aswExperimentalMode=false
-	bool aswExperimentalMode = false; // true = experimental ASW: single-pass parallax + game MV residual correction + depth-based FP mask + frame-N disocclusion fallback
 
 	// Keyboard theme — public for hot-reload from the keyboard's ini file watcher
 	std::string kbTheme = "parchment"; // parchment | modern_* | skyui | dwemer | sovngarde
@@ -432,12 +428,6 @@ private:
 
 	// OCU ASW — PC-side Asynchronous SpaceWarp (experimental)
 	bool aswEnabled = false;
-	bool aswForceCustom = false;           // Deprecated: ASW always uses OCU PC-side legacy/simple modes
-	bool aswConcurrentFrameThread = false; // If true, dedicated XR thread owns wait/begin/end in buffered mode
-	bool aswSpeculativeTrackingLead = false; // Diagnostic default: prefer begun-slot sync over speculative +1 period lead
-	bool aswBufferEnabled = false;           // false = Alpha-style inline ASW; true = experimental split-frame warp scheduling
-	bool aswUpscalerReset = false;           // If true, reset DLSS/FSR warp-upscale temporal history each ASW frame
-	bool aswUpscalerReactiveMask = true;     // If true, bias ASW warp-upscale history at warped depth/color edges
 	// NOTE: aswWarpStrength, aswRotationScale, aswTranslationScale, aswDepthScale
 	// are declared in the public section above for hot-reload access
 
@@ -457,11 +447,20 @@ private:
 	float dlssMipBiasOffset = 0.0f;  // DLSS-specific auto offset, added after mipBiasOffset
 	float fsr3MipBiasOffset = 1.0f;  // FSR3-specific auto offset, added after mipBiasOffset
 
-	// NVIDIA VRS foveated rendering
+	// Cross-vendor foveated rendering
 	bool vrsEnabled = false;   // explicit fixed-center mode (legacy key name)
 	bool vrsEyeTracked = true; // Auto gaze only; no implicit fixed fallback
-	float vrsInnerRadius = 0.60f;
-	float vrsMidRadius = 0.80f;
+	std::string foveatedBackend = "auto"; // auto, vrs (NVIDIA), or rdm (cross-vendor)
+	float vrsInnerRadius = -1.0f; // legacy explicit values migrate to both profiles
+	float vrsMidRadius = -1.0f;
+	float vrsFixedInnerRadius = -1.0f;
+	float vrsFixedMidRadius = -1.0f;
+	float vrsEyeInnerRadius = -1.0f;
+	float vrsEyeMidRadius = -1.0f;
+	bool vrsEyeCustomRates = false;
+	std::string vrsEyeInnerRate = "1x1";
+	std::string vrsEyeMidRate = "2x1";
+	std::string vrsEyeOuterRate = "2x2";
 	bool vrsCompatibilityMode = true; // cap coarse shading at 2x1/1x2 for Skyrim shader safety
 	float vrsOuterRadius = 1.00f; // legacy no-op; retained only to parse older INIs quietly
 	bool vrsFavorHorizontal = true;

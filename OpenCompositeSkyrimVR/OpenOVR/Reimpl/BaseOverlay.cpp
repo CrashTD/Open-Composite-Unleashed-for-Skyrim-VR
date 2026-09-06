@@ -56,12 +56,6 @@ bool g_menuLaserConsumesTrigger[2] = { false, false };
 // immediately. The laser continues reading the unmasked state for drags.
 std::atomic<bool> g_menuLaserSuppressUntilRelease[2]{ false, false };
 
-// When true, the keyboard is being grab-moved. BaseSystem::GetControllerState() masks
-// thumbstick locomotion + action buttons on BOTH hands so the player doesn't walk/turn/
-// jump/act while repositioning the keyboard (matches PrismaVR's grab masking). The
-// keyboard reads GetUnmaskedControllerState() so its own depth/pinch sticks still work.
-bool g_kbGrabActive = false;
-
 bool g_menuLaserActive = false; // True while either menu laser hits the quad
 
 // [EXPERIMENTAL — DISABLED] Custom Windows message for laser→Scaleform injection
@@ -3563,6 +3557,18 @@ EVROverlayError BaseOverlay::CreateOverlay(const char* pchOverlayKey, const char
 
 	return VROverlayError_None;
 }
+EVROverlayError BaseOverlay::CreateSubviewOverlay(VROverlayHandle_t parentOverlayHandle,
+    const char* pchSubviewOverlayKey, const char* pchSubviewOverlayName,
+    VROverlayHandle_t* pSubviewOverlayHandle)
+{
+	(void)parentOverlayHandle;
+	(void)pchSubviewOverlayKey;
+	(void)pchSubviewOverlayName;
+	if (pSubviewOverlayHandle)
+		*pSubviewOverlayHandle = vr::k_ulOverlayHandleInvalid;
+	OOVR_LOG_ONCE("IVROverlay_028: subview overlays are not supported; returning RequestFailed");
+	return VROverlayError_RequestFailed;
+}
 EVROverlayError BaseOverlay::DestroyOverlay(VROverlayHandle_t ulOverlayHandle)
 {
 	// SkyUI destroys its temporary keyboard overlay from a polling worker. Keep
@@ -4010,6 +4016,14 @@ EVROverlayError BaseOverlay::SetOverlayTransformProjection(VROverlayHandle_t ulO
 {
 	STUBBED();
 }
+EVROverlayError BaseOverlay::SetSubviewPosition(VROverlayHandle_t ulOverlayHandle, float fX, float fY)
+{
+	(void)ulOverlayHandle;
+	(void)fX;
+	(void)fY;
+	OOVR_LOG_ONCE("IVROverlay_028: subview positioning is not supported; returning RequestFailed");
+	return VROverlayError_RequestFailed;
+}
 EVROverlayError BaseOverlay::ShowOverlay(VROverlayHandle_t ulOverlayHandle)
 {
 	USEH();
@@ -4447,7 +4461,29 @@ EVROverlayError BaseOverlay::GetOverlayTextureSize(VROverlayHandle_t ulOverlayHa
 }
 EVROverlayError BaseOverlay::CreateDashboardOverlay(const char* pchOverlayKey, const char* pchOverlayFriendlyName, VROverlayHandle_t* pMainHandle, VROverlayHandle_t* pThumbnailHandle)
 {
-	STUBBED();
+	// ReShade 6 builds from before its OpenComposite detection fix request the
+	// current IVROverlay interface and create a SteamVR dashboard overlay during
+	// effect-runtime initialization. OCU has no SteamVR dashboard to display it
+	// on, but aborting (or returning an error) prevents ReShade effects from
+	// initializing at all. Give the client one ordinary, hidden overlay as a
+	// compatibility handle and omit the thumbnail. Since the overlay is never
+	// shown, this allocates no OpenXR swapchain or composition layer.
+	if (pMainHandle)
+		*pMainHandle = vr::k_ulOverlayHandleInvalid;
+	if (pThumbnailHandle)
+		*pThumbnailHandle = vr::k_ulOverlayHandleInvalid;
+
+	if (!pchOverlayKey || !pMainHandle)
+		return VROverlayError_InvalidParameter;
+
+	const EVROverlayError result = CreateOverlay(
+	    pchOverlayKey,
+	    pchOverlayFriendlyName ? pchOverlayFriendlyName : pchOverlayKey,
+	    pMainHandle);
+	if (result == VROverlayError_None) {
+		OOVR_LOG_ONCE("SteamVR dashboard overlays are unavailable under OCU; created a hidden compatibility overlay");
+	}
+	return result;
 }
 bool BaseOverlay::IsDashboardVisible()
 {

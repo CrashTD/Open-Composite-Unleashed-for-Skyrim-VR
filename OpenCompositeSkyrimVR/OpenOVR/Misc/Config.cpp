@@ -58,11 +58,9 @@ static bool parse_bool(string orig, string name, int line)
 	string val = str_tolower(orig);
 
 	if (val == "true" || val == "on" || val == "enabled") {
-		OOVR_LOGF("Setting config param %s to true", name.c_str());
 		return true;
 	}
 	if (val == "false" || val == "off" || val == "disabled") {
-		OOVR_LOGF("Setting config param %s to false", name.c_str());
 		return false;
 	}
 
@@ -92,7 +90,6 @@ static HmdColor_t parse_HmdColor_t(string orig, string name, int line)
 	c.g = ((hexval(val[3]) << 4) + hexval(val[4])) / 255.0f;
 	c.b = ((hexval(val[5]) << 4) + hexval(val[6])) / 255.0f;
 
-	OOVR_LOGF("Setting config param %s to %f %f %f", name.c_str(), c.r, c.g, c.b);
 	return c;
 
 invalid:
@@ -118,7 +115,6 @@ static float parse_float(string orig, string name, int line)
 		return 0.0f;
 	}
 
-	OOVR_LOGF("Setting config param %s to %f", name.c_str(), result);
 	return result;
 }
 
@@ -134,7 +130,6 @@ static int parse_int(string orig, string name, int line)
 		ABORT(err);
 	}
 
-	OOVR_LOGF("Setting config param %s to %d", name.c_str(), result);
 	return static_cast<int>(result);
 }
 
@@ -145,7 +140,6 @@ static string parse_string(string orig, string name, int line)
 		result = str_tolower(orig);
 	}
 
-	OOVR_LOGF("Setting config param %s to %s", name.c_str(), result.c_str());
 	return result;
 }
 
@@ -359,29 +353,17 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, motionVectorScale);
 		CFGOPT(bool, actorMV);
 		CFGOPT(bool, aswEnabled);
-		CFGOPT(bool, aswForceCustom);
 		CFGOPT(float, aswWarpStrength);
 		CFGOPT(float, aswRotationScale);
 		CFGOPT(float, aswTranslationScale);
 		CFGOPT(float, aswLocoScale);
-		CFGOPT(float, aswFPControllerScale);
 		CFGOPT(float, aswDepthScale);
 		CFGOPT(float, aswEdgeFadeWidth);
 		CFGOPT(float, aswNearFadeDepth);
-		CFGOPT(float, aswMVConfidence);
-		CFGOPT(float, aswMVPixelScale);
 		CFGOPT(float, aswEndSpikeMs);
 		CFGOPT(bool, aswAutoNative);
 		CFGOPT(float, aswAutoEngageFps);
 		CFGOPT(int, aswDebugMode);
-		CFGOPT(bool, aswCaptureEnabled);
-		CFGOPT(bool, aswForceLegacy);
-		CFGOPT(bool, aswExperimentalMode);
-		CFGOPT(bool, aswConcurrentFrameThread);
-		CFGOPT(bool, aswSpeculativeTrackingLead);
-		CFGOPT(bool, aswBufferEnabled);
-		CFGOPT(bool, aswUpscalerReset);
-		CFGOPT(bool, aswUpscalerReactiveMask);
 		CFGOPT(bool, casEnabled);
 		CFGOPT(float, casSharpness);
 		CFGOPT(float, fsrSharpness);
@@ -394,8 +376,17 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, fsr3MipBiasOffset);
 		CFGOPT(bool, vrsEnabled);
 		CFGOPT(bool, vrsEyeTracked);
+		CFGOPT(string, foveatedBackend);
 		CFGOPT(float, vrsInnerRadius);
 		CFGOPT(float, vrsMidRadius);
+		CFGOPT(float, vrsFixedInnerRadius);
+		CFGOPT(float, vrsFixedMidRadius);
+		CFGOPT(float, vrsEyeInnerRadius);
+		CFGOPT(float, vrsEyeMidRadius);
+		CFGOPT(bool, vrsEyeCustomRates);
+		CFGOPT(string, vrsEyeInnerRate);
+		CFGOPT(string, vrsEyeMidRate);
+		CFGOPT(string, vrsEyeOuterRate);
 		CFGOPT(bool, vrsCompatibilityMode);
 		// Legacy no-op accepted so older INIs do not emit an unknown-key warning.
 		// The configurator removes it the next time settings are saved.

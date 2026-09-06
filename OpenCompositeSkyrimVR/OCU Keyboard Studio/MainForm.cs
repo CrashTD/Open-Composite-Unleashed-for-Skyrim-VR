@@ -2808,22 +2808,54 @@ internal sealed class MainForm : Form
         if (!File.Exists(target)
             || !string.Equals(File.ReadAllText(target), serialized, StringComparison.Ordinal))
             throw new IOException($"OCU Keyboard Studio could not verify the installed layout at {target}.");
+        VerifyInstalledArtwork(target);
         return target;
     }
 
-    private string CurrentInstalledDesignId()
+    private static string CurrentInstalledDesignId()
     {
-        string? sourcePath = _document.SourcePath;
-        if (!string.IsNullOrWhiteSpace(sourcePath))
+        // The installed loose layout is authoritative. Reusing the source
+        // package/stock filename here allowed an edited "Dwemer" to resolve
+        // back to bundled Dwemer when Configurator refreshed its design list.
+        return "installed";
+    }
+
+    private void VerifyInstalledArtwork(string installedLayoutPath)
+    {
+        KeyboardDocument installed = KeyboardDocument.Load(installedLayoutPath);
+        static bool Authored(string? imagePath, string? fileName)
+            => !string.IsNullOrWhiteSpace(imagePath) || !string.IsNullOrWhiteSpace(fileName);
+        static void RequireResolved(bool expected, string? resolvedPath, string description)
         {
-            string sourceName = Path.GetFileNameWithoutExtension(sourcePath);
-            bool bundledParchment = sourceName.Equals("en_gb", StringComparison.OrdinalIgnoreCase)
-                && Path.GetFullPath(sourcePath).StartsWith(
-                    Path.GetFullPath(_assetsDirectory), StringComparison.OrdinalIgnoreCase);
-            if (!bundledParchment && !string.IsNullOrWhiteSpace(sourceName))
-                return sourceName;
+            if (expected && (string.IsNullOrWhiteSpace(resolvedPath) || !File.Exists(resolvedPath)))
+                throw new IOException($"OCU Keyboard Studio installed the layout but could not verify its {description} beside OCUKeyboard.kb.");
         }
-        return "keyboard-studio";
+
+        RequireResolved(Authored(_document.BackgroundImagePath, _document.BackgroundFileName),
+            installed.BackgroundImagePath, "keyboard background");
+        RequireResolved(Authored(_document.ConsoleInputBackgroundImagePath, _document.ConsoleInputBackgroundFileName),
+            installed.ConsoleInputBackgroundImagePath, "console INPUT artwork");
+        RequireResolved(Authored(_document.ModeVrArtworkImagePath, _document.ModeVrArtworkFileName),
+            installed.ModeVrArtworkImagePath, "VR Mode state artwork");
+        RequireResolved(Authored(_document.ModePcArtworkImagePath, _document.ModePcArtworkFileName),
+            installed.ModePcArtworkImagePath, "PC Mode state artwork");
+        RequireResolved(Authored(_document.LockWorldArtworkImagePath, _document.LockWorldArtworkFileName),
+            installed.LockWorldArtworkImagePath, "world-lock state artwork");
+        RequireResolved(Authored(_document.LockHeadArtworkImagePath, _document.LockHeadArtworkFileName),
+            installed.LockHeadArtworkImagePath, "head-lock state artwork");
+        RequireResolved(Authored(_document.ControlArrowImagePath, _document.ControlArrowFileName),
+            installed.ControlArrowImagePath, "side-control arrow artwork");
+
+        if (_document.Sprites.Count != installed.Sprites.Count
+            || installed.Sprites.Any(sprite => string.IsNullOrWhiteSpace(sprite.SourcePath) || !File.Exists(sprite.SourcePath)))
+            throw new IOException("OCU Keyboard Studio installed the layout but could not verify all of its sprite artwork beside OCUKeyboard.kb.");
+
+        if (_document.FontName.StartsWith("custom_", StringComparison.OrdinalIgnoreCase)
+            && (string.IsNullOrWhiteSpace(installed.CustomFontMetadataPath)
+                || string.IsNullOrWhiteSpace(installed.CustomFontTexturePath)
+                || !File.Exists(installed.CustomFontMetadataPath)
+                || !File.Exists(installed.CustomFontTexturePath)))
+            throw new IOException("OCU Keyboard Studio installed the layout but could not verify its custom font files beside OCUKeyboard.kb.");
     }
 
     internal static string? FindOcuRootFromStudioDirectory(string studioDirectory)
@@ -2901,21 +2933,23 @@ internal sealed class MainForm : Form
             {
                 if (choices.Any(choice => choice.Path.Equals(path, StringComparison.OrdinalIgnoreCase)))
                     continue;
-                if (choices.Any(choice => choice.BuiltIn && KeyboardLayoutFilesEquivalent(choice.Path, path)))
+                KeyboardDesignChoice? equivalent = choices.FirstOrDefault(choice =>
+                    KeyboardLayoutFilesEquivalent(choice.Path, path));
+                if (equivalent is not null)
+                {
+                    if (preferred is not null && path.Equals(preferred, StringComparison.OrdinalIgnoreCase))
+                        preferred = equivalent.Path;
                     continue;
+                }
                 string stem = Path.GetFileNameWithoutExtension(path);
-                string name = FriendlyDesignName(stem);
-                // Bundled designs are authoritative. Older managed copies can have
-                // different serialized bytes while still representing the same named
-                // design; showing both produced entries such as
-                // "Pug Dragon Keyboard — PugDragonKeyboard-...".
-                if (choices.Any(choice => choice.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-                    continue;
+                string name = UniqueCustomDesignName(choices, FriendlyDesignName(stem));
                 choices.Add(new KeyboardDesignChoice(name, path, BuiltIn: false));
             }
 
             if (preferred is not null && choices.All(choice => !choice.Path.Equals(preferred, StringComparison.OrdinalIgnoreCase)))
-                choices.Add(new KeyboardDesignChoice(FriendlyDesignName(Path.GetFileNameWithoutExtension(preferred)), preferred, BuiltIn: false));
+                choices.Add(new KeyboardDesignChoice(
+                    UniqueCustomDesignName(choices, FriendlyDesignName(Path.GetFileNameWithoutExtension(preferred))),
+                    preferred, BuiltIn: false));
 
             _designs.Clear();
             _designs.AddRange(choices);
@@ -3001,6 +3035,18 @@ internal sealed class MainForm : Form
         string value = System.Text.RegularExpressions.Regex.Replace(
             stem.Replace('_', ' ').Replace('-', ' '), "(?<=[a-z0-9])(?=[A-Z])", " ").Trim();
         return string.IsNullOrWhiteSpace(value) ? "Unnamed Keyboard" : value;
+    }
+
+    private static string UniqueCustomDesignName(
+        IReadOnlyCollection<KeyboardDesignChoice> choices, string baseName)
+    {
+        if (!choices.Any(choice => choice.Name.Equals(baseName, StringComparison.OrdinalIgnoreCase)))
+            return baseName;
+        string candidate = $"{baseName} (Custom)";
+        int suffix = 2;
+        while (choices.Any(choice => choice.Name.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
+            candidate = $"{baseName} (Custom {suffix++})";
+        return candidate;
     }
 
     private static void SetIniValue(string path, string section, string key, string value)

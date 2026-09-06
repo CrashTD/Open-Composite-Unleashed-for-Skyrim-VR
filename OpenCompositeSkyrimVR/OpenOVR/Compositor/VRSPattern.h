@@ -11,6 +11,26 @@ enum class Level : uint8_t {
 	Quarter = 2 // 2x2
 };
 
+inline int TileCount(int pixels, int tileSize)
+{
+	return pixels > 0 && tileSize > 0 ? (pixels + tileSize - 1) / tileSize : 0;
+}
+
+// Convert a full-render-target pixel into normalized coordinates inside one
+// submitted eye region. This keeps stereo-atlas layout separate from gaze/FOV
+// math and works for horizontal, vertical, or asymmetric eye bounds.
+inline bool NormalizeInEyeRegion(float pixelX, float pixelY,
+    int left, int top, int width, int height, float& eyeU, float& eyeV)
+{
+	if (!std::isfinite(pixelX) || !std::isfinite(pixelY) ||
+	    width <= 0 || height <= 0 || pixelX < left || pixelY < top ||
+	    pixelX >= left + width || pixelY >= top + height)
+		return false;
+	eyeU = (pixelX - left) / (float)width;
+	eyeV = (pixelY - top) / (float)height;
+	return true;
+}
+
 // Skyrim's terrain and alpha-tested foliage shaders can produce severe
 // derivative/mip artifacts under 2x2 coarse shading. Compatibility mode keeps
 // foveation active but caps every peripheral tile at half rate.

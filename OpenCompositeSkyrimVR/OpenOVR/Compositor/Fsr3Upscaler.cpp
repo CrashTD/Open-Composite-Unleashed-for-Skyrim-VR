@@ -377,12 +377,6 @@ bool Fsr3Upscaler::EnsureSharedTextures(uint32_t renderW, uint32_t renderH,
 				return false;
 		}
 
-		// ASW warp output: single buffer (dispatch is synchronous). Kept separate
-		// from the game output — sharing one buffer let synthetic-frame dispatches
-		// clobber the game frame ASW caches, producing double vision.
-		if (!CreateSharedTexture(outputW, outputH, colorFormat, true,
-		        &e.warpOutputDX12, &e.warpOutputDX11, &e.warpOutputHandle))
-			return false;
 	}
 
 	OOVR_LOGF("FSR3: Shared textures created — render=%ux%u output=%ux%u fmt=%u",
@@ -400,7 +394,6 @@ void Fsr3Upscaler::DestroySharedTextures()
 		DestroySharedTexture(&e.reactiveDX12, &e.reactiveDX11, &e.reactiveHandle);
 		for (int buf = 0; buf < 2; buf++)
 			DestroySharedTexture(&e.outputDX12[buf], &e.outputDX11[buf], &e.outputHandle[buf]);
-		DestroySharedTexture(&e.warpOutputDX12, &e.warpOutputDX11, &e.warpOutputHandle);
 
 		// Reset async pipeline state
 		m_outputWrite[eye] = 0;
@@ -466,57 +459,9 @@ bool Fsr3Upscaler::EnsureFsrContexts(uint32_t renderW, uint32_t renderH,
 	return true;
 }
 
-bool Fsr3Upscaler::EnsureWarpFsrContexts(uint32_t renderW, uint32_t renderH,
-    uint32_t outputW, uint32_t outputH)
-{
-	if (m_warpFsrContextsCreated) return true;
-
-	for (int eye = 0; eye < 2; eye++) {
-		ffxCreateContextDescUpscale upscaleDesc = {};
-		upscaleDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-		upscaleDesc.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE
-		    | FFX_UPSCALE_ENABLE_DEPTH_INVERTED
-		    | FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION
-		    | FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
-		OOVR_LOGF("FSR3 warp: Context creation flags=0x%X", upscaleDesc.flags);
-
-		upscaleDesc.maxRenderSize = { renderW, renderH };
-		upscaleDesc.maxUpscaleSize = { outputW, outputH };
-		upscaleDesc.fpMessage = nullptr;
-
-		ffxCreateContextDescUpscaleVersion versionDesc = {};
-		versionDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION;
-		versionDesc.version = FFX_UPSCALER_VERSION;
-
-		ffxCreateBackendDX12Desc backendDesc = {};
-		backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
-		backendDesc.device = m_d3d12Device;
-
-		upscaleDesc.header.pNext = &versionDesc.header;
-		versionDesc.header.pNext = &backendDesc.header;
-
-		ffxReturnCode_t rc = m_ffxCreateContext(&m_warpFsrContext[eye], &upscaleDesc.header, nullptr);
-		if (rc != 0) {
-			OOVR_LOGF("FSR3 warp: ffxCreateContext eye=%d failed (rc=%u)", eye, rc);
-			for (int e = 0; e <= eye; e++) {
-				if (m_warpFsrContext[e] && m_ffxDestroyContext) {
-					m_ffxDestroyContext(&m_warpFsrContext[e], nullptr);
-					m_warpFsrContext[e] = nullptr;
-				}
-			}
-			return false;
-		}
-	}
-
-	m_warpFsrContextsCreated = true;
-	OOVR_LOGF("FSR3 warp: Upscaler contexts created - render=%ux%u output=%ux%u",
-	    renderW, renderH, outputW, outputH);
-	return true;
-}
-
 void Fsr3Upscaler::DestroyFsrContexts()
 {
-	if (!m_fsrContextsCreated && !m_warpFsrContextsCreated) return;
+	if (!m_fsrContextsCreated) return;
 
 	// GPU must be idle before destroying contexts
 	if (m_cmdQueue && m_d3d12Fence && m_fenceEvent) {
@@ -530,14 +475,9 @@ void Fsr3Upscaler::DestroyFsrContexts()
 			m_ffxDestroyContext(&m_fsrContext[eye], nullptr);
 			m_fsrContext[eye] = nullptr;
 		}
-		if (m_warpFsrContext[eye] && m_ffxDestroyContext) {
-			m_ffxDestroyContext(&m_warpFsrContext[eye], nullptr);
-			m_warpFsrContext[eye] = nullptr;
-		}
 	}
 
 	m_fsrContextsCreated = false;
-	m_warpFsrContextsCreated = false;
 	m_fsrConfigApplied = false;
 }
 
@@ -546,17 +486,6 @@ void Fsr3Upscaler::DestroyFsrContexts()
 // ============================================================================
 
 bool Fsr3Upscaler::Dispatch(int eyeIdx, ID3D11DeviceContext* d3d11Ctx, const DispatchParams& params)
-{
-	return DispatchInternal(eyeIdx, d3d11Ctx, params, false);
-}
-
-bool Fsr3Upscaler::DispatchWarp(int eyeIdx, ID3D11DeviceContext* d3d11Ctx, const DispatchParams& params)
-{
-	return DispatchInternal(eyeIdx, d3d11Ctx, params, true);
-}
-
-bool Fsr3Upscaler::DispatchInternal(int eyeIdx, ID3D11DeviceContext* d3d11Ctx,
-    const DispatchParams& params, bool warpContext)
 {
 	if (!m_ready || eyeIdx < 0 || eyeIdx > 1 || !d3d11Ctx) return false;
 
@@ -570,18 +499,12 @@ bool Fsr3Upscaler::DispatchInternal(int eyeIdx, ID3D11DeviceContext* d3d11Ctx,
 	        params.outputWidth, params.outputHeight, colorFormat))
 		return false;
 
-	if (warpContext) {
-		if (!EnsureWarpFsrContexts(params.renderWidth, params.renderHeight,
-		        params.outputWidth, params.outputHeight))
-			return false;
-	} else {
-		if (!EnsureFsrContexts(params.renderWidth, params.renderHeight,
-		        params.outputWidth, params.outputHeight, params.jitterCancellation))
-			return false;
-	}
+	if (!EnsureFsrContexts(params.renderWidth, params.renderHeight,
+	        params.outputWidth, params.outputHeight, params.jitterCancellation))
+		return false;
 
 	auto& eye = m_eye[eyeIdx];
-	ffxContext* contexts = warpContext ? m_warpFsrContext : m_fsrContext;
+	ffxContext* contexts = m_fsrContext;
 
 	// ── Synchronous wait: ensure previous DX12 work for this eye is complete ──
 	// Must complete before resetting command allocator or submitting new work.
@@ -674,7 +597,7 @@ bool Fsr3Upscaler::DispatchInternal(int eyeIdx, ID3D11DeviceContext* d3d11Ctx,
 	auto cmdList = m_cmdList[eyeIdx];
 
 	// Apply runtime tuning once per context lifetime (reduces ghosting on thin geometry)
-	if (!warpContext && !m_fsrConfigApplied && m_ffxConfigure) {
+	if (!m_fsrConfigApplied && m_ffxConfigure) {
 		m_fsrConfigApplied = true;
 		struct { uint64_t key; float value; const char* name; } cfgEntries[] = {
 			{ FFX_API_CONFIGURE_UPSCALE_KEY_FSHADINGCHANGESCALE,
@@ -726,11 +649,8 @@ bool Fsr3Upscaler::DispatchInternal(int eyeIdx, ID3D11DeviceContext* d3d11Ctx,
 		dispatchDesc.transparencyAndComposition = dispatchDesc.reactive;
 	}
 
-	// Output resource — game dispatches use the double-buffered game output;
-	// warp dispatches write to their own buffer so GetOutputDX11 keeps returning
-	// the last real game frame (see SharedEyeTextures::warpOutput*).
 	dispatchDesc.output = ffxApiGetResourceDX12(
-	    warpContext ? eye.warpOutputDX12 : eye.outputDX12[writeBuf],
+	    eye.outputDX12[writeBuf],
 	    FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, FFX_API_RESOURCE_USAGE_UAV);
 
 	// Jitter and motion vector parameters
@@ -787,7 +707,7 @@ bool Fsr3Upscaler::DispatchInternal(int eyeIdx, ID3D11DeviceContext* d3d11Ctx,
 	ffxReturnCode_t rc = m_ffxDispatch(&contexts[eyeIdx], &dispatchDesc.header);
 	if (rc != 0) {
 		OOVR_LOGF("%s: ffxDispatch eye=%d failed (rc=%u)",
-		    warpContext ? "FSR3 warp" : "FSR3", eyeIdx, rc);
+		    "FSR3", eyeIdx, rc);
 		cmdList->Close();
 		ctx4->Release();
 		return false;
@@ -811,11 +731,8 @@ bool Fsr3Upscaler::DispatchInternal(int eyeIdx, ID3D11DeviceContext* d3d11Ctx,
 
 	// Output is in outputDX12[writeBuf] / outputDX11[writeBuf] — ready to read immediately
 	// (No double-buffering for now: always read what we just wrote)
-	// Warp dispatches must not touch game-output bookkeeping.
-	if (!warpContext) {
-		m_outputWrite[eyeIdx] = writeBuf; // Keep pointing to current buffer for GetOutputDX11
-		m_hasOutput[eyeIdx] = true;
-	}
+	m_outputWrite[eyeIdx] = writeBuf; // Keep pointing to current buffer for GetOutputDX11
+	m_hasOutput[eyeIdx] = true;
 	return true;
 }
 
@@ -824,12 +741,6 @@ ID3D11Texture2D* Fsr3Upscaler::GetOutputDX11(int eyeIdx) const
 	if (eyeIdx < 0 || eyeIdx > 1) return nullptr;
 	// Synchronous mode: return the buffer we just wrote to (DX12 already completed)
 	return m_eye[eyeIdx].outputDX11[m_outputWrite[eyeIdx]];
-}
-
-ID3D11Texture2D* Fsr3Upscaler::GetWarpOutputDX11(int eyeIdx) const
-{
-	if (eyeIdx < 0 || eyeIdx > 1) return nullptr;
-	return m_eye[eyeIdx].warpOutputDX11;
 }
 
 #endif // defined(SUPPORT_DX) && defined(SUPPORT_DX11) && defined(OC_HAS_FSR3)

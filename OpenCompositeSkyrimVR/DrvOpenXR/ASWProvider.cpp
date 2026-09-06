@@ -11,6 +11,7 @@
 #include <d3dcompiler.h>
 #include <cmath>
 #include <cstring>
+#include <chrono>
 
 // Global instance — accessed from XrBackend for frame injection
 ASWProvider* g_aswProvider = nullptr;
@@ -18,105 +19,7 @@ ASWProvider* g_aswProvider = nullptr;
 // ============================================================================
 // Embedded HLSL compute shader for frame warping
 // ============================================================================
-static const char* s_warpShaderHLSL = R"(
-
-Texture2D<float4> prevColor    : register(t0);
-Texture2D<float2> motionVectors : register(t1);
-Texture2D<float>  depthTex     : register(t2);
-RWTexture2D<float4> output     : register(u0);
-SamplerState linearClamp       : register(s0);
-
-cbuffer WarpParams : register(b0) {
-    row_major float4x4 poseDeltaMatrix;   // transforms NEW view → OLD view (backward warp)
-    float2 resolution;
-    float nearZ, farZ;
-    float fovTanLeft, fovTanRight, fovTanUp, fovTanDown;
-    float depthScale;           // multiplier on linearized depth (parallax intensity)
-    float edgeFadeWidth;        // depth-edge fade threshold (depth ratio units)
-    float nearFadeDepth;        // parallax fades to 0 below this depth (game units); 0 = disabled
-    float debugTint;            // >0.5 = red-tint warp frames (aswDebugMode=10)
-    float2 depthResolution;     // depth grid size — may be smaller than resolution
-                                // when an external render-scale mod is active
-    float2 sourceFlip;          // x is reserved; y preserves reversed-V OpenVR bounds
-};
-
-// Linearize depth from reversed-Z buffer value
-float LinearizeDepth(float d, float zNear, float zFar) {
-    float denom = zFar - d * (zFar - zNear);
-    return (abs(denom) > 0.0001) ? (zNear * zFar / denom) : zFar;
-}
-
-[numthreads(8, 8, 1)]
-void CSMain(uint3 tid : SV_DispatchThreadID) {
-    if (tid.x >= (uint)resolution.x || tid.y >= (uint)resolution.y)
-        return;
-
-    // Output pixel UV in the NEW (warped) view
-    float2 uv = ((float2)tid.xy + 0.5) / resolution;
-
-    // 1. Read depth from old frame (approximate — depth changes slowly between frames).
-    // Depth may live at a different (smaller) grid than the color/output when an
-    // external render-scale mod is active, so index it through UV, not tid.xy.
-    // The bridge depth target is raster-aligned with the submitted game color.
-    // Canonicalize it for warp sampling; the raw XR depth layer is disabled
-    // for flipped pairs because that swapchain is not transformed here.
-    float2 depthUV = lerp(uv, 1.0 - uv, sourceFlip);
-    int2 dmax = int2((int)depthResolution.x - 1, (int)depthResolution.y - 1);
-    int2 dpix = clamp((int2)(depthUV * depthResolution), int2(0,0), dmax);
-    float d = depthTex[dpix];
-    float linearDepth = LinearizeDepth(d, nearZ, farZ);
-
-    // 2. Depth-edge detection: fade parallax at discontinuities to prevent silhouette tears
-    float minD = linearDepth, maxD = linearDepth;
-    int2 offsets[4] = { int2(-1,0), int2(1,0), int2(0,-1), int2(0,1) };
-    [unroll] for (int i = 0; i < 4; i++) {
-        int2 np = clamp(dpix + offsets[i], int2(0,0), dmax);
-        float nd = LinearizeDepth(depthTex[np], nearZ, farZ);
-        minD = min(minD, nd);
-        maxD = max(maxD, nd);
-    }
-    float depthRatio = maxD / max(minD, 0.001);
-    float edgeFade = saturate(1.0 - (depthRatio - 1.0) / max(edgeFadeWidth, 0.001));
-
-    // 3. Reconstruct view-space position of this output pixel in NEW view
-    float scaledDepth = linearDepth * depthScale;
-    float tanX = lerp(fovTanLeft, fovTanRight, uv.x);
-    float tanY = lerp(fovTanUp,   fovTanDown,  uv.y);
-    float3 newViewPos = float3(tanX * scaledDepth, tanY * scaledDepth, scaledDepth);
-
-    // 4. Transform from NEW view space to OLD view space (backward warping)
-    float4 transformed = mul(poseDeltaMatrix, float4(newViewPos, 1.0));
-    float3 oldViewPos = transformed.xyz;
-
-    // 5. Project into OLD view UV to find where to sample from the cached frame
-    float2 parallaxUV = uv;  // fallback if behind camera
-    if (oldViewPos.z > 0.001) {
-        float oldTanX = oldViewPos.x / oldViewPos.z;
-        float oldTanY = oldViewPos.y / oldViewPos.z;
-        parallaxUV.x = (oldTanX - fovTanLeft) / (fovTanRight - fovTanLeft);
-        parallaxUV.y = (oldTanY - fovTanUp) / (fovTanDown - fovTanUp);
-    }
-
-    // 6. Near-field fade: zero parallax below nearFadeDepth, full at 2x (hands, close walls)
-    float depthFade = (nearFadeDepth > 0.0) ? saturate((linearDepth - nearFadeDepth) / nearFadeDepth) : 1.0;
-
-    // 7. Apply combined fade; OOB warp falls back to identity
-    float2 sourceUV = lerp(uv, parallaxUV, edgeFade * depthFade);
-    if (any(sourceUV < -0.01) || any(sourceUV > 1.01))
-        sourceUV = uv;
-    sourceUV = saturate(sourceUV);
-
-    float2 colorUV = lerp(sourceUV, 1.0 - sourceUV, sourceFlip);
-    float4 color = prevColor.SampleLevel(linearClamp, colorUV, 0);
-
-    // Debug: tint warp frames red so they're distinguishable from real frames
-    if (debugTint > 0.5) {
-        color.rgb = float3(min(1.0, color.r * 1.5 + 0.1), color.g * 0.6, color.b * 0.6);
-    }
-
-    output[tid.xy] = color;
-}
-)";
+#include "DapaWarpShader.h"
 
 // ============================================================================
 // Quaternion math helpers
@@ -391,6 +294,9 @@ void ASWProvider::ReleaseStagingTextures()
 // ResizeDepthCache if the game's depth target differs.
 bool ASWProvider::ResizeColorPath(uint32_t eyeW, uint32_t eyeH)
 {
+	m_outputLease = {};
+	m_depthLease = {};
+	m_depthSubmittedThisFrame = false;
 	OOVR_LOGF("ASW: adaptive resize color path %ux%u -> %ux%u",
 	    m_eyeWidth, m_eyeHeight, eyeW, eyeH);
 
@@ -588,7 +494,7 @@ bool ASWProvider::CacheFrame(int eye, ID3D11DeviceContext* ctx,
     ID3D11Texture2D* mvTex, const D3D11_BOX* mvRegion,
     ID3D11Texture2D* depthTex, const D3D11_BOX* depthRegion,
     const XrPosef& eyePose, const XrFovf& eyeFov,
-    float nearZ, float farZ)
+    float nearZ, float farZ, ID3D11Texture2D* bodyDepthMask)
 {
 	auto failGeneration = [this]() {
 		InvalidateCachedFrame();
@@ -602,7 +508,11 @@ bool ASWProvider::CacheFrame(int eye, ID3D11DeviceContext* ctx,
 	// stereo cache, so the previously published pair must stop being visible
 	// before either eye is overwritten.
 	if (eye == 0) {
-		InvalidateCachedFrame();
+		// Normal pair turnover preserves REAL-frame motion history. Error / pause /
+		// resize invalidation still resets it through InvalidateCachedFrame().
+		m_hasCachedFrame = false;
+		m_cacheBuildEyeMask = 0;
+		m_motionGeometryValid[0] = m_motionGeometryValid[1] = false;
 	} else if (m_cacheBuildEyeMask != 0x1) {
 		// Never combine a right eye with a left eye from an older generation.
 		return failGeneration();
@@ -673,6 +583,29 @@ bool ASWProvider::CacheFrame(int eye, ID3D11DeviceContext* ctx,
 		}
 	}
 
+	// A mask is usable only for this source eye, source resolution and device.
+	// Cache it before the game starts drawing the next frame into its mask.
+	m_bodyValid[eye] = false;
+	if (bodyDepthMask) {
+		D3D11_TEXTURE2D_DESC bd{},dd{};
+		bodyDepthMask->GetDesc(&bd); depthTex->GetDesc(&dd);
+		Microsoft::WRL::ComPtr<ID3D11Device> owner;
+		bodyDepthMask->GetDevice(&owner);
+		if (owner.Get()==m_device && bd.Format==DXGI_FORMAT_R32_FLOAT &&
+		    bd.Width==dd.Width && bd.Height==dd.Height && bd.ArraySize==1 && bd.SampleDesc.Count==1) {
+			D3D11_TEXTURE2D_DESC cached{};
+			if(m_bodyDepth[eye])m_bodyDepth[eye]->GetDesc(&cached);
+			if(cached.Width!=m_depthWidth || cached.Height!=m_depthHeight) {
+				m_bodySrv[eye].Reset();m_bodyDepth[eye].Reset();
+				bd.Width=m_depthWidth;bd.Height=m_depthHeight;bd.MipLevels=1;
+				bd.BindFlags=D3D11_BIND_SHADER_RESOURCE;bd.Usage=D3D11_USAGE_DEFAULT;
+				bd.CPUAccessFlags=bd.MiscFlags=0;
+				if(SUCCEEDED(m_device->CreateTexture2D(&bd,nullptr,&m_bodyDepth[eye])))
+					m_device->CreateShaderResourceView(m_bodyDepth[eye].Get(),nullptr,&m_bodySrv[eye]);
+			}
+			if(m_bodySrv[eye])m_bodyValid[eye]=SafeBridgeCopy(ctx,m_bodyDepth[eye].Get(),0,0,0,0,bodyDepthMask,0,depthRegion);
+		}
+	}
 	m_cachedPose[eye] = eyePose;
 	m_cachedFov[eye] = eyeFov;
 	m_cachedSourceFlipV[eye] = sourceFlipV;
@@ -694,6 +627,50 @@ bool ASWProvider::CacheFrame(int eye, ID3D11DeviceContext* ctx,
 	return true;
 }
 
+void ASWProvider::SampleLocomotion(XrTime time, DapaMotion::Vec3 position)
+{
+	m_motion.Sample(time, position);
+	// Independent raw actor displacement: no predictor filtering/confidence/clamp.
+	m_captureMovement.SamplePosition(time,DapaCaptureTelemetry::NowNs(),position);
+	m_captureMovement.latest.predictorVelocity=m_motion.velocity;
+	m_captureMovement.latest.predictorConfidence=m_motion.confidence;
+	m_captureMovement.latest.actorYaw=m_turn.yaw;
+	m_captureMovement.latest.turnRate=m_turn.rate;
+	m_captureMovement.latest.turnConfidence=m_turn.confidence;
+	m_captureMovement.latest.turnInput=m_turn.turning;
+	m_captureMovement.latest.turnValid=m_turn.haveRate;
+	for(int eye=0;eye<2;++eye)if(m_motionGeometryValid[eye])
+		m_captureMovement.SetView(eye,m_motionView[eye],m_motionProjection[eye][11]>0?1.0f:-1.0f);
+	m_captureMovement.latest.sticks=DapaCaptureTelemetry::Read();
+	m_capture.ObserveMovement(m_captureMovement.latest);
+	if (m_device && m_hasCachedFrame && m_capture.NeedsNext()) {
+		ID3D11DeviceContext* ctx = nullptr;
+		m_device->GetImmediateContext(&ctx);
+		m_capture.NextPair(ctx, m_cachedColor, time, m_cachedSourceFlipV,
+		    reinterpret_cast<const float*>(&m_cachedPose[0]), reinterpret_cast<const float*>(&m_cachedPose[1]));
+		ctx->Release();
+	}
+}
+
+void ASWProvider::CaptureTick()
+{
+	m_capture.Poll();
+	if (m_device && m_capture.NeedsPump()) {
+		ID3D11DeviceContext* ctx = nullptr;
+		m_device->GetImmediateContext(&ctx);
+		m_capture.Pump(ctx);
+		ctx->Release();
+	}
+}
+
+void ASWProvider::SetMotionGeometry(int eye, const float* view, const float* vp)
+{
+	if (eye < 0 || eye > 1) return;
+	m_motionGeometryValid[eye] = view && vp && DapaMotion::Projection(view, vp,
+	    m_motionProjection[eye], m_motionInvProjection[eye]);
+	if (m_motionGeometryValid[eye]) memcpy(m_motionView[eye], view, sizeof(m_motionView[eye]));
+}
+
 bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
     const XrPosef& newPose)
 {
@@ -705,44 +682,46 @@ bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
 	// so we can find where each output pixel maps to in the cached frame
 	BuildPoseDeltaMatrix(newPose, m_cachedPose[eye], cb.poseDeltaMatrix);
 
-	// Rotation correction is DISABLED — VD's runtime ATW handles rotation.
-	// We only apply translation (depth-based parallax) to correct for strafing/positional movement.
+	// Tracked HEAD rotation is left to the runtime. Game stick-turn rotation
+	// is a separate actor-heading signal, applied below in each cached eye basis.
 	// Force rotation part (3x3 upper-left) to identity:
 	for (int r = 0; r < 3; r++)
 		for (int c = 0; c < 3; c++)
 			cb.poseDeltaMatrix[r * 4 + c] = (r == c) ? 1.0f : 0.0f;
 
-	// Stick turn correction: yaw delta is per game frame; warp sits ~half a frame after cache.
-	// Default aswRotationScale=0 (off); start tuning at 0.5, negate if direction is backwards.
-	float rotS = oovr_global_configuration.ASWRotationScale();
-	if (rotS != 0.0f && m_locoYaw != 0.0f) {
-		float theta = m_locoYaw * rotS;
-		float c = cosf(theta), s = sinf(theta);
-		// R_y(theta) row-major into the 3x3 block
-		cb.poseDeltaMatrix[0] = c;
-		cb.poseDeltaMatrix[2] = s;
-		cb.poseDeltaMatrix[8] = -s;
-		cb.poseDeltaMatrix[10] = c;
-	}
+	const float master = oovr_global_configuration.ASWWarpStrength();
+	const float rotS = oovr_global_configuration.ASWRotationScale();
+	const float predictedYaw=m_turn.Predict(m_warpDisplayTime);
+	const float theta=std::clamp(predictedYaw*rotS*master,-0.12f,0.12f);
+	bool turnApplied=false;
+	if(m_motionGeometryValid[eye] && std::isfinite(theta) && theta!=0)
+		turnApplied=DapaMotion::WorldYawToView(theta,m_motionView[eye],cb.poseDeltaMatrix);
 
-	// Scale translation part by master strength × translation scale.
-	// HMD pose delta is meters; shader view space is game units → ×72 (matches nearFadeDepth conversion).
-	// Negated: field-tested — positive scale displaced the warp further along travel direction.
-	float master = oovr_global_configuration.ASWWarpStrength();
+	// BuildPoseDeltaMatrix(new,cached) gives cached^-1 * (new-cached): the
+	// correct backward-lookup translation, in OpenXR metres (-Z forward).
+	// Convert to the actual game view's scale and forward convention. This is
+	// separate from actor translation: no NiCamera/HMD term enters locomotion.
 	float transS = master * oovr_global_configuration.ASWTranslationScale() * 72.0f;
 	transS = (transS < 0.0f) ? 0.0f : transS;
-	cb.poseDeltaMatrix[3] *= -transS;
-	cb.poseDeltaMatrix[7] *= -transS;
-	cb.poseDeltaMatrix[11] *= -transS;
+	if (m_motionGeometryValid[eye]) {
+		const float* v = m_motionView[eye];
+		transS *= std::sqrt(v[0]*v[0] + v[4]*v[4] + v[8]*v[8]);
+	} else transS = 0;
+	cb.poseDeltaMatrix[3] *= transS;
+	cb.poseDeltaMatrix[7] *= transS;
+	cb.poseDeltaMatrix[11] *= transS * (m_motionProjection[eye][11] > 0 ? -1.0f : 1.0f);
 
-	// Stick locomotion correction: shift by the warp's position within the game frame
-	// (slot fraction) × the per-frame view-space camera delta. Game units, matches linearDepth.
-	// Negated: field-tested — positive sign doubled the travel-direction displacement.
-	float locoS = m_slotFraction * oovr_global_configuration.ASWLocoScale();
-	if (locoS != 0.0f && (m_locoX != 0.0f || m_locoY != 0.0f || m_locoZ != 0.0f)) {
-		cb.poseDeltaMatrix[3] -= m_locoX * locoS;
-		cb.poseDeltaMatrix[7] -= m_locoY * locoS;
-		cb.poseDeltaMatrix[11] -= m_locoZ * locoS;
+	// Guarded world-space velocity extrapolated to the requested XR display time,
+	// transformed by this eye's cached game view (including game world scale).
+	if (m_motionGeometryValid[eye]) {
+		const auto world = m_motion.Predict(m_warpDisplayTime);
+		const auto view = DapaMotion::ToView(world, m_motionView[eye]);
+		const float scale = master * oovr_global_configuration.ASWLocoScale();
+		// Backward lookup: new camera position = old + delta, hence add delta
+		// to the new-view point to find its location in the old camera frame.
+		cb.poseDeltaMatrix[3] += view.x * scale;
+		cb.poseDeltaMatrix[7] += view.y * scale;
+		cb.poseDeltaMatrix[11] += view.z * scale;
 	}
 
 	cb.resolution[0] = (float)m_eyeWidth;
@@ -762,6 +741,28 @@ bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
 	cb.depthResolution[1] = (float)(m_depthHeight ? m_depthHeight : m_eyeHeight);
 	cb.sourceFlip[0] = 0.0f;
 	cb.sourceFlip[1] = m_cachedSourceFlipV[eye] ? 1.0f : 0.0f;
+	float movement=std::abs(cb.poseDeltaMatrix[3])+std::abs(cb.poseDeltaMatrix[7])+std::abs(cb.poseDeltaMatrix[11]);
+	for(int r=0;r<3;++r)for(int c=0;c<3;++c)movement+=std::abs(cb.poseDeltaMatrix[r*4+c]-(r==c?1.0f:0.0f));
+	const bool moving=movement>1e-7f;
+	cb.predictionValid = m_motionGeometryValid[eye] && moving ? 1.0f : 0.0f;
+	cb.padding[0] = m_bodyValid[eye] ? 3.0f : 2.0f; // v3 adds player-owned source-depth mask at t1
+	cb.padding[1] = turnApplied ? theta : 0; // Applied backward world yaw, radians.
+	cb.padding[2] = m_turn.confidence;
+	m_warpMoved[eye] = cb.predictionValid > 0.5f;
+	memcpy(cb.projection, m_motionProjection[eye], sizeof(cb.projection));
+	memcpy(cb.inverseProjection, m_motionInvProjection[eye], sizeof(cb.inverseProjection));
+	if (eye == 1 && (oovr_global_configuration.DebugLogging() || m_capture.Recording())) {
+		static auto lastLog = std::chrono::steady_clock::now() - std::chrono::seconds(3);
+		const auto now = std::chrono::steady_clock::now();
+		if (now - lastLog >= std::chrono::seconds(2)) {
+			lastLog = now;
+			OOVR_LOGF("DAPA MOTION v2: geometry=%d/%d interval=%.2fms horizon=%.2fms confidence=%.2f translation=(%.3f,%.3f,%.3f) turnRate=%.3f turnConfidence=%.2f appliedYaw=%.5f objectMV=off",
+			    m_motionGeometryValid[0], m_motionGeometryValid[1], m_motion.interval*1000,
+			    double(m_warpDisplayTime-m_motion.time)*1e-6, m_motion.confidence,
+			    cb.poseDeltaMatrix[3], cb.poseDeltaMatrix[7], cb.poseDeltaMatrix[11],
+			    m_turn.rate, m_turn.confidence, cb.padding[1]);
+		}
+	}
 
 	// Update constant buffer
 	D3D11_MAPPED_SUBRESOURCE mapped;
@@ -770,13 +771,20 @@ bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
 	memcpy(mapped.pData, &cb, sizeof(cb));
 	ctx->Unmap(m_constantBuffer, 0);
 
-	// Dispatch compute shader
-	ctx->CSSetShader(m_warpCS, nullptr, 0);
-	// t1 null — MV texture is never copied or sampled (parallax-only shader)
-	ID3D11ShaderResourceView* srvs[] = { m_srvColor[eye], nullptr, m_srvDepth[eye] };
+	// Capture variant adds clean colour and diagnostic UAVs only for the requested
+	// stereo pair. Its normal output still contains the configured game tint.
+	ID3D11ComputeShader* captureShader = m_capture.BeginEye(eye, ctx,
+	    m_cachedColor[eye], m_cachedDepth[eye], reinterpret_cast<const float*>(&cb),
+	    m_motion.time, m_warpDisplayTime, m_cachedSourceFlipV[eye],
+	    reinterpret_cast<const float*>(&m_cachedPose[eye]), reinterpret_cast<const float*>(&newPose),
+	    reinterpret_cast<const float*>(&m_cachedFov[eye]),m_bodyValid[eye]?m_bodyDepth[eye].Get():nullptr);
+	ctx->CSSetShader(captureShader ? captureShader : m_warpCS, nullptr, 0);
+	ID3D11ShaderResourceView* srvs[] = { m_srvColor[eye], m_bodyValid[eye] ? m_bodySrv[eye].Get() : nullptr, m_srvDepth[eye] };
 	ctx->CSSetShaderResources(0, 3, srvs);
-	ID3D11UnorderedAccessView* uavs[] = { m_uavOutput[eye] };
-	ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
+	ID3D11UnorderedAccessView* uavs[] = { m_uavOutput[eye], captureShader ? m_capture.Clean(eye) : nullptr,
+	    captureShader ? m_capture.Diagnostic(eye) : nullptr };
+	const UINT uavCount = captureShader ? 3 : 1;
+	ctx->CSSetUnorderedAccessViews(0, uavCount, uavs, nullptr);
 	ctx->CSSetConstantBuffers(0, 1, &m_constantBuffer);
 	ctx->CSSetSamplers(0, 1, &m_linearSampler);
 
@@ -786,46 +794,43 @@ bool ASWProvider::WarpFrame(int eye, ID3D11DeviceContext* ctx,
 
 	// Unbind to avoid hazards
 	ID3D11ShaderResourceView* nullSRVs[3] = {};
-	ID3D11UnorderedAccessView* nullUAVs[1] = {};
+	ID3D11UnorderedAccessView* nullUAVs[3] = {};
 	ctx->CSSetShaderResources(0, 3, nullSRVs);
-	ctx->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
+	ctx->CSSetUnorderedAccessViews(0, uavCount, nullUAVs, nullptr);
 	ctx->CSSetShader(nullptr, nullptr, 0);
+	if (captureShader) m_capture.EndEye(eye, ctx);
 
 	return true;
 }
 
-bool ASWProvider::SubmitWarpedOutput(ID3D11DeviceContext* ctx)
+bool ASWProvider::SubmitWarpedOutput(ID3D11DeviceContext* ctx, double displayPeriodMs)
 {
+	m_depthSubmittedThisFrame = false;
 	if (!m_ready || !m_hasCachedFrame) return false;
 
-	// Acquire output swapchain
-	XrSwapchainImageAcquireInfo acquireInfo = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-	uint32_t idx = 0;
-	XrResult res = xrAcquireSwapchainImage(m_outputSwapchain, &acquireInfo, &idx);
-	if (XR_FAILED(res)) {
-		static int s = 0;
-		if (s++ < 5) OOVR_LOGF("ASW: Output acquire failed result=%d", (int)res);
+	const auto deadline = std::chrono::steady_clock::now() +
+	    std::chrono::nanoseconds(DapaTiming::ImageWaitBudget(displayPeriodMs));
+	auto remaining = [&]() -> XrDuration {
+		return std::max<XrDuration>(0, std::chrono::duration_cast<std::chrono::nanoseconds>(
+		    deadline - std::chrono::steady_clock::now()).count());
+	};
+	XrResult res = m_outputLease.Wait(m_outputSwapchain, remaining(),
+	    xrAcquireSwapchainImage, xrWaitSwapchainImage);
+	if (res != XR_SUCCESS) {
+		if (res != XR_TIMEOUT_EXPIRED) {
+			OOVR_LOGF("ASW: Output ownership failed result=%d — disabling ASW for this session", (int)res);
+			m_ready = false;
+		}
 		return false;
 	}
-
-	XrSwapchainImageWaitInfo waitInfo = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-	waitInfo.timeout = XR_INFINITE_DURATION; // our own swapchain — runtime always returns images
-	res = xrWaitSwapchainImage(m_outputSwapchain, &waitInfo);
-	if (XR_FAILED(res)) {
-		// Wait failed on our own swapchain — something is seriously wrong.
-		// Do NOT release: spec says release after failed wait is XR_ERROR_CALL_ORDER_INVALID.
-		// Image stays acquired — swapchain is now stuck. Disable ASW for this session.
-		OOVR_LOGF("ASW: Output wait FAILED result=%d — disabling ASW (swapchain stuck)", (int)res);
-		m_ready = false;
-		return false;
-	}
+	const uint32_t idx = m_outputLease.index;
 
 	// Copy both warped eyes into stereo-combined swapchain (use acquired index!)
 	if (idx >= m_outputSwapchainImages.size()) {
 		static int s = 0;
 		if (s++ < 5) OOVR_LOGF("ASW: Acquired idx %u out of range (have %zu)", idx, m_outputSwapchainImages.size());
-		XrSwapchainImageReleaseInfo rel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		xrReleaseSwapchainImage(m_outputSwapchain, &rel);
+		m_outputLease.Release(m_outputSwapchain, xrReleaseSwapchainImage);
+		m_ready = false;
 		return false;
 	}
 	ID3D11Texture2D* target = m_outputSwapchainImages[idx];
@@ -835,40 +840,40 @@ bool ASWProvider::SubmitWarpedOutput(ID3D11DeviceContext* ctx)
 	ctx->CopySubresourceRegion(target, 0,
 	    m_eyeWidth, 0, 0, m_warpedOutput[1], 0, nullptr); // right eye at x=eyeWidth
 
-	// No manual Flush() — xrReleaseSwapchainImage handles GPU synchronization
-	XrSwapchainImageReleaseInfo relInfo = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-	xrReleaseSwapchainImage(m_outputSwapchain, &relInfo);
+	// Release only after a successful wait and queued copies; no forced GPU drain.
+	if (m_outputLease.Release(m_outputSwapchain, xrReleaseSwapchainImage) != XR_SUCCESS) {
+		OOVR_LOG("ASW: Output release failed — disabling ASW for this session");
+		m_ready = false;
+		return false;
+	}
 
 	// Submit depth swapchain (if available). Skipped when the depth cache runs
 	// at a different resolution than the eye (external render scale) — the
 	// swapchain copy needs matching sizes and stale depth is worse than none.
 	if (m_depthSwapchain != XR_NULL_HANDLE && DepthLayerValid()) {
-		XrSwapchainImageAcquireInfo depthAcquire = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-		uint32_t depthIdx = 0;
-		XrResult depthRes = xrAcquireSwapchainImage(m_depthSwapchain, &depthAcquire, &depthIdx);
-		if (XR_SUCCEEDED(depthRes)) {
-			XrSwapchainImageWaitInfo depthWait = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-			depthWait.timeout = XR_INFINITE_DURATION;
-			depthRes = xrWaitSwapchainImage(m_depthSwapchain, &depthWait);
-			if (XR_SUCCEEDED(depthRes)) {
-				if (depthIdx < m_depthSwapchainImages.size()) {
-					ID3D11Texture2D* depthTarget = m_depthSwapchainImages[depthIdx];
-					D3D11_BOX depthBox = {};
-					depthBox.right = m_eyeWidth;
-					depthBox.bottom = m_eyeHeight;
-					depthBox.front = 0;
-					depthBox.back = 1;
-					ctx->CopySubresourceRegion(depthTarget, 0,
-					    0, 0, 0, m_cachedDepth[0], 0, &depthBox);
-					ctx->CopySubresourceRegion(depthTarget, 0,
-					    m_eyeWidth, 0, 0, m_cachedDepth[1], 0, &depthBox);
-				}
-				XrSwapchainImageReleaseInfo depthRel = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-				xrReleaseSwapchainImage(m_depthSwapchain, &depthRel);
-			} else {
-				// Wait failed — don't release (spec violation). Depth swapchain stuck but non-fatal.
-				OOVR_LOGF("ASW: Depth wait failed result=%d — depth layer disabled", (int)depthRes);
+		if (m_depthLease.failure != XR_SUCCESS) return true;
+		XrResult depthRes = m_depthLease.Wait(m_depthSwapchain, remaining(),
+		    xrAcquireSwapchainImage, xrWaitSwapchainImage);
+		if (depthRes == XR_SUCCESS) {
+			const uint32_t depthIdx = m_depthLease.index;
+			if (depthIdx < m_depthSwapchainImages.size()) {
+				ID3D11Texture2D* depthTarget = m_depthSwapchainImages[depthIdx];
+				D3D11_BOX depthBox = {};
+				depthBox.right = m_eyeWidth;
+				depthBox.bottom = m_eyeHeight;
+				depthBox.front = 0;
+				depthBox.back = 1;
+				ctx->CopySubresourceRegion(depthTarget, 0,
+				    0, 0, 0, m_cachedDepth[0], 0, &depthBox);
+				ctx->CopySubresourceRegion(depthTarget, 0,
+				    m_eyeWidth, 0, 0, m_cachedDepth[1], 0, &depthBox);
 			}
+			depthRes = m_depthLease.Release(m_depthSwapchain, xrReleaseSwapchainImage);
+			m_depthSubmittedThisFrame = depthRes == XR_SUCCESS && depthIdx < m_depthSwapchainImages.size();
+		}
+		if (depthRes != XR_SUCCESS && depthRes != XR_TIMEOUT_EXPIRED) {
+			m_depthLease.failure = depthRes;
+			OOVR_LOGF("ASW: Depth ownership failed result=%d — runtime depth attachment unavailable", (int)depthRes);
 		}
 	}
 
@@ -885,6 +890,9 @@ bool ASWProvider::SubmitWarpedOutput(ID3D11DeviceContext* ctx)
 
 void ASWProvider::Shutdown()
 {
+	m_outputLease = {};
+	m_depthLease = {};
+	m_depthSubmittedThisFrame = false;
 	m_ready = false;
 	InvalidateCachedFrame();
 
@@ -912,6 +920,7 @@ void ASWProvider::Shutdown()
 	}
 
 	if (m_linearSampler) { m_linearSampler->Release(); m_linearSampler = nullptr; }
+	for(int eye=0;eye<2;++eye){m_bodySrv[eye].Reset();m_bodyDepth[eye].Reset();m_bodyValid[eye]=false;}
 	if (m_constantBuffer) { m_constantBuffer->Release(); m_constantBuffer = nullptr; }
 	if (m_warpCS) { m_warpCS->Release(); m_warpCS = nullptr; }
 	if (m_device) { m_device->Release(); m_device = nullptr; }

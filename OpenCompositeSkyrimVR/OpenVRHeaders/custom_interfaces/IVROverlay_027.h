@@ -112,6 +112,13 @@ namespace IVROverlay_027
 
 		// If this is set, the alpha values of the overlay texture will be ignored
 		VROverlayFlags_IgnoreTextureAlpha = 1 << 22,
+
+		VROverlayFlags_EnableControlBar = 1 << 23,
+		VROverlayFlags_EnableControlBarKeyboard = 1 << 24,
+		VROverlayFlags_EnableControlBarClose = 1 << 25,
+		VROverlayFlags_Reserved = 1 << 26,
+		VROverlayFlags_EnableClickStabilization = 1 << 27,
+		VROverlayFlags_MultiCursor = 1 << 28,
 	};
 
 	enum VRMessageOverlayResponse

@@ -54,15 +54,9 @@ public:
 	/// Async pipeline: submits DX12 work without waiting, returns previous frame's output.
 	/// First frame returns false (no output yet). GetOutputDX11() returns the completed output.
 	bool Dispatch(int eyeIdx, ID3D11DeviceContext* d3d11Ctx, const DispatchParams& params);
-	bool DispatchWarp(int eyeIdx, ID3D11DeviceContext* d3d11Ctx, const DispatchParams& params);
 
 	/// Get the DX11 texture containing the upscaled output for the given eye.
 	ID3D11Texture2D* GetOutputDX11(int eyeIdx) const;
-
-	/// Get the upscaled output of the last DispatchWarp for the given eye.
-	/// Warp (ASW synthetic frame) dispatches write to a separate buffer so they
-	/// never clobber the game-frame output returned by GetOutputDX11.
-	ID3D11Texture2D* GetWarpOutputDX11(int eyeIdx) const;
 
 	// --- Static jitter utilities (Halton[2,3] sequence, matches FSR convention) ---
 	static void GetJitterOffset(float* outX, float* outY, int frameIndex, int phaseCount);
@@ -76,10 +70,6 @@ private:
 	    uint32_t outputW, uint32_t outputH, DXGI_FORMAT colorFormat);
 	bool EnsureFsrContexts(uint32_t renderW, uint32_t renderH,
 	    uint32_t outputW, uint32_t outputH, bool jitterCancellation);
-	bool EnsureWarpFsrContexts(uint32_t renderW, uint32_t renderH,
-	    uint32_t outputW, uint32_t outputH);
-	bool DispatchInternal(int eyeIdx, ID3D11DeviceContext* d3d11Ctx,
-	    const DispatchParams& params, bool warpContext);
 	void DestroySharedTextures();
 	void DestroyFsrContexts();
 
@@ -127,29 +117,24 @@ private:
 		ID3D12Resource*  depthDX12 = nullptr;
 		ID3D12Resource*  reactiveDX12 = nullptr;
 		ID3D12Resource*  outputDX12[2] = {};    // double-buffered for async pipeline
-		ID3D12Resource*  warpOutputDX12 = nullptr; // ASW warp output — separate from game output
 
 		ID3D11Texture2D* colorDX11 = nullptr;
 		ID3D11Texture2D* mvDX11 = nullptr;
 		ID3D11Texture2D* depthDX11 = nullptr;
 		ID3D11Texture2D* reactiveDX11 = nullptr;
 		ID3D11Texture2D* outputDX11[2] = {};    // double-buffered for async pipeline
-		ID3D11Texture2D* warpOutputDX11 = nullptr;
 
 		HANDLE colorHandle = nullptr;
 		HANDLE mvHandle = nullptr;
 		HANDLE depthHandle = nullptr;
 		HANDLE reactiveHandle = nullptr;
 		HANDLE outputHandle[2] = {};             // double-buffered for async pipeline
-		HANDLE warpOutputHandle = nullptr;
 	};
 	SharedEyeTextures m_eye[2];
 
 	// FSR 3 upscaler contexts (opaque handles from high-level API)
 	ffxContext m_fsrContext[2] = {};
-	ffxContext m_warpFsrContext[2] = {};
 	bool m_fsrContextsCreated = false;
-	bool m_warpFsrContextsCreated = false;
 	bool m_fsrConfigApplied = false;
 
 	// Async pipeline state: double-buffered output with 1-frame delay

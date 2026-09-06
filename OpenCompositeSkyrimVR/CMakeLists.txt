@@ -24,6 +24,10 @@ set(XR_VALIDATION_FILE_NAME "" CACHE STRING "A filename to set XR_CORE_VALIDATIO
 
 option(USE_SYSTEM_OPENXR "Try using system installation of OpenXR if available" OFF)
 option(USE_SYSTEM_GLM "Try using system installation of glm if available" OFF)
+option(OCU_DAPA_CAPTURE "Enable developer DAPA recording gestures, hotkey and desktop requests (not for shipping)" OFF)
+if(OCU_DAPA_CAPTURE)
+	add_compile_definitions(OCU_DAPA_CAPTURE=1)
+endif()
 
 # Directory for generated files, those being split headers and stubs
 set(GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
@@ -213,9 +217,9 @@ add_library(DrvOpenXR STATIC
 
 	DrvOpenXR/ASWProvider.cpp
 	DrvOpenXR/ASWProvider.h
+	DrvOpenXR/DapaCapture.cpp
+	DrvOpenXR/DapaCapture.h
 
-	DrvOpenXR/SpaceWarpProvider.cpp
-	DrvOpenXR/SpaceWarpProvider.h
 
 	DrvOpenXR/tmp_gfx/TemporaryGraphics.cpp
 	DrvOpenXR/tmp_gfx/TemporaryGraphics.h
@@ -229,7 +233,7 @@ add_library(DrvOpenXR STATIC
 )
 target_include_directories(DrvOpenXR PUBLIC DrvOpenXR/pub ${CMAKE_BINARY_DIR})
 target_include_directories(DrvOpenXR PRIVATE DrvOpenXR OpenOVR)
-target_link_libraries(DrvOpenXR PUBLIC OpenVR ${XrLib} ${glmLib} d3d12.lib dxgi.lib)
+target_link_libraries(DrvOpenXR PUBLIC OpenVR ${XrLib} ${glmLib} d3d12.lib dxgi.lib windowscodecs.lib ole32.lib shell32.lib)
 target_compile_definitions(DrvOpenXR PRIVATE ${GRAPHICS_API_SUPPORT_FLAGS} -D_CRT_SECURE_NO_WARNINGS)
 source_group(Public REGULAR_EXPRESSION DrvOpenXR/pub/*)
 
@@ -271,6 +275,8 @@ add_library(OCCore STATIC
 	OpenOVR/Compositor/DlssUpscaler.h
 	OpenOVR/Compositor/VRSManager.cpp
 	OpenOVR/Compositor/VRSManager.h
+	OpenOVR/Compositor/DensityMaskManager.cpp
+	OpenOVR/Compositor/DensityMaskManager.h
 	OpenOVR/Compositor/VRSGaze.h
 	OpenOVR/Compositor/VRSPattern.h
 	OpenOVR/Compositor/dx10compositor.cpp
@@ -418,6 +424,7 @@ add_library(OCCore STATIC
 	OpenVRHeaders/custom_interfaces/IVRCompositor_017.h
 	OpenVRHeaders/custom_interfaces/IVRCompositor_028.h
 	OpenVRHeaders/custom_interfaces/IVROverlay_027.h
+	OpenVRHeaders/custom_interfaces/IVROverlay_028.h
 	OpenVRHeaders/custom_interfaces/IVRSystem_023.h
 	OpenVRHeaders/custom_interfaces/IVRMailbox_001.h
 	OpenVRHeaders/custom_interfaces/IVRInputInternal_002.h
@@ -468,7 +475,7 @@ target_link_libraries(OCCore OpenVR Vulkan ${XrLib} ${glmLib})
 
 # Link MinHook for OVR perf stats hooking (Windows only)
 if (WIN32)
-	target_link_libraries(OCCore minhook)
+	target_link_libraries(OCCore minhook shell32.lib)
 	target_include_directories(OCCore PRIVATE libs/minhook/include)
 endif()
 
@@ -645,5 +652,48 @@ if (WIN32)
 	target_include_directories(OCUVRSGazeSelfTest PRIVATE
 		${CMAKE_CURRENT_SOURCE_DIR})
 	set_target_properties(OCUVRSGazeSelfTest PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
+	add_executable(OCUDensityMaskD3D11Test EXCLUDE_FROM_ALL
+		tests/DensityMaskD3D11Tests.cpp
+		OpenOVR/Compositor/DensityMaskManager.cpp)
+	target_compile_definitions(OCUDensityMaskD3D11Test PRIVATE NOMINMAX)
+	target_include_directories(OCUDensityMaskD3D11Test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	target_link_libraries(OCUDensityMaskD3D11Test PRIVATE d3d11 d3dcompiler)
+	set_target_properties(OCUDensityMaskD3D11Test PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+	add_executable(OCUDapaTimingTest EXCLUDE_FROM_ALL tests/DapaTimingTests.cpp)
+	add_executable(OCULoggingPolicyTest EXCLUDE_FROM_ALL tests/LoggingPolicyTests.cpp)
+	target_include_directories(OCULoggingPolicyTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	set_target_properties(OCULoggingPolicyTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+	add_executable(OCUDapaReplay EXCLUDE_FROM_ALL tests/DapaReplay.cpp
+		${XrDir}/src/external/jsoncpp/src/lib_json/json_reader.cpp
+		${XrDir}/src/external/jsoncpp/src/lib_json/json_value.cpp
+		${XrDir}/src/external/jsoncpp/src/lib_json/json_writer.cpp)
+	target_compile_definitions(OCUDapaReplay PRIVATE NOMINMAX)
+	target_include_directories(OCUDapaReplay PRIVATE ${XrDir}/src/external/jsoncpp/include)
+	target_link_libraries(OCUDapaReplay PRIVATE d3d11 d3dcompiler windowscodecs ole32)
+	set_target_properties(OCUDapaReplay PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+	add_executable(OCUDapaMotionTest EXCLUDE_FROM_ALL tests/DapaMotionTests.cpp)
+	add_executable(OCUDapaCaptureTest EXCLUDE_FROM_ALL tests/DapaCaptureTests.cpp DrvOpenXR/DapaCapture.cpp)
+	target_compile_definitions(OCUDapaCaptureTest PRIVATE NOMINMAX OCU_DAPA_CAPTURE=1)
+	target_include_directories(OCUDapaCaptureTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	target_link_libraries(OCUDapaCaptureTest PRIVATE d3d11 d3dcompiler windowscodecs ole32 shell32)
+	set_target_properties(OCUDapaCaptureTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+	if(NOT OCU_DAPA_CAPTURE)
+		add_executable(OCUDapaCaptureShippingTest EXCLUDE_FROM_ALL tests/DapaCaptureShippingTests.cpp DrvOpenXR/DapaCapture.cpp)
+		target_compile_definitions(OCUDapaCaptureShippingTest PRIVATE NOMINMAX)
+		target_include_directories(OCUDapaCaptureShippingTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+		target_link_libraries(OCUDapaCaptureShippingTest PRIVATE d3d11 d3dcompiler windowscodecs ole32 shell32)
+		set_target_properties(OCUDapaCaptureShippingTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+	endif()
+	target_compile_definitions(OCUDapaMotionTest PRIVATE NOMINMAX)
+	target_include_directories(OCUDapaMotionTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+	target_link_libraries(OCUDapaMotionTest PRIVATE d3d11 d3dcompiler)
+	set_target_properties(OCUDapaMotionTest PROPERTIES
+		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+	target_compile_definitions(OCUDapaTimingTest PRIVATE NOMINMAX)
+	target_include_directories(OCUDapaTimingTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${XrDir}/include)
+	set_target_properties(OCUDapaTimingTest PROPERTIES
 		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 endif()

@@ -1,6 +1,8 @@
 #include "OpenOVR/Compositor/VRSGaze.h"
 #include "OpenOVR/Compositor/VRSPattern.h"
 #include "OpenOVR/Misc/EyeGaze.h"
+#include "OpenOVR/Misc/FoveationProfiles.h"
+#include "OpenOVR/Misc/FoveationRates.h"
 
 #include <cmath>
 #include <cstdio>
@@ -25,16 +27,36 @@ int main()
 	using namespace ocu_vrs_gaze;
 	Center center{};
 
+	const auto eyeDefault = ocu_foveation::Resolve(true, -1, -1, -1, -1, -1, -1);
+	const auto fixedDefault = ocu_foveation::Resolve(false, -1, -1, -1, -1, -1, -1);
+	Check(Near(eyeDefault.inner, 0.5f) && Near(fixedDefault.inner, 0.7f),
+	    "new installations have separate eye-tracked and fixed defaults");
+	for (bool tracked : {false, true}) {
+	    const auto legacy = ocu_foveation::Resolve(tracked, 0.63f, 0.83f, -1, -1, -1, -1);
+	    Check(Near(legacy.inner, 0.63f) && Near(legacy.mid, 0.83f),
+	        "legacy explicit sizes are preserved for both modes");
+	}
+	for (bool gazeValid : {false, true}) {
+	    const auto selectedMode = SelectMode(true, true, gazeValid, false);
+	    const auto selected = ocu_foveation::Resolve(selectedMode == Mode::EyeTracked,
+	        0.63f, 0.83f, 0.75f, 0.9f, 0.45f, 0.65f);
+	    Check(Near(selected.inner, gazeValid ? 0.45f : 0.75f),
+	        "valid gaze selects smaller explicit profile; gaze loss selects explicit fixed profile");
+	}
+	const auto repaired = ocu_foveation::Resolve(true, -1, -1, -1, -1, 4.0f, 0.2f);
+	Check(Near(repaired.inner, 1.0f) && Near(repaired.mid, 1.0f),
+	    "profile bounds and ring ordering are sanitized");
+
 	Check(ocu_eye_gaze::IsSampleTimeUsable(1000000000, 0),
 	    "a valid pose with runtime sample time unavailable is accepted");
 	Check(ocu_eye_gaze::IsSampleTimeUsable(1000000000, 850000000),
-	    "a gaze sample exactly 150 ms old is accepted");
-	Check(!ocu_eye_gaze::IsSampleTimeUsable(1000000000, 849999999),
-	    "a gaze sample older than 150 ms is rejected");
+	    "a runtime-clamped gaze sample is accepted");
+	Check(ocu_eye_gaze::IsSampleTimeUsable(1000000000, 100000000),
+	    "sample time metadata does not invalidate an otherwise valid pose");
 	Check(ocu_eye_gaze::IsSampleTimeUsable(1000000000, 1050000000),
-	    "a predicted gaze sample exactly 50 ms ahead is accepted");
-	Check(!ocu_eye_gaze::IsSampleTimeUsable(1000000000, 1050000001),
-	    "a gaze sample more than 50 ms ahead is rejected");
+	    "a runtime-predicted gaze sample is accepted");
+	Check(!ocu_eye_gaze::IsSampleTimeUsable(0, 0),
+	    "an invalid requested display time is rejected");
 
 	Check(SelectMode(true, false, false, false) == Mode::Off,
 	    "Auto without valid gaze stays off instead of falling back to Fixed");
@@ -49,6 +71,22 @@ int main()
 
 	using ocu_vrs_pattern::Level;
 	using ocu_vrs_pattern::SelectLevel;
+	Check(ocu_vrs_pattern::TileCount(8448, 16) == 528 &&
+	        ocu_vrs_pattern::TileCount(4608, 16) == 288,
+	    "Galaxy XR stereo target produces the required 528x288 VRS atlas");
+	Check(ocu_vrs_pattern::TileCount(8449, 16) == 529,
+	    "partial edge tiles are rounded up instead of left uncovered");
+	float eyeU = 0.0f;
+	float eyeV = 0.0f;
+	Check(ocu_vrs_pattern::NormalizeInEyeRegion(2112.0f, 2304.0f,
+	          0, 0, 4224, 4608, eyeU, eyeV) && Near(eyeU, 0.5f) && Near(eyeV, 0.5f),
+	    "left atlas half maps to left-eye normalized coordinates");
+	Check(ocu_vrs_pattern::NormalizeInEyeRegion(6336.0f, 2304.0f,
+	          4224, 0, 4224, 4608, eyeU, eyeV) && Near(eyeU, 0.5f) && Near(eyeV, 0.5f),
+	    "right atlas half maps independently to right-eye normalized coordinates");
+	Check(!ocu_vrs_pattern::NormalizeInEyeRegion(5000.0f, 2304.0f,
+	          0, 0, 4224, 4608, eyeU, eyeV),
+	    "a right-eye atlas pixel cannot contaminate the left-eye pattern");
 	Check(SelectLevel(0.50f, 0.60f, 0.80f, true) == Level::Full,
 	    "compatibility pattern keeps the fovea full-rate");
 	Check(SelectLevel(0.70f, 0.60f, 0.80f, true) == Level::Half,
@@ -130,6 +168,25 @@ int main()
 	Check(next.x > 0.5f && next.x < target.x && next.y < 0.5f && next.y > target.y,
 	    "steady sample receives bounded smoothing");
 
+	{
+		using namespace ocu_foveation;
+		for (unsigned r = 0; r < 7; ++r) {
+			const auto rate = static_cast<Rate>(r);
+			Check(ParseRate(RateName(rate)) == rate, "rate name roundtrip");
+			for (bool horizontal : {false, true}) {
+				const auto size = Dimensions(CapHalf(rate, horizontal));
+				Check(size.x * size.y <= 2, "compatibility caps all rates to half density");
+				const RingRates requested{rate, rate, rate};
+				Check(ResolveRates(true, true, false, horizontal, requested) == requested,
+				    "uncapped eye profile preserves every explicit rate");
+				Check(ResolveRates(false, true, false, horizontal, requested) ==
+				    ResolveRates(false, false, false, horizontal, {}), "custom rates never leak to fixed fallback");
+			}
+		}
+		Check(ParseRate("8x8") == Rate::X1x1 && ParseRate("") == Rate::X1x1, "invalid rate defaults full detail");
+		Check(CapHalf(Rate::X4x2, false) == Rate::X2x1 &&
+		    CapHalf(Rate::X2x4, true) == Rate::X1x2, "anisotropic cap preserves requested axis");
+	}
 	if (failures == 0)
 		std::puts("OCU VRS gaze tests PASS");
 	return failures == 0 ? 0 : 1;

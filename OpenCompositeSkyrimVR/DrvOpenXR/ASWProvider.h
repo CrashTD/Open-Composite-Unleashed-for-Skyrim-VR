@@ -1,10 +1,11 @@
 #pragma once
 
 #include "XrDriverPrivate.h"
+#include "DapaTiming.h"
+#include "DapaMotion.h"
+#include "DapaCapture.h"
 #include <d3d11.h>
 #include <vector>
-
-struct FPReplayData;
 
 // Forward declaration — ASWProvider is accessed from XrBackend for frame injection
 class ASWProvider;
@@ -23,16 +24,8 @@ public:
 	/// @param eyeWidth  Per-eye render width
 	/// @param eyeHeight Per-eye render height
 	bool Initialize(ID3D11Device* device, uint32_t eyeWidth, uint32_t eyeHeight);
-	bool Initialize(ID3D11Device* device, uint32_t renderWidth, uint32_t renderHeight,
-	    uint32_t outputWidth, uint32_t outputHeight)
-	{
-		(void)outputWidth;
-		(void)outputHeight;
-		return Initialize(device, renderWidth, renderHeight);
-	}
 	void Shutdown();
 	bool IsReady() const { return m_ready; }
-	void TryFinishShaderCompilation() {}
 
 	/// Cache current frame's data for warping next cycle.
 	/// Call on each eye during the real frame's Invoke. Returns true when this
@@ -44,27 +37,12 @@ public:
 	    ID3D11Texture2D* mvTex, const D3D11_BOX* mvRegion,
 	    ID3D11Texture2D* depthTex, const D3D11_BOX* depthRegion,
 	    const XrPosef& eyePose, const XrFovf& eyeFov,
-	    float nearZ, float farZ);
+	    float nearZ, float farZ, ID3D11Texture2D* bodyDepthMask = nullptr);
 
 	/// Warp cached frame to new pose, write result to output texture.
 	/// Call for each eye during the injected frame.
 	bool WarpFrame(int eye, ID3D11DeviceContext* ctx,
 	    const XrPosef& newPose);
-	bool WarpFrame(int eye, const XrPosef& newPose, int slotOverride = -1,
-	    XrTime warpDisplayTime = 0)
-	{
-		(void)slotOverride;
-		(void)warpDisplayTime;
-		ID3D11DeviceContext* ctx = nullptr;
-		if (m_device)
-			m_device->GetImmediateContext(&ctx);
-		if (!ctx)
-			return false;
-		bool ok = WarpFrame(eye, ctx, newPose);
-		ctx->Release();
-		return ok;
-	}
-
 	/// Get the output XR swapchain for the warped frame (for layer assembly).
 	XrSwapchain GetOutputSwapchain() const { return m_outputSwapchain; }
 
@@ -77,7 +55,10 @@ public:
 	/// sampling that the unchanged XR depth swapchain cannot represent.
 	bool DepthLayerValid() const
 	{
-		return m_depthLayerValid && !m_cachedSourceFlipV[0] && !m_cachedSourceFlipV[1];
+		// The existing optional depth swapchain contains UNWARPED real depth.
+		// Do not attach it to translated synthetic colour as if it still matched.
+		return m_depthLayerValid && !m_cachedSourceFlipV[0] && !m_cachedSourceFlipV[1]
+		    && !m_warpMoved[0] && !m_warpMoved[1];
 	}
 
 	/// Get per-eye sub-image rect for the warped output (stereo-combined).
@@ -85,23 +66,23 @@ public:
 
 	/// Acquire output swapchain, copy warped textures, release.
 	/// Call once after WarpFrame for both eyes.
-	bool SubmitWarpedOutput(ID3D11DeviceContext* ctx);
-	bool SubmitBlackOutput(ID3D11DeviceContext* ctx) { (void)ctx; return false; }
+	bool SubmitWarpedOutput(ID3D11DeviceContext* ctx, double displayPeriodMs);
+	bool HasSubmittedDepth() const { return DepthLayerValid() && m_depthSubmittedThisFrame; }
 
 	bool HasCachedFrame() const { return m_hasCachedFrame; }
-	bool HasPreviousCachedFrame() const { return false; }
-	int GetPublishedSlot() const { return m_hasCachedFrame ? 0 : -1; }
-	int GetBuildSlot() const { return 0; }
-	void SetSlotDisplayTime(int slot, XrTime t) { (void)slot; (void)t; }
 	void InvalidateCachedFrame()
 	{
+		m_capture.HistoryInvalidated();
 		m_hasCachedFrame = false;
 		m_cacheBuildEyeMask = 0;
+		m_motion.Reset();
+		m_captureMovement.Reset();
+		m_turn.Reset();
+		m_motionGeometryValid[0] = m_motionGeometryValid[1] = false;
 	}
 
 	/// Cached pose/FOV for building projection views during injection
 	XrPosef GetCachedPose(int eye) const { return m_cachedPose[eye]; }
-	XrPosef GetPrecompPose(int eye) const { return m_cachedPose[eye]; }
 	XrFovf GetCachedFov(int eye) const { return m_cachedFov[eye]; }
 
 	/// Cached near/far for depth layer submission
@@ -111,63 +92,15 @@ public:
 	/// Get the D3D11 device used during initialization (for obtaining context in XrBackend)
 	ID3D11Device* GetDevice() const { return m_device; }
 
-	struct WarpUpscaleParams {
-		int eye;
-		ID3D11DeviceContext* ctx;
-		ID3D11Texture2D* warpedColor;
-		ID3D11Texture2D* cachedDepth;
-		uint32_t renderW, renderH;
-		uint32_t outputW, outputH;
-		float nearZ, farZ;
-		XrPosef cachedPose;
-		XrPosef warpPose;
-		XrFovf cachedFov;
-		float poseDeltaMatrix[16];
-	};
-	using WarpUpscaleCallback = bool (*)(const WarpUpscaleParams& params, ID3D11Texture2D** outResult);
-	void SetWarpUpscaleCallback(WarpUpscaleCallback cb) { (void)cb; }
-	bool HasWarpUpscaleCallback() const { return false; }
-	ID3D11Texture2D* GetWarpMVTex(int eye) const { (void)eye; return nullptr; }
-
-	void CacheStencil(int eye, ID3D11DeviceContext* ctx, ID3D11Texture2D* tex, const D3D11_BOX* region)
-	{
-		(void)eye; (void)ctx; (void)tex; (void)region;
-	}
-	void CachePreFPDepth(int eye, ID3D11DeviceContext* ctx, ID3D11Texture2D* tex, const D3D11_BOX* region)
-	{
-		(void)eye; (void)ctx; (void)tex; (void)region;
-	}
-	void SetFPDepthTex(ID3D11Texture2D* tex) { (void)tex; }
-	void SetClipToClipNoLoco(int eye, const float* m) { (void)eye; (void)m; }
-	void SetClipToClipWithLoco(int eye, const float* m) { (void)eye; (void)m; }
-	void SetSlotControllerUV(int eye, const float* leftUV, const float* rightUV, float radius)
-	{
-		(void)eye; (void)leftUV; (void)rightUV; (void)radius;
-	}
-	void SetSlotCameraPosZ(float z) { (void)z; }
-	void SetCameraPosPtr(uint64_t ptr) { (void)ptr; }
-	void SetFirstPersonRootPtr(uint64_t ptr) { (void)ptr; }
-	void SetRSSViewMatPtr(const float* ptr) { (void)ptr; }
-	void SetFPReplayPtr(FPReplayData* ptr) { (void)ptr; }
-	void SetMenuOpen(bool open) { (void)open; }
-	// View-space camera delta per game frame (new − old, game units) from dx11compositor
-	void SetLocomotionTranslation(float x, float y, float z) { m_locoX = x; m_locoY = y; m_locoZ = z; }
-	void SetLocomotionYaw(float yaw) { m_locoYaw = yaw; }
-	// Where this warp sits in the game frame (slot i of n → (i+1)/(n+1)); scales loco shift
-	void SetWarpSlotFraction(float f) { m_slotFraction = f; }
-	void SetMVConfidenceScale(float scale) { (void)scale; }
-	float GetMVConfidenceScale() const { return 1.0f; }
-	void SetControllerPos(int hand, float x, float y, float z, bool valid)
-	{
-		(void)hand; (void)x; (void)y; (void)z; (void)valid;
-	}
-	bool GetControllerValid(int hand) const { (void)hand; return false; }
-	const float* GetControllerPos(int hand) const
-	{
-		(void)hand;
-		static float zero[3] = {};
-		return zero;
-	}
+	// Samples must accompany a successfully cached REAL eye. No synthetic history.
+	void SetMotionGeometry(int eye, const float* view, const float* vp);
+	void SampleLocomotion(XrTime time, DapaMotion::Vec3 position);
+	void CaptureTick();
+	bool CaptureBusy() const { return m_capture.Busy(); }
+	bool CaptureRecording() const { return m_capture.Recording(); }
+	void CaptureSubmission(XrTime time, XrResult result) { m_capture.Submission(time, int(result)); }
+	void SampleLocomotionYaw(XrTime time, float yaw, bool turning) { m_turn.Sample(time,yaw,turning); }
+	void SetWarpDisplayTime(XrTime time) { m_warpDisplayTime = time; }
 	void SetPaused(bool paused) { m_paused = paused; }
 	bool IsPaused() const { return m_paused; }
 
@@ -205,10 +138,15 @@ private:
 	bool m_ready = false;
 	bool m_paused = false;
 	bool m_injectionWanted = true;
-	// Stick locomotion delta for warp correction (view space, new − old, game units)
-	float m_locoX = 0.0f, m_locoY = 0.0f, m_locoZ = 0.0f;
-	float m_locoYaw = 0.0f; // stick yaw delta (old − new, radians)
-	float m_slotFraction = 0.5f; // warp position within the game frame (0..1)
+	DapaMotion::Predictor m_motion;
+	DapaCaptureTelemetry::Measurement m_captureMovement;
+	DapaCapture m_capture;
+	XrTime m_warpDisplayTime = 0;
+	float m_motionView[2][16] = {};
+	float m_motionProjection[2][16] = {}, m_motionInvProjection[2][16] = {};
+	bool m_motionGeometryValid[2] = {};
+	bool m_warpMoved[2] = {};
+	DapaMotion::YawPredictor m_turn;
 	uint32_t m_eyeWidth = 0, m_eyeHeight = 0;
 	// Depth cache dims — differ from eye dims when an external render-scale mod
 	// upscales the submitted frame while depth stays at render resolution.
@@ -225,6 +163,9 @@ private:
 	ID3D11Texture2D* m_cachedColor[2] = {};
 	ID3D11Texture2D* m_cachedMV[2] = {};
 	ID3D11Texture2D* m_cachedDepth[2] = {};
+	Microsoft::WRL::ComPtr<ID3D11Texture2D> m_bodyDepth[2];
+	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_bodySrv[2];
+	bool m_bodyValid[2] = {};
 	ID3D11ShaderResourceView* m_srvColor[2] = {};
 	ID3D11ShaderResourceView* m_srvMV[2] = {};
 	ID3D11ShaderResourceView* m_srvDepth[2] = {};
@@ -235,6 +176,9 @@ private:
 
 	// Stereo-combined XR swapchain for warped output (both eyes side-by-side)
 	XrSwapchain m_outputSwapchain = {};
+	DapaTiming::ImageLease m_outputLease;
+	DapaTiming::ImageLease m_depthLease;
+	bool m_depthSubmittedThisFrame = false;
 	std::vector<ID3D11Texture2D*> m_outputSwapchainImages; // all swapchain images
 
 	// Stereo-combined XR swapchain for depth (R32_FLOAT, both eyes side-by-side)
@@ -252,18 +196,22 @@ private:
 	// frame is never exposed while this mask is non-zero.
 	uint8_t m_cacheBuildEyeMask = 0;
 
-	// Constant buffer layout (must match HLSL, 16-byte aligned = 128 bytes)
+	// Constant buffer layout (must match HLSL, 16-byte aligned = 272 bytes)
 	struct WarpConstants {
 		float poseDeltaMatrix[16]; // 4x4 row-major
 		float resolution[2];
 		float nearZ, farZ;
 		float fovTanLeft, fovTanRight, fovTanUp, fovTanDown;
 		float depthScale;          // multiplier on linearized depth
-		float edgeFadeWidth;       // depth-edge fade threshold (depth ratio units)
+		float edgeFadeWidth;       // legacy layout/capture value; no UV confidence fade in solver v2
 		float nearFadeDepth;       // parallax fades to 0 below this depth (game units); 0 = disabled
 		float debugTint;           // >0.5 = red-tint warp frames (aswDebugMode=10)
 		float depthResolution[2];  // depth grid size (may differ from resolution under external render scale)
 		float sourceFlip[2];       // x is reserved; y=1 preserves reversed-V submit bounds
+		float projection[16];
+		float inverseProjection[16];
+		float predictionValid;
+		float padding[3];
 	};
-	static_assert(sizeof(WarpConstants) == 128);
+	static_assert(sizeof(WarpConstants) == 272);
 };

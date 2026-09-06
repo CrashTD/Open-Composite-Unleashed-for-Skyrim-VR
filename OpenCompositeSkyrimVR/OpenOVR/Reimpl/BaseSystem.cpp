@@ -21,7 +21,6 @@ extern bool g_kbLaserConsumesTrigger[2];
 extern bool g_consoleLaserConsumesTrigger[2];
 extern bool g_menuLaserConsumesTrigger[2];
 extern std::atomic<bool> g_menuLaserSuppressUntilRelease[2];
-extern bool g_kbGrabActive;
 
 // Menu laser active flag — set by BaseOverlay::_BuildLayers when a
 // laser dot is hitting the menu quad.  Masks trigger so the game
@@ -764,25 +763,6 @@ bool BaseSystem::GetControllerState(vr::TrackedDeviceIndex_t controllerDeviceInd
 			controllerState->rAxis[1].x = 0.0f;
 			controllerState->rAxis[1].y = 0.0f;
 		}
-	}
-
-	// Grab masking: while the keyboard is being repositioned, freeze player locomotion,
-	// turning, jump and action input on BOTH hands so dragging/depth/pinch doesn't also
-	// move the character. The keyboard uses GetUnmaskedControllerState(), so it is
-	// unaffected. Mirrors PrismaVR's ControlMap movement mask during panel grab.
-	if (ok && g_kbGrabActive && controllerDeviceIndex >= 1 && controllerDeviceIndex <= 2) {
-		uint64_t grabMask =
-			vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger) |
-			vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Touchpad) |
-			vr::ButtonMaskFromId(vr::k_EButton_A) |
-			vr::ButtonMaskFromId(vr::k_EButton_ApplicationMenu) |
-			vr::ButtonMaskFromId(vr::k_EButton_Grip);
-		controllerState->ulButtonPressed &= ~grabMask;
-		controllerState->ulButtonTouched &= ~grabMask;
-		controllerState->rAxis[0].x = 0.0f; // thumbstick: locomotion + snap-turn
-		controllerState->rAxis[0].y = 0.0f;
-		controllerState->rAxis[1].x = 0.0f; // trigger axis
-		controllerState->rAxis[1].y = 0.0f;
 	}
 
 	// Camera-foot calibration owns both sticks and its modifier buttons. It reads

@@ -45,7 +45,7 @@ add_subdirectory(
 # Include the plugin helper macro from CommonLibVR
 include("${COMMONLIBSSE_ROOT}/cmake/CommonLibSSE.cmake")
 
-# MinHook — inline hooking library (needed for D3D11 DrawIndexed hook)
+# MinHook for the standalone existing-inline-hook compatibility test.
 set(MINHOOK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../OpenCompositeSkyrimVR/libs/minhook")
 add_library(minhook_skse STATIC
     ${MINHOOK_DIR}/src/buffer.c
@@ -58,6 +58,8 @@ target_include_directories(minhook_skse PUBLIC ${MINHOOK_DIR}/include)
 # Plugin source files
 set(SOURCES
     src/Main.cpp
+    src/DapaHiggs.cpp
+    src/DapaSpellWheel.cpp
 )
 
 # Create the SKSE plugin DLL
@@ -86,8 +88,15 @@ if(MSVC)
     )
 endif()
 
-# Link MinHook
-target_link_libraries(${PROJECT_NAME} PRIVATE minhook_skse)
+# Explicitly invoked diagnostic; never shipped as part of the plugin.
+add_executable(DapaHookStartupTest EXCLUDE_FROM_ALL tests/DapaHookStartupTest.cpp)
+target_link_libraries(DapaHookStartupTest PRIVATE minhook_skse d3d11 dxgi)
+add_executable(DapaEngineDrawTest EXCLUDE_FROM_ALL tests/DapaEngineDrawTest.cpp)
+add_executable(DapaHiggsTest EXCLUDE_FROM_ALL tests/DapaHiggsTest.cpp)
+add_executable(DapaSpellWheelTest EXCLUDE_FROM_ALL tests/DapaSpellWheelTest.cpp)
+add_executable(DapaCsxDrawTest EXCLUDE_FROM_ALL tests/DapaCsxDrawTest.cpp)
+target_link_libraries(DapaCsxDrawTest PRIVATE bcrypt d3d11 d3dcompiler dxgi)
+target_link_libraries(${PROJECT_NAME} PRIVATE bcrypt)
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "OpenCompositeInput"

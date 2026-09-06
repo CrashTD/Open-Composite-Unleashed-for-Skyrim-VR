@@ -18,6 +18,7 @@
 #include "Misc/Input/InteractionProfile.h"
 #include "Misc/Input/LegacyControllerActions.h"
 #include "Misc/smooth_input.h"
+#include "../../DrvOpenXR/DapaCaptureControl.h"
 
 typedef vr::EVRSkeletalTrackingLevel OOVR_EVRSkeletalTrackingLevel;
 
@@ -347,12 +348,12 @@ public: // INTERNAL FUNCTIONS
 	// must be destroyed and recreated for the replacement session.
 	void PrepareForSessionShutdown();
 
-	// Project the standard OpenXR combined-eye pose to a VIEW-space fixation
-	// point and return both eye poses in that same space. The compositor uses the
-	// full poses to account for cant, asymmetric views, IPD, and gaze origin.
+	// Return the standard OpenXR combined-eye direction in VIEW space and both
+	// eye poses in that same space. The compositor uses each eye orientation and
+	// asymmetric FOV to produce the two display-space foveation centers.
 	// Failure leaves eye-tracked VRS unavailable; Fixed remains independent.
 	// This never mutates image, render-scale, controller, or DAPA state.
-	bool SampleEyeGazePoint(XrTime displayTime, XrVector3f& fixationPoint,
+	bool SampleEyeGazeDirection(XrTime displayTime, XrVector3f& gazeDirection,
 	    XrPosef eyeViewPoses[2], XrTime& sampleTime);
 
 	/**
@@ -372,6 +373,9 @@ public: // INTERNAL FUNCTIONS
 	 * Currently, it updates the OpenXR stuff if the game is running in legacy mode.
 	 */
 	void InternalUpdate();
+	void UpdateDapaCaptureGesture(bool focused);
+	DapaCaptureControl::GripLatch dapaCaptureGrip;
+	DapaCaptureControl::FeedbackPulses dapaCaptureFeedback;
 
 	/**
 	 * Called to implement BaseSystem::GetControllerState. The documentation for that reads:

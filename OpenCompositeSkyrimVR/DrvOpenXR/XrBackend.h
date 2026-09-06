@@ -97,22 +97,7 @@ private:
 	void BindInfoSet();
 
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	enum class AswSplitPhase {
-		None,
-		WarpFrameBegun,
-		RealFrameBegun,
-	};
-
-	void ResetAswSplitFrameState();
-	bool ShouldUseAswSplitPipeline() const;
 	void LatchViewsForDisplayTime(XrTime displayTime);
-	bool BeginAswWarpFrameForSplit();
-	void FinishAswWarpFrameAfterFirstEye(float cpuToFirstSubmitMs, float firstSubmitInvokeMs);
-	bool BeginRealFrameAfterAswWarp(float* outWaitMs = nullptr);
-	bool SubmitAswWarpFrame(const XrFrameState& frameState,
-	    XrCompositionLayerBaseHeader const* const* extraLayers,
-	    int extraLayerCount);
-	void EndActiveFrameEmpty(XrTime displayTime);
 #endif
 
 	// Whether we've restarted the session to use the application's rendering API yet
@@ -159,17 +144,6 @@ private:
 	float predictedDisplayPeriodMs = 0.0f; // runtime-reported frame interval (from xrWaitFrame)
 	float compositorOverheadMs = 0.0f; // estimated compositor GPU time (residual calculation)
 
-#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
-	// ASW split-frame reorder state:
-	// WaitForTrackingData claims/begins the warp slot, the first eye submit ends it
-	// and immediately waits/begins the real slot before the second eye renders.
-	AswSplitPhase aswSplitPhase = AswSplitPhase::None;
-	XrFrameState aswWarpFrameState{ XR_TYPE_FRAME_STATE };
-	XrFrameState aswRealFrameState{ XR_TYPE_FRAME_STATE };
-	XrTime aswEstimatedRealDisplayTime = 0;
-	int aswStallCount = 0;
-	bool aswDisableWarned = false;
-#endif
 
 	// Action set and action used for querying for the interaction profile
 	inline static XrActionSet infoSet = XR_NULL_HANDLE;

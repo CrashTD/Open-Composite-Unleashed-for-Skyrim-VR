@@ -1,4 +1,5 @@
 #pragma once
+#include "../Misc/FoveationRates.h"
 
 #ifdef OC_HAS_NVAPI
 
@@ -7,6 +8,13 @@
 
 class VRSManager {
 public:
+	struct EyeRegion {
+		int left = 0;
+		int top = 0;
+		int width = 0;
+		int height = 0;
+	};
+
 	VRSManager() = default;
 	~VRSManager();
 
@@ -17,12 +25,15 @@ public:
 	// Call this once when eye projection data is available.
 	void SetProjectionCenters(float leftProjX, float leftProjY, float rightProjX, float rightProjY);
 
-	// Create/recreate VRS pattern textures for the given eye resolution.
-	// Call when resolution changes or radii config changes.
-	void UpdatePatterns(int eyeWidth, int eyeHeight);
+	// Create/update one shading-rate resource for the full bound stereo render
+	// target. NVIDIA requires this resource to match the complete render target
+	// in 16x16 tiles; a one-eye resource is invalid for a side-by-side atlas.
+	bool UpdateStereoPattern(int renderWidth, int renderHeight,
+	    const EyeRegion& leftEye, const EyeRegion& rightEye, float innerRadius, float midRadius,
+	    const ocu_foveation::RingRates& rates);
 
-	// Apply VRS for a specific eye (0=left, 1=right). Call before game renders each eye.
-	void ApplyForEye(int eye);
+	// Apply the full stereo-atlas pattern before the game starts drawing a frame.
+	bool ApplyStereo();
 
 	// Disable VRS. Call before our own post-processing (FSR passes).
 	void Disable();
@@ -45,38 +56,38 @@ private:
 	ID3D11Device* device = nullptr;
 	ID3D11DeviceContext* context = nullptr;
 
-	// Per-eye VRS pattern textures and views
-	ID3D11Texture2D* vrsTex[2] = { nullptr, nullptr };
-	void* vrsView[2] = { nullptr, nullptr }; // ID3D11NvShadingRateResourceView* — opaque to avoid nvapi.h in header
-	int patternWidth[2] = { 0, 0 };
-	int patternHeight[2] = { 0, 0 };
+	// One resource matching the full stereo render target.
+	ID3D11Texture2D* vrsTex = nullptr;
+	void* vrsView = nullptr; // ID3D11NvShadingRateResourceView* — opaque to avoid nvapi.h in header
+	int patternWidth = 0;
+	int patternHeight = 0;
+	int renderWidth = 0;
+	int renderHeight = 0;
+	EyeRegion eyeRegions[2];
 
 	// Projection centers per eye
 	float projX[2] = { 0.5f, 0.5f };
 	float projY[2] = { 0.5f, 0.5f };
-	bool patternDirty[2] = { true, true };
+	bool patternDirty = true;
 
 	// Cached config values used to detect changes
 	float cachedInnerRadius = 0.0f;
 	float cachedMidRadius = 0.0f;
-	bool cachedCompatibilityMode = true;
-	bool cachedFavorHorizontal = true;
+	ocu_foveation::RingRates cachedRates;
 	bool shadingRatesSet = false; // True after EnableShadingRates() — avoid redundant NVAPI calls
 
-	// Generate the VRS pattern data for one eye
-	std::vector<uint8_t> CreatePattern(int tileWidth, int tileHeight, float pX, float pY);
+	// Generate a full-target pattern containing both eye regions.
+	std::vector<uint8_t> CreateStereoPattern() const;
 
 	// Set the shading rate table on the device context
-	void EnableShadingRates();
+	bool EnableShadingRates();
 
-	// Create the pattern texture and NVAPI shading rate resource view for one eye
-	void SetupEyePattern(int eye, int eyeWidth, int eyeHeight);
-	// Upload a new center into an existing texture without recreating its NVAPI
-	// resource view. Used by eye tracking once per real stereo frame.
-	void UploadEyePattern(int eye);
+	// Create the full-target pattern texture and NVAPI resource view.
+	void SetupStereoPattern();
+	// Upload moving gaze centers without recreating the resource view.
+	void UploadStereoPattern();
 
-	// Release resources for one eye
-	void ReleaseEyeResources(int eye);
+	void ReleasePatternResources();
 };
 
 #else // !OC_HAS_NVAPI
@@ -84,10 +95,18 @@ private:
 // Stub when NVAPI is not available — all methods are no-ops
 class VRSManager {
 public:
+	struct EyeRegion {
+		int left = 0;
+		int top = 0;
+		int width = 0;
+		int height = 0;
+	};
+
 	bool Initialize(ID3D11Device*) { return false; }
 	void SetProjectionCenters(float, float, float, float) {}
-	void UpdatePatterns(int, int) {}
-	void ApplyForEye(int) {}
+	bool UpdateStereoPattern(int, int, const EyeRegion&, const EyeRegion&, float, float,
+	    const ocu_foveation::RingRates&) { return false; }
+	bool ApplyStereo() { return false; }
 	void Disable() {}
 	void Shutdown() {}
 	bool IsAvailable() const { return false; }

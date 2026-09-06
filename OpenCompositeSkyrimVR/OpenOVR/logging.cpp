@@ -5,12 +5,15 @@
 #include <chrono>
 #include <ctime>
 #include <errno.h> // errno, ENOENT, EEXIST
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <stdarg.h>
 #include <sys/stat.h> // stat
 #ifdef _WIN32
 #include <direct.h> // _mkdir
+#include <shlobj.h> // SHGetKnownFolderPath, FOLDERID_Documents
 #endif
 
 // strftime format
@@ -129,6 +132,9 @@ std::string GetEnv(const std::string& var)
 #include <android/log.h>
 #else
 static std::ofstream stream;
+// Logger calls arrive from input and render threads. Never wait for this lock
+// during DLL detach, where Windows may already have stopped another thread.
+static std::mutex& log_mutex() { static auto* mutex = new std::mutex; return *mutex; }
 #endif
 
 bool oovr_debug_logging_enabled()
@@ -143,18 +149,31 @@ void oovr_log_raw(const char* file, long line, const char* func, const char* msg
 #ifdef ANDROID
 	__android_log_print(ANDROID_LOG_INFO, "OpenComposite", "%s:%d \t %s", func, line, msg);
 #else
+	std::lock_guard<std::mutex> lock(log_mutex());
 	if (!stream.is_open()) {
-		string outputFilePath = "OCUnleashedSKSE.log";
-
-		// Write to Skyrim VR SKSE logs folder (Documents/My Games/Skyrim VR/SKSE)
-		// Fall back to exe dir if can't create dir
 #ifdef _WIN32
-		string outputFolder = GetEnv("USERPROFILE");
-		if (!outputFolder.empty())
-			outputFolder = outputFolder + "\\Documents\\My Games\\Skyrim VR\\SKSE";
-		if (!outputFolder.empty() && makePath(outputFolder))
-			outputFilePath = outputFolder + "\\" + outputFilePath;
+		std::filesystem::path outputFilePath = L"OCUnleashedSKSE.log";
+
+		// Ask Windows for the user's real Documents folder. This respects
+		// OneDrive, domain policy, localization, and folders redirected to
+		// another drive instead of assuming %USERPROFILE%\\Documents.
+		PWSTR documentsPath = nullptr;
+		if (SUCCEEDED(SHGetKnownFolderPath(
+		        FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &documentsPath)) &&
+		    documentsPath != nullptr) {
+			std::filesystem::path outputFolder(documentsPath);
+			CoTaskMemFree(documentsPath);
+			outputFolder /= L"My Games";
+			outputFolder /= L"Skyrim VR";
+			outputFolder /= L"SKSE";
+
+			std::error_code directoryError;
+			std::filesystem::create_directories(outputFolder, directoryError);
+			if (!directoryError)
+				outputFilePath = outputFolder / outputFilePath;
+		}
 #else
+		string outputFilePath = "OCUnleashedSKSE.log";
 		string outputFolder = GetEnv("XDG_STATE_HOME");
 		if (outputFolder.empty()) {
 			outputFolder = GetEnv("HOME");
@@ -179,7 +198,13 @@ void oovr_log_raw(const char* file, long line, const char* func, const char* msg
 	printf("[OC] %s:%ld \t %s\n", func, line, msg);
 #endif
 
-	stream.flush();
+	// Buffered diagnostics: no forced disk flush for every render/input report.
+	static auto lastFlush = std::chrono::steady_clock::now();
+	const auto now = std::chrono::steady_clock::now();
+	if (now - lastFlush >= std::chrono::seconds(1)) {
+		stream.flush();
+		lastFlush = now;
+	}
 #endif
 }
 
@@ -187,6 +212,8 @@ void oovr_log_raw(const char* file, long line, const char* func, const char* msg
 void oovr_log_shutdown()
 {
 #ifndef ANDROID
+	std::unique_lock<std::mutex> lock(log_mutex(), std::try_to_lock);
+	if (!lock.owns_lock()) return;
 	if (stream.is_open()) {
 		stream.flush();
 		stream.close();
@@ -234,7 +261,7 @@ OC_NORETURN void oovr_abort_raw_va(const char* file, long line, const char* func
 #ifdef ANDROID
 	__android_log_print(ANDROID_LOG_ERROR, "OpenComposite", "ERROR: %s:%d \t %s", func, line, buff);
 #else
-	stream << std::flush;
+	{ std::lock_guard<std::mutex> lock(log_mutex()); stream << std::flush; }
 #endif
 
 	OOVR_MESSAGE(buff, title);

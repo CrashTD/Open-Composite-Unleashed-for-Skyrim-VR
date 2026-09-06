@@ -116,19 +116,13 @@ ovr_enum_t BaseCompositor::WaitGetPoses(TrackedDevicePose_t* renderPoseArray, ui
 
 	auto result = GetLastPoses(renderPoseArray, renderPoseArrayCount, gamePoseArray, gamePoseArrayCount);
 
-	// Cache controller poses for ASW hand detection.
-	// Device indices: 1 = left controller, 2 = right controller.
-	if (renderPoseArray && g_aswProvider) {
-		for (int h = 0; h < 2; h++) {
-			uint32_t devIdx = (h == 0) ? 1 : 2;
-			if (devIdx < renderPoseArrayCount && renderPoseArray[devIdx].bPoseIsValid) {
-				auto& m = renderPoseArray[devIdx].mDeviceToAbsoluteTracking;
-				g_aswProvider->SetControllerPos(h, m.m[0][3], m.m[1][3], m.m[2][3], true);
-			} else {
-				g_aswProvider->SetControllerPos(h, 0, 0, 0, false);
-			}
-		}
-	}
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
+	// OpenVR defines WaitGetPoses as the frame-start synchronization point and
+	// applications call it immediately before scene rendering. Bind the full
+	// stereo VRS atlas here, never from Submit after an eye was already drawn.
+	if (dxcomp)
+		dxcomp->BeginVRSGameFrame();
+#endif
 
 	return result;
 }

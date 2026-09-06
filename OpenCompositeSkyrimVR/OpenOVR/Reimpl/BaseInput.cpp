@@ -40,6 +40,7 @@
 using namespace vr;
 
 #include "../DrvOpenXR/XrBackend.h"
+#include "../DrvOpenXR/DapaCaptureTelemetry.h"
 
 // On Android, the application must supply a function to load the contents of a file
 #include "Misc/android_api.h"
@@ -1403,7 +1404,7 @@ void BaseInput::CreateEyeGazeSpace()
 	OOVR_LOG("Eye gaze: action space created after action-set attach");
 }
 
-bool BaseInput::SampleEyeGazePoint(XrTime displayTime, XrVector3f& fixationPoint,
+bool BaseInput::SampleEyeGazeDirection(XrTime displayTime, XrVector3f& gazeDirection,
     XrPosef eyeViewPoses[2], XrTime& sampleTime)
 {
 	auto logState = [](int state, const char* description) {
@@ -1420,7 +1421,7 @@ bool BaseInput::SampleEyeGazePoint(XrTime displayTime, XrVector3f& fixationPoint
 		}
 	};
 
-	fixationPoint = { 0.0f, 0.0f, -2.0f };
+	gazeDirection = { 0.0f, 0.0f, -1.0f };
 	eyeViewPoses[0] = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
 	eyeViewPoses[1] = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
 	sampleTime = 0;
@@ -1457,48 +1458,33 @@ bool BaseInput::SampleEyeGazePoint(XrTime displayTime, XrVector3f& fixationPoint
 		logState(4, "unavailable (xrLocateSpace failed)");
 		return false;
 	}
-	const XrSpaceLocationFlags requiredGazeFlags =
-	    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
-	if ((location.locationFlags & requiredGazeFlags) != requiredGazeFlags) {
-		logState(5, "invalid (runtime supplied no complete gaze pose)");
+	// Foveation consumes a ray direction. Do not reject a standards-compliant
+	// orientation merely because a runtime does not expose a useful gaze origin.
+	if ((location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) == 0) {
+		logState(5, "invalid (runtime supplied no valid gaze orientation)");
 		return false;
 	}
 
-	// XR_EXT_eye_gaze_interaction requires the runtime to return time=0 when
-	// precise sample timing is unavailable. The orientation is still a valid
-	// gaze sample in that case; only enforce freshness when a timestamp exists.
+	// The extension permits a clamped, predicted, interpolated, or unavailable
+	// sample time. Pose validity flags—not an arbitrary age window—decide whether
+	// this sample can drive foveation across different runtimes.
 	if (!ocu_eye_gaze::IsSampleTimeUsable(displayTime, gazeTime.time)) {
-		logState(6, "stale (runtime gaze timestamp outside the accepted frame window)");
+		logState(6, "invalid (requested display time is not usable)");
 		return false;
 	}
 
 	const XrVector3f forward{ 0.0f, 0.0f, -1.0f };
-	XrVector3f direction{};
-	rotate_vector_by_quaternion(forward, location.pose.orientation, direction);
-	const float lengthSq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
-	if (!std::isfinite(lengthSq) || lengthSq < 0.5f || direction.z >= -0.01f) {
+	rotate_vector_by_quaternion(forward, location.pose.orientation, gazeDirection);
+	const float lengthSq = gazeDirection.x * gazeDirection.x +
+	    gazeDirection.y * gazeDirection.y + gazeDirection.z * gazeDirection.z;
+	if (!std::isfinite(lengthSq) || lengthSq < 0.5f || gazeDirection.z >= -0.01f) {
 		logState(7, "invalid (non-finite, degenerate, or backward gaze direction)");
 		return false;
 	}
 	const float invLength = 1.0f / std::sqrt(lengthSq);
-	direction.x *= invLength;
-	direction.y *= invLength;
-	direction.z *= invLength;
-	// XR_EXT_eye_gaze_interaction supplies a combined-eye aim pose, not separate
-	// per-eye screen coordinates. Project a finite fixation point so the later
-	// eye transforms account for the gaze origin and IPD. Two metres matches the
-	// established OpenXR Toolkit treatment for this standard extension.
-	constexpr float kFixationDistanceMeters = 2.0f;
-	fixationPoint = {
-		location.pose.position.x + direction.x * kFixationDistanceMeters,
-		location.pose.position.y + direction.y * kFixationDistanceMeters,
-		location.pose.position.z + direction.z * kFixationDistanceMeters
-	};
-	if (!std::isfinite(fixationPoint.x) || !std::isfinite(fixationPoint.y) ||
-	    !std::isfinite(fixationPoint.z)) {
-		logState(7, "invalid (non-finite fixation point)");
-		return false;
-	}
+	gazeDirection.x *= invLength;
+	gazeDirection.y *= invLength;
+	gazeDirection.z *= invLength;
 
 	// The gaze action is a combined-eye ray in VIEW space. It must be rotated
 	// into each XrView's local orientation before applying that eye's FOV. On a
@@ -1506,9 +1492,7 @@ bool BaseInput::SampleEyeGazePoint(XrTime displayTime, XrVector3f& fixationPoint
 	// canted displays they intentionally differ.
 	bool currentViewPosesValid = false;
 	if (xr_gbl->viewSpaceViewsLatched &&
-	    (xr_gbl->latchedViewSpaceFlags &
-	        (XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT)) ==
-	        (XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT)) {
+	    (xr_gbl->latchedViewSpaceFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0) {
 		eyeGazeViewPoses[0] = xr_gbl->latchedViewSpaceViews[0].pose;
 		eyeGazeViewPoses[1] = xr_gbl->latchedViewSpaceViews[1].pose;
 		eyeGazeViewPosesValid = true;
@@ -1530,10 +1514,8 @@ bool BaseInput::SampleEyeGazePoint(XrTime displayTime, XrVector3f& fixationPoint
 			std::lock_guard<std::mutex> xrCallGuard(xr_session_call_mutex);
 			result = xrLocateViews(session, &locateInfo, &viewState, 2, &viewCount, views);
 		}
-		const XrViewStateFlags requiredViewFlags =
-		    XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
 		if (XR_SUCCEEDED(result) && viewCount == 2 &&
-		    (viewState.viewStateFlags & requiredViewFlags) == requiredViewFlags) {
+		    (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0) {
 			eyeGazeViewPoses[0] = views[0].pose;
 			eyeGazeViewPoses[1] = views[1].pose;
 			eyeGazeViewPosesValid = true;
@@ -1667,7 +1649,9 @@ EVRInputError BaseInput::UpdateActionState(VR_ARRAY_COUNT(unSetCount) VRActiveAc
 	XrActionsSyncInfo syncInfo = { XR_TYPE_ACTIONS_SYNC_INFO };
 	syncInfo.activeActionSets = aas;
 	syncInfo.countActiveActionSets = unSetCount + 1;
-	OOVR_FAILED_XR_ABORT(xrSyncActions(xr_session.get(), &syncInfo));
+	const XrResult syncResult = xrSyncActions(xr_session.get(), &syncInfo);
+	OOVR_FAILED_XR_ABORT(syncResult);
+	UpdateDapaCaptureGesture(syncResult == XR_SUCCESS);
 	syncSerial++;
 
 	return VRInputError_None;
@@ -1683,8 +1667,48 @@ void BaseInput::InternalUpdate()
 	XrActionsSyncInfo syncInfo = { XR_TYPE_ACTIONS_SYNC_INFO };
 	syncInfo.activeActionSets = &aas;
 	syncInfo.countActiveActionSets = 1;
-	OOVR_FAILED_XR_SOFT_ABORT(xrSyncActions(xr_session.get(), &syncInfo));
+	const XrResult syncResult = xrSyncActions(xr_session.get(), &syncInfo);
+	OOVR_FAILED_XR_SOFT_ABORT(syncResult);
+	UpdateDapaCaptureGesture(syncResult == XR_SUCCESS);
 	syncSerial++;
+}
+
+void BaseInput::UpdateDapaCaptureGesture(bool focused)
+{
+	if constexpr (!DapaCaptureControl::Enabled) return;
+	if(DapaCaptureControl::telemetryWanted.load()) {
+		DapaCaptureTelemetry::Input sample;sample.timeNs=DapaCaptureTelemetry::NowNs();
+		for(int hand=0;hand<2;++hand)for(int axis=0;axis<2;++axis) {
+			XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};
+			info.action=axis==0?legacyControllers[hand].stickX:legacyControllers[hand].stickY;
+			XrActionStateFloat value{XR_TYPE_ACTION_STATE_FLOAT};const int i=hand*2+axis;
+			if(focused && info.action && XR_SUCCEEDED(xrGetActionStateFloat(xr_session.get(),&info,&value)) && value.isActive && std::isfinite(value.currentState)) {
+				sample.axes[i]=value.currentState;sample.active[i]=true;
+			}
+		}
+		DapaCaptureTelemetry::Publish(sample);
+	}
+	bool active=focused, held[2]{};
+	for(int eye=0;eye<2;++eye) {
+		XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};
+		info.action=legacyControllers[eye].gripClick;
+		XrActionStateBoolean value{XR_TYPE_ACTION_STATE_BOOLEAN};
+		if(!info.action || XR_FAILED(xrGetActionStateBoolean(xr_session.get(),&info,&value)) || !value.isActive)
+			active=false;
+		else held[eye]=value.currentState;
+	}
+	if(dapaCaptureGrip.Update(active,held[0],held[1],InputNowMs()))
+		DapaCaptureControl::toggleRequested.store(true);
+	const int feedback=DapaCaptureControl::feedback.exchange(0);
+	if(dapaCaptureFeedback.Update(active,feedback,InputNowMs()))for(auto& ctrl:legacyControllers) {
+		if(!ctrl.haptic)continue;
+		XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};info.action=ctrl.haptic;
+		XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+		vibration.frequency=XR_FREQUENCY_UNSPECIFIED;
+		vibration.duration=100000000; // 100 ms pulse, 150 ms silence between pulses
+		vibration.amplitude=std::clamp(oovr_global_configuration.HapticStrength()*0.5f,0.0f,1.0f);
+		if(vibration.amplitude>0)xrApplyHapticFeedback(xr_session.get(),&info,(XrHapticBaseHeader*)&vibration);
+	}
 }
 
 XrResult BaseInput::getBooleanOrDpadData(Action& action, const XrActionStateGetInfo* getInfo, XrActionStateBoolean* state)
