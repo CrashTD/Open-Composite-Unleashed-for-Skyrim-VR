@@ -7,6 +7,7 @@
 #include <thread>
 #include <vector>
 #include <cmath>
+#include <cwchar>
 
 using Microsoft::WRL::ComPtr;
 using DapaAcceptedDraw::Arguments;
@@ -67,7 +68,7 @@ void InstructionTest(const DapaEngineDraw::Site& site) {
     std::printf("PASS accepted instruction RVA %X: native arguments, player/non-player, rollback\n",site.rva);
 }
 
-void AdapterTest(const wchar_t* path) {
+const DapaCsxDraw::Build* AdapterTest(const wchar_t* path) {
     // Map the actual installed binary without entry-point execution or imports.
     HMODULE module=LoadLibraryExW(path,nullptr,DONT_RESOLVE_DLL_REFERENCES);
     Check(module!=nullptr,"map installed CSX");
@@ -99,6 +100,7 @@ void AdapterTest(const wchar_t* path) {
     }
     FreeLibrary(module);
     std::puts("PASS actual installed CSX: full function SHA256, both patch sites, complete byte restoration, mismatch refusal");
+    return build;
 }
 
 void GpuTest(D3D_DRIVER_TYPE driver) {
@@ -198,8 +200,20 @@ void BiasedDepthTest(D3D_DRIVER_TYPE driver,bool reversed,bool d24) {
 int wmain(int argc,wchar_t** argv) {
     try {
         Check(argc>=2,"pass one or more CommunityShaders.dll paths");
+        const bool matrix=std::wcscmp(argv[1],L"--matrix")==0;
+        if(matrix)Check(argc==int(DapaCsxDraw::builds.size())+2,"--matrix requires exactly one DLL for every supported contract");
+        std::array<bool,DapaCsxDraw::builds.size()> tested{};
         ScopeTest();for(const auto& build:DapaCsxDraw::builds)for(const auto& site:build.sites)InstructionTest(site);
-        for(int i=1;i<argc;++i)AdapterTest(argv[i]);
+        for(int i=matrix?2:1;i<argc;++i) {
+            const auto* build=AdapterTest(argv[i]);
+            const auto index=size_t(build-DapaCsxDraw::builds.data());
+            if(matrix)Check(!tested[index],"duplicate DLL contract in matrix; another supported build is missing");
+            tested[index]=true;
+        }
+        if(matrix) {
+            for(bool covered:tested)Check(covered,"supported DLL missing from matrix");
+            std::printf("PASS complete compatibility matrix: %zu distinct contracts\n",tested.size());
+        }
         GpuTest(D3D_DRIVER_TYPE_WARP);GpuTest(D3D_DRIVER_TYPE_HARDWARE);
         for(auto driver:{D3D_DRIVER_TYPE_WARP,D3D_DRIVER_TYPE_HARDWARE})for(bool reversed:{false,true})for(bool d24:{false,true})BiasedDepthTest(driver,reversed,d24);
         return 0;

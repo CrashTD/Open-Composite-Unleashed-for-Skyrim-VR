@@ -210,6 +210,10 @@ void InstallSetupGeometryHook() {
         if(i!=0 || !module || !csxAdapter.Prepare(reinterpret_cast<uintptr_t>(module),
                engineHooks[i].chained,reinterpret_cast<uintptr_t>(&CsxAccepted))) {
             SKSE::log::error("DAPA BODY MASK v4: existing draw owner not supported at RVA 0x{:X}; CSX acceptance signature failed, Win32={}; no patches applied",engineHooks[i].spec->rva,csxAdapter.error);
+            const auto ownerAddress=reinterpret_cast<uintptr_t>(engineHooks[i].chained);
+            const auto moduleBase=reinterpret_cast<uintptr_t>(module);
+            SKSE::log::error("DAPA BODY MASK compatibility: CommunityShaders present={}, owner=0x{:X}, relativeToCsx=0x{:X}, validatedContracts={}. Player/body/held-item correction INACTIVE; world correction unchanged. Report the exact CommunityShaders.dll and this startup log; the 3.19 version label is not sufficient.",
+                module!=nullptr,ownerAddress,module && ownerAddress>=moduleBase?ownerAddress-moduleBase:0,DapaCsxDraw::builds.size());
             return;
         }
         csxPrepared=true;

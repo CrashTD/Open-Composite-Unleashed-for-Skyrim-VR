@@ -1,5 +1,46 @@
 # DAPA CSX accepted-draw compatibility — 6 September 2026
 
+## Treatid follow-up update
+
+Deployment: both local OCU MO2 folders and the Nexus staging folder/4.3.1 ZIP,
+6 September 2026. Settings and shader-provider DLLs remain unchanged. This is
+local packaging, not an uploaded Nexus release or a live AMD qualification.
+
+The previously deployed three-contract build rejected both currently published
+Treatid release DLLs. The label 3.19 was again insufficient. This follow-up adds
+the two exact contracts below, retaining all three existing ones:
+
+| Release asset | DLL SHA-256 | Owner RVA / size | Accepted draw RVAs |
+| --- | --- | --- | --- |
+| v3.19.0-pr20 / CSX_AIO-2026-09-04T23-29Z.7z | D198742E0694E03BCB0530DA5F86E8B6757FE0B0DB9FBEA3421D4924C2F7C177 | 10EDB0 / 386 hex | 10EE1C, 10F0F2 |
+| v3.19.0-pr21 / CSX_AIO-2026-09-05T00-07Z.7z | 5C3F56BA0AA611AA8079AA4499DC8C6629F83689434350BCD11A0F8E0E203C66 | 10E5C0 / 386 hex | 10E62C, 10E902 |
+
+Full disassembly verified original argument setup, the no-bridge fast path,
+the suppression predicate skipping the final draw, and the 0xDBDDF9 engine
+caller marker. Whole-function hash verification remains mandatory. No wildcard
+instruction scan, version-only acceptance, D3D vtable hook, or extra GPU pass
+was introduced. Unknown owners report the address relative to CSX and explicitly
+state that body/held-item correction is inactive while world correction remains.
+
+Release validation should invoke `tests/RunCsxCompatibilityMatrix.ps1` in the
+SKSE plugin source with `-TestExecutable` pointing to DapaCsxDrawTest.exe and
+`-DllPaths` supplying the five retained binaries. Its `--matrix` mode requires
+every supported contract exactly once and checks that fixture files are unchanged.
+Do not count a successful single-DLL run as a complete compatibility result.
+No automatic downloads or mod updates are performed by the runner.
+
+Validation completed: Release build; all five actual DLL mappings and ten draw
+instruction fixtures; every-byte mutation rejection; complete code restoration;
+both-eye WARP/hardware mask tests with normal/reversed biased D24/D32 depth.
+Negative tests verified rejection of missing and duplicate matrix fixtures.
+Hardware tests ran on the local NVIDIA GPU, not AMD. No live Skyrim run with
+Treatid's build has been performed. Lee's frame-time regression remains undiagnosed.
+
+Long-term compatibility requires a versioned accepted-draw notification contract
+with the shader providers so OCU need not patch implementation addresses. This
+candidate does not pretend that interface already exists, and no upstream change
+or message has been made. Newly rebuilt DLLs still need independent qualification.
+
 ## Cause and scope
 
 The original adapter accepted only the Paintball test DLL's owner at RVA
