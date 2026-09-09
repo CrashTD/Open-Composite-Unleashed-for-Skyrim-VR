@@ -1,0 +1,75 @@
+name: Build DLL (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: "CMake build configuration"
+        required: false
+        default: RelWithDebInfo
+        type: choice
+        options:
+          - RelWithDebInfo
+          - Release
+          - Debug
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = (Invoke-WebRequest -UseBasicParsing -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt").Content.Trim()
+          Write-Host "Latest Vulkan SDK version: $ver"
+          $installer = "$env:RUNNER_TEMP\VulkanSDK-Installer.exe"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe" -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait -NoNewWindow
+
+          $sdkRoot = "C:\VulkanSDK\$ver"
+          $dest = "${{ github.workspace }}\OpenCompositeSkyrimVR\libs\vulkan"
+          New-Item -ItemType Directory -Force -Path "$dest\Include" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$dest\Lib" | Out-Null
+          Copy-Item -Path "$sdkRoot\Include\*" -Destination "$dest\Include" -Recurse -Force
+          Copy-Item -Path "$sdkRoot\Lib\vulkan-1.lib" -Destination "$dest\Lib\vulkan-1.lib" -Force
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -S OpenCompositeSkyrimVR -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build vrclient_x64.dll
+        shell: pwsh
+        run: |
+          cmake --build build --target OCOVR --config ${{ inputs.config }} --parallel
+
+      - name: Collect build output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "artifact" | Out-Null
+          $files = Get-ChildItem -Path build -Recurse -Include "vrclient_x64.dll", "vrclient_x64.pdb"
+          if (-not $files) {
+            throw "Could not find vrclient_x64.dll in the build output"
+          }
+          $files | ForEach-Object {
+            Write-Host "Found: $($_.FullName)"
+            Copy-Item -Path $_.FullName -Destination "artifact" -Force
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vrclient_x64-${{ inputs.config }}-${{ github.sha }}
+          path: artifact/*
+          if-no-files-found: error
