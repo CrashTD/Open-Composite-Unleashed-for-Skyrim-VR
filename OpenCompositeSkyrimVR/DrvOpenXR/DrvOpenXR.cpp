@@ -430,6 +430,23 @@ void DrvOpenXR::ShutdownSession()
 #endif
 			currentBackend->PumpEvents();
 		}
+
+		// Reaching EXITING doesn't mean the runtime is actually done with this session
+		// internally - some runtimes (eg. WiVRn) have been observed to still be settling
+		// right after EXITING, and creating the replacement session immediately can lead
+		// to the new session's own state transition never being delivered. Give the
+		// runtime a short extra grace period, draining any further events, before we tear
+		// the session down and immediately create its replacement.
+		for (int i = 0; i < 2; i++) {
+			const int durationMs = 250;
+#ifdef _WIN32
+			Sleep(durationMs);
+#else
+			struct timespec ts = { 0, durationMs * 1000000 };
+			nanosleep(&ts, &ts);
+#endif
+			currentBackend->PumpEvents();
+		}
 	}
 
 	if (currentBackend)
