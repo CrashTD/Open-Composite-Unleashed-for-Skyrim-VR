@@ -432,6 +432,9 @@ void DrvOpenXR::ShutdownSession()
 		}
 	}
 
+	if (currentBackend)
+		currentBackend->lastDestroyedSession = xr_session.get();
+
 	OOVR_FAILED_XR_ABORT(xrDestroySession(xr_session.get()));
 	xr_session.reset();
 

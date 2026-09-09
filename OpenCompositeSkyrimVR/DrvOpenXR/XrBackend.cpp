@@ -1799,9 +1799,24 @@ void XrBackend::PumpEvents()
 			// API). Per the OpenXR spec this is legal - stale events must be ignored
 			// rather than treated as fatal, since xr_session may already point at a
 			// brand new session handle by the time this is processed.
-			if (changed->session != xr_session.get()) {
+			//
+			// Only discard events tagged with a handle we know we destroyed. Some
+			// runtimes (eg. WiVRn) have been observed to report a session handle for
+			// the *new* session's own IDLE/READY transition that doesn't byte-match
+			// xr_session.get() - discarding on "not equal to current" ate those events
+			// too, so the new session's READY state (and thus xrBeginSession) was never
+			// reached and the game spun calling frame functions on a session that was
+			// never begun. Treat anything that isn't the specific known-destroyed
+			// handle as belonging to the current session.
+			if (changed->session == lastDestroyedSession && lastDestroyedSession != XR_NULL_HANDLE) {
 				OOVR_LOGF("Ignoring stale OpenXR session state change (state %d) for a destroyed session", changed->state);
 				continue;
+			}
+
+			if (changed->session != xr_session.get()) {
+				OOVR_LOGF("OpenXR session state change (state %d) has a session handle that matches neither "
+				          "the current session nor the last destroyed one - processing it anyway",
+				    changed->state);
 			}
 
 			sessionState = changed->state;

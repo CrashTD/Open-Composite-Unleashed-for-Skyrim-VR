@@ -26,6 +26,19 @@ public:
 	 */
 	XrSessionState sessionState = XR_SESSION_STATE_UNKNOWN;
 
+	/**
+	 * Handle of the most recently destroyed session, set by DrvOpenXR::ShutdownSession
+	 * just before the session is actually torn down. PumpEvents uses this to recognise
+	 * genuinely stale XrEventDataSessionStateChanged events (from a session we know we
+	 * destroyed) without discarding events for the current session - some runtimes
+	 * (eg. WiVRn) have been observed to report a session handle for the new session's
+	 * own IDLE/READY transition that doesn't byte-match xr_session.get() yet, so
+	 * filtering on "not equal to current" instead of "equal to the known-destroyed one"
+	 * silently ate those events and left the new session without xrBeginSession ever
+	 * being called.
+	 */
+	XrSession lastDestroyedSession = XR_NULL_HANDLE;
+
 	XrSessionState GetSessionState();
 
 	/**
