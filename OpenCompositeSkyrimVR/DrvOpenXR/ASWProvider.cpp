@@ -9,9 +9,11 @@
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <chrono>
+#include <vector>
 
 // Global instance — accessed from XrBackend for frame injection
 ASWProvider* g_aswProvider = nullptr;
@@ -432,9 +434,36 @@ XrRect2Di ASWProvider::GetOutputRect(int eye) const
 
 bool ASWProvider::CreateDepthSwapchain(uint32_t width, uint32_t height)
 {
+	// m_cachedDepth (the source for the CopySubresourceRegion in SubmitWarpedOutput)
+	// is always DXGI_FORMAT_R32_FLOAT. Not every runtime advertises that exact format
+	// for swapchains (eg. WiVRn returns XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED for it),
+	// so ask what's actually supported first instead of hardcoding one format and
+	// giving up entirely on failure. R32_TYPELESS/R32_UINT are in the same 32-bit
+	// typeless group as R32_FLOAT, so a raw CopySubresourceRegion between them and our
+	// R32_FLOAT source is still valid - only the declared swapchain format changes.
+	uint32_t formatCount = 0;
+	OOVR_FAILED_XR_SOFT_ABORT(xrEnumerateSwapchainFormats(xr_session.get(), 0, &formatCount, nullptr));
+	std::vector<int64_t> runtimeFormats(formatCount);
+	OOVR_FAILED_XR_SOFT_ABORT(xrEnumerateSwapchainFormats(
+	    xr_session.get(), formatCount, &formatCount, runtimeFormats.data()));
+
+	DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
+	for (DXGI_FORMAT candidate : { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_UINT }) {
+		if (std::find(runtimeFormats.begin(), runtimeFormats.end(), static_cast<int64_t>(candidate)) != runtimeFormats.end()) {
+			depthFormat = candidate;
+			break;
+		}
+	}
+	if (depthFormat == DXGI_FORMAT_UNKNOWN) {
+		OOVR_LOGF("ASW: runtime supports none of R32_FLOAT/R32_TYPELESS/R32_UINT for swapchains "
+		          "(%u formats offered) - depth layer unavailable",
+		    formatCount);
+		return false;
+	}
+
 	XrSwapchainCreateInfo ci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 	ci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-	ci.format = DXGI_FORMAT_R32_FLOAT;
+	ci.format = depthFormat;
 	ci.sampleCount = 1;
 	ci.width = width;
 	ci.height = height;
@@ -444,7 +473,7 @@ bool ASWProvider::CreateDepthSwapchain(uint32_t width, uint32_t height)
 
 	XrResult res = xrCreateSwapchain(xr_session.get(), &ci, &m_depthSwapchain);
 	if (XR_FAILED(res)) {
-		OOVR_LOGF("ASW: xrCreateSwapchain (depth) failed (%ux%u) result=%d", width, height, (int)res);
+		OOVR_LOGF("ASW: xrCreateSwapchain (depth) failed (%ux%u, format=%d) result=%d", width, height, (int)depthFormat, (int)res);
 		return false;
 	}
 
