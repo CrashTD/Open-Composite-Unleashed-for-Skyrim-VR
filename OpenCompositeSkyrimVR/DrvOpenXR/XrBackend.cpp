@@ -1903,9 +1903,16 @@ void XrBackend::OnSessionCreated()
 
 	// Wait until we transition to the idle state.
 	// This sets the time, so OpenXR calls which use that will work correctly.
-	while (sessionState == XR_SESSION_STATE_UNKNOWN) {
-		const int durationMs = 250;
-
+	// Bounded: some runtimes (eg. WiVRn) can deliver stale events tagged with an
+	// already-destroyed session's handle right after a session replace, which
+	// PumpEvents correctly discards - but if the new session's own transition is
+	// delayed or never separately re-sent, waiting unboundedly here would hang
+	// startup forever. Give up after a few seconds and let the per-frame
+	// PumpEvents() calls elsewhere pick up the transition whenever it does arrive.
+	const int durationMs = 250;
+	const int maxAttempts = 40; // ~10 seconds
+	int attempts = 0;
+	while (sessionState == XR_SESSION_STATE_UNKNOWN && attempts < maxAttempts) {
 		OOVR_LOGF("No session transition yet received, waiting %dms ...", durationMs);
 
 #ifdef _WIN32
@@ -1916,6 +1923,13 @@ void XrBackend::OnSessionCreated()
 #endif
 
 		PumpEvents();
+		attempts++;
+	}
+
+	if (sessionState == XR_SESSION_STATE_UNKNOWN) {
+		OOVR_LOGF("No session transition received after %dms, giving up and continuing - "
+		          "later PumpEvents() calls will pick up the state once it arrives",
+		    maxAttempts * durationMs);
 	}
 
 	// OVR perf hook disabled: MinHook + mutex per-frame overhead causes micro stutter.
