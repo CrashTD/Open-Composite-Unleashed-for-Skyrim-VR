@@ -47,15 +47,24 @@ jobs:
           Copy-Item -Path "$sdkRoot\Include\*" -Destination "$dest\Include" -Recurse -Force
           Copy-Item -Path "$sdkRoot\Lib\vulkan-1.lib" -Destination "$dest\Lib\vulkan-1.lib" -Force
 
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Ensure Ninja is available
+        shell: pwsh
+        run: pip install ninja
+
       - name: Configure CMake
         shell: pwsh
         run: |
-          cmake -S OpenCompositeSkyrimVR -B build -G "Visual Studio 17 2022" -A x64
+          cmake -S OpenCompositeSkyrimVR -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ inputs.config }}
 
       - name: Build vrclient_x64.dll
         shell: pwsh
         run: |
-          cmake --build build --target OCOVR --config ${{ inputs.config }} --parallel
+          cmake --build build --target OCOVR --parallel
 
       - name: Collect build output
         shell: pwsh
