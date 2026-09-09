@@ -437,7 +437,8 @@ target_include_directories(OCCore PRIVATE BundledLibs OpenVRHeaders ${XrDir}/src
 target_compile_definitions(OCCore PRIVATE ${GRAPHICS_API_SUPPORT_FLAGS})
 
 # NVAPI SDK (optional, NVIDIA VRS support)
-if (WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs/nvapi/nvapi.h")
+if (WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs/nvapi/nvapi.h"
+    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs/nvapi/amd64/nvapi64.lib")
 	target_include_directories(OCCore PRIVATE libs/nvapi)
 	target_link_libraries(OCCore ${CMAKE_CURRENT_SOURCE_DIR}/libs/nvapi/amd64/nvapi64.lib)
 	target_compile_definitions(OCCore PRIVATE OC_HAS_NVAPI)
