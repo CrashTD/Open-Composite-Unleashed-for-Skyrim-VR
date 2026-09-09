@@ -438,9 +438,15 @@ bool ASWProvider::CreateDepthSwapchain(uint32_t width, uint32_t height)
 	// is always DXGI_FORMAT_R32_FLOAT. Not every runtime advertises that exact format
 	// for swapchains (eg. WiVRn returns XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED for it),
 	// so ask what's actually supported first instead of hardcoding one format and
-	// giving up entirely on failure. R32_TYPELESS/R32_UINT are in the same 32-bit
-	// typeless group as R32_FLOAT, so a raw CopySubresourceRegion between them and our
-	// R32_FLOAT source is still valid - only the declared swapchain format changes.
+	// giving up entirely on failure. R32_TYPELESS/R32_UINT/D32_FLOAT are all in the
+	// same 32-bit typeless group as R32_FLOAT (the standard D3D11 "sample a depth
+	// buffer as a texture" trick relies on exactly this), so a raw CopySubresourceRegion
+	// between any of them and our R32_FLOAT source is still valid - only the declared
+	// swapchain format changes. D32_FLOAT is last because it's the format runtimes
+	// actually advertise for OpenXR depth composition (WiVRn/Monado's DXGI<->Vulkan
+	// table only maps D32_FLOAT, not the plain R32_* variants), so it's the one
+	// expected to match in practice; the others are kept in case some runtime prefers
+	// a plain texture format instead.
 	uint32_t formatCount = 0;
 	OOVR_FAILED_XR_SOFT_ABORT(xrEnumerateSwapchainFormats(xr_session.get(), 0, &formatCount, nullptr));
 	std::vector<int64_t> runtimeFormats(formatCount);
@@ -448,14 +454,14 @@ bool ASWProvider::CreateDepthSwapchain(uint32_t width, uint32_t height)
 	    xr_session.get(), formatCount, &formatCount, runtimeFormats.data()));
 
 	DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
-	for (DXGI_FORMAT candidate : { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_UINT }) {
+	for (DXGI_FORMAT candidate : { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_UINT, DXGI_FORMAT_D32_FLOAT }) {
 		if (std::find(runtimeFormats.begin(), runtimeFormats.end(), static_cast<int64_t>(candidate)) != runtimeFormats.end()) {
 			depthFormat = candidate;
 			break;
 		}
 	}
 	if (depthFormat == DXGI_FORMAT_UNKNOWN) {
-		OOVR_LOGF("ASW: runtime supports none of R32_FLOAT/R32_TYPELESS/R32_UINT for swapchains "
+		OOVR_LOGF("ASW: runtime supports none of R32_FLOAT/R32_TYPELESS/R32_UINT/D32_FLOAT for swapchains "
 		          "(%u formats offered) - depth layer unavailable",
 		    formatCount);
 		return false;
