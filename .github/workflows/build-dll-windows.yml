@@ -30,13 +30,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $ver = (Invoke-WebRequest -UseBasicParsing -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt").Content.Trim()
-          Write-Host "Latest Vulkan SDK version: $ver"
+          # LunarG's "latest" permalink always resolves to the current Windows installer,
+          # so this doesn't depend on knowing the exact version/filename in advance.
           $installer = "$env:RUNNER_TEMP\VulkanSDK-Installer.exe"
-          Invoke-WebRequest -UseBasicParsing -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe" -OutFile $installer
+          Invoke-WebRequest -UseBasicParsing -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe" -OutFile $installer
           Start-Process -FilePath $installer -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait -NoNewWindow
 
-          $sdkRoot = "C:\VulkanSDK\$ver"
+          $sdkRoot = (Get-ChildItem -Directory "C:\VulkanSDK" | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          if (-not $sdkRoot) {
+            throw "Vulkan SDK installation not found under C:\VulkanSDK"
+          }
+          Write-Host "Installed Vulkan SDK at: $sdkRoot"
           $dest = "${{ github.workspace }}\OpenCompositeSkyrimVR\libs\vulkan"
           New-Item -ItemType Directory -Force -Path "$dest\Include" | Out-Null
           New-Item -ItemType Directory -Force -Path "$dest\Lib" | Out-Null
