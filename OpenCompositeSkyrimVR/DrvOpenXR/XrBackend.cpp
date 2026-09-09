@@ -1793,7 +1793,17 @@ void XrBackend::PumpEvents()
 
 		if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
 			auto* changed = (XrEventDataSessionStateChanged*)&ev;
-			OOVR_FALSE_ABORT(changed->session == xr_session.get());
+
+			// The runtime may still deliver queued events for a session we've already
+			// destroyed (eg. after recreating the session for the application graphics
+			// API). Per the OpenXR spec this is legal - stale events must be ignored
+			// rather than treated as fatal, since xr_session may already point at a
+			// brand new session handle by the time this is processed.
+			if (changed->session != xr_session.get()) {
+				OOVR_LOGF("Ignoring stale OpenXR session state change (state %d) for a destroyed session", changed->state);
+				continue;
+			}
+
 			sessionState = changed->state;
 
 			// Monado bug: it returns 0 for this value (at least for the first two states)
