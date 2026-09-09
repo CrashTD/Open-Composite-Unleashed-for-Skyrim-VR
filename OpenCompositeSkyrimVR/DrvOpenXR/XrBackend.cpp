@@ -1945,6 +1945,27 @@ void XrBackend::OnSessionCreated()
 		OOVR_LOGF("No session transition received after %dms, giving up and continuing - "
 		          "later PumpEvents() calls will pick up the state once it arrives",
 		    maxAttempts * durationMs);
+
+		// Without ever seeing READY, xrBeginSession is never called by PumpEvents,
+		// and the game ends up calling frame functions (xrLocateViews etc.) on a
+		// session that was never begun - XR_ERROR_VALIDATION_FAILURE every frame,
+		// with no visible progress. Try beginning the session directly as a last
+		// resort. This isn't spec-compliant (the runtime is supposed to tell us
+		// it's ready first), but the alternative here is a session that's
+		// guaranteed broken anyway, so a runtime that tolerates it is strictly
+		// better off and one that rejects it is no worse off than before.
+		OOVR_LOG("Attempting to begin the session directly since no READY transition arrived");
+		XrSessionBeginInfo beginInfo{ XR_TYPE_SESSION_BEGIN_INFO };
+		beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+		XrResult beginResult = xrBeginSession(xr_session.get(), &beginInfo);
+		if (XR_SUCCEEDED(beginResult)) {
+			OOVR_LOG("xrBeginSession succeeded despite no READY event - continuing");
+			sessionActive = true;
+		} else {
+			OOVR_LOGF("xrBeginSession failed with result %d - the session will remain unusable "
+			          "until a real state transition arrives",
+			    beginResult);
+		}
 	}
 
 	// OVR perf hook disabled: MinHook + mutex per-frame overhead causes micro stutter.
